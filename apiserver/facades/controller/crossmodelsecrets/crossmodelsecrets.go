@@ -14,8 +14,10 @@ import (
 	"github.com/juju/names/v4"
 	"gopkg.in/macaroon.v2"
 
+	"github.com/juju/juju/apiserver/common/crossmodel"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
+	corelogger "github.com/juju/juju/core/logger"
 	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/secrets"
@@ -31,39 +33,112 @@ type CrossModelSecretsAPI struct {
 
 	ctx       stdcontext.Context
 	mu        sync.Mutex
+	authCtxt  *crossmodel.AuthContext
 	modelUUID string
 
 	secretsStateGetter  secretStateGetter
 	backendConfigGetter backendConfigGetter
 	crossModelState     CrossModelState
+	stateBackend        StateBackend
 }
 
 // NewCrossModelSecretsAPI returns a new server-side CrossModelSecretsAPI facade.
 func NewCrossModelSecretsAPI(
 	resources facade.Resources,
+	authContext *crossmodel.AuthContext,
 	modelUUID string,
 	secretsStateGetter secretStateGetter,
 	backendConfigGetter backendConfigGetter,
 	crossModelState CrossModelState,
+	stateBackend StateBackend,
 ) (*CrossModelSecretsAPI, error) {
 	return &CrossModelSecretsAPI{
 		ctx:                 stdcontext.Background(),
 		resources:           resources,
+		authCtxt:            authContext,
 		modelUUID:           modelUUID,
 		secretsStateGetter:  secretsStateGetter,
 		backendConfigGetter: backendConfigGetter,
 		crossModelState:     crossModelState,
+		stateBackend:        stateBackend,
 	}, nil
 }
 
-var logger = loggo.GetLogger("juju.apiserver.crossmodelsecrets")
+var logger = loggo.GetLoggerWithLabels("juju.apiserver.crossmodelsecrets", corelogger.SECRETS)
 
-func (s *CrossModelSecretsAPI) checkMacaroonsForConsumer(consumerTag names.Tag, secretURI string, mac macaroon.Slice, version bakery.Version) error {
+// GetSecretAccessScope returns the tokens for the access scope of the specified secrets and consumers.
+func (s *CrossModelSecretsAPI) GetSecretAccessScope(args params.GetRemoteSecretAccessArgs) (params.StringResults, error) {
+	result := params.StringResults{
+		Results: make([]params.StringResult, len(args.Args)),
+	}
+	for i, arg := range args.Args {
+		token, err := s.getSecretAccessScope(arg)
+		if err != nil {
+			result.Results[i].Error = apiservererrors.ServerError(err)
+			continue
+		}
+		result.Results[i].Result = token
+	}
+	return result, nil
+}
+
+func (s *CrossModelSecretsAPI) getSecretAccessScope(arg params.GetRemoteSecretAccessArg) (string, error) {
+	if arg.URI == "" {
+		return "", errors.NewNotValid(nil, "empty uri")
+	}
+	uri, err := coresecrets.ParseURI(arg.URI)
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	if uri.SourceUUID == "" {
+		return "", errors.NotValidf("secret URI with empty source UUID")
+	}
+
+	consumerApp, err := s.crossModelState.GetRemoteApplicationTag(arg.ApplicationToken)
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	consumerUnit := names.NewUnitTag(fmt.Sprintf("%s/%d", consumerApp.Id(), arg.UnitId))
+
+	logger.Debugf("consumer unit for token %q: %v", arg.ApplicationToken, consumerUnit.Id())
+
+	_, secretsConsumer, closer, err := s.secretsStateGetter(uri.SourceUUID)
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	defer closer()
+	scopeTag, err := s.accessScope(secretsConsumer, uri, consumerUnit)
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	logger.Debugf("access scope for secret %v and consumer %v: %v", uri.String(), consumerUnit.Id(), scopeTag)
+	return s.crossModelState.GetToken(scopeTag)
+}
+
+func (s *CrossModelSecretsAPI) checkRelationMacaroons(consumerTag names.Tag, mac macaroon.Slice, version bakery.Version) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// TODO(cmr secrets)
-	return nil
+	// Check that the macaroon contains caveats for the relevant offer and
+	// relation and that the consumer is in the relation.
+	relKey, offerUUID, ok := crossmodel.RelationInfoFromMacaroons(mac)
+	if !ok {
+		logger.Debugf("missing relation or offer uuid from macaroons for consumer %v", consumerTag.Id())
+		return apiservererrors.ErrPerm
+	}
+	valid, err := s.stateBackend.HasEndpoint(relKey, consumerTag.Id())
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if !valid {
+		logger.Debugf("secret consumer %q for relation %q not valid", consumerTag, relKey)
+		return apiservererrors.ErrPerm
+	}
+
+	// A cross model secret can only be accessed if the corresponding cross model relation
+	// it is scoped to is accessible by the supplied macaroon.
+	auth := s.authCtxt.Authenticator(s.modelUUID, offerUUID)
+	return auth.CheckRelationMacaroons(s.ctx, names.NewRelationTag(relKey), mac, version)
 }
 
 // GetSecretContentInfo returns the secret values for the specified secrets.
@@ -105,17 +180,17 @@ func (s *CrossModelSecretsAPI) getSecretContent(arg params.GetRemoteSecretConten
 	if uri.SourceUUID == "" {
 		return nil, nil, 0, errors.NotValidf("secret URI with empty source UUID")
 	}
-	if arg.Revision == nil && !arg.Latest {
+	if arg.Revision == nil && !arg.Peek && !arg.Refresh {
 		return nil, nil, 0, errors.NotValidf("empty secret revision")
 	}
 
-	app, err := s.crossModelState.GetRemoteEntity(arg.ApplicationToken)
+	appTag, err := s.crossModelState.GetRemoteApplicationTag(arg.ApplicationToken)
 	if err != nil {
 		return nil, nil, 0, errors.Trace(err)
 	}
-	consumer := names.NewUnitTag(fmt.Sprintf("%s/%d", app.Id(), arg.UnitId))
+	consumer := names.NewUnitTag(fmt.Sprintf("%s/%d", appTag.Id(), arg.UnitId))
 
-	if err := s.checkMacaroonsForConsumer(app, uri.ID, arg.Macaroons, arg.BakeryVersion); err != nil {
+	if err := s.checkRelationMacaroons(appTag, arg.Macaroons, arg.BakeryVersion); err != nil {
 		return nil, nil, 0, errors.Trace(err)
 	}
 
@@ -129,15 +204,18 @@ func (s *CrossModelSecretsAPI) getSecretContent(arg params.GetRemoteSecretConten
 		return nil, nil, 0, apiservererrors.ErrPerm
 	}
 
-	md, err := secretState.GetSecret(uri)
-	if err != nil {
-		return nil, nil, 0, errors.Trace(err)
-	}
-
-	var wantRevision int
+	var (
+		wantRevision   int
+		latestRevision int
+	)
 	// Use the latest revision as the current one if --peek.
-	if arg.Latest {
-		wantRevision = md.LatestRevision
+	if arg.Peek || arg.Refresh {
+		var err error
+		latestRevision, err = s.updateConsumedRevision(secretState, secretsConsumer, consumer, uri, arg.Refresh)
+		if err != nil {
+			return nil, nil, 0, errors.Trace(err)
+		}
+		wantRevision = latestRevision
 	} else {
 		wantRevision = *arg.Revision
 	}
@@ -145,10 +223,36 @@ func (s *CrossModelSecretsAPI) getSecretContent(arg params.GetRemoteSecretConten
 	val, valueRef, err := secretState.GetSecretValue(uri, wantRevision)
 	content := &secrets.ContentParams{SecretValue: val, ValueRef: valueRef}
 	if err != nil || content.ValueRef == nil {
-		return content, nil, md.LatestRevision, errors.Trace(err)
+		return content, nil, latestRevision, errors.Trace(err)
 	}
 	backend, err := s.getBackend(uri.SourceUUID, content.ValueRef.BackendID)
-	return content, backend, md.LatestRevision, errors.Trace(err)
+	return content, backend, latestRevision, errors.Trace(err)
+}
+
+func (s *CrossModelSecretsAPI) updateConsumedRevision(secretsState SecretsState, secretsConsumer SecretsConsumer, consumer names.Tag, uri *coresecrets.URI, refresh bool) (int, error) {
+	consumerInfo, err := secretsConsumer.GetSecretRemoteConsumer(uri, consumer)
+	if err != nil && !errors.Is(err, errors.NotFound) {
+		return 0, errors.Trace(err)
+	}
+	refresh = refresh ||
+		err != nil // Not found, so need to create one.
+
+	md, err := secretsState.GetSecret(uri)
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
+
+	if refresh {
+		if consumerInfo == nil {
+			consumerInfo = &coresecrets.SecretConsumerMetadata{}
+		}
+		consumerInfo.LatestRevision = md.LatestRevision
+		consumerInfo.CurrentRevision = md.LatestRevision
+		if err := secretsConsumer.SaveSecretRemoteConsumer(uri, consumer, consumerInfo); err != nil {
+			return 0, errors.Trace(err)
+		}
+	}
+	return md.LatestRevision, nil
 }
 
 func (s *CrossModelSecretsAPI) getBackend(modelUUID string, backendID string) (*params.SecretBackendConfigResult, error) {
@@ -188,4 +292,14 @@ func (s *CrossModelSecretsAPI) canRead(secretsConsumer SecretsConsumer, uri *cor
 	appName, _ := names.UnitApplication(entity.Id())
 	hasRole, _ = secretsConsumer.SecretAccess(uri, names.NewApplicationTag(appName))
 	return hasRole.Allowed(coresecrets.RoleView)
+}
+
+func (s *CrossModelSecretsAPI) accessScope(secretsConsumer SecretsConsumer, uri *coresecrets.URI, entity names.Tag) (names.Tag, error) {
+	logger.Debugf("scope for %q on secret %s", entity, uri.ID)
+	scope, err := secretsConsumer.SecretAccessScope(uri, entity)
+	if err == nil || !errors.IsNotFound(err) || entity.Kind() != names.UnitTagKind {
+		return scope, errors.Trace(err)
+	}
+	appName, _ := names.UnitApplication(entity.Id())
+	return secretsConsumer.SecretAccessScope(uri, names.NewApplicationTag(appName))
 }

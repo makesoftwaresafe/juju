@@ -23,6 +23,7 @@ const (
 	secretSource    = "deadbeef-1bad-500d-9000-4b1d0d06f00d"
 	secretURI       = "secret:9m4e2mr0ui3e8a215n4g"
 	remoteSecretURI = "secret://deadbeef-1bad-500d-9000-4b1d0d06f00d/9m4e2mr0ui3e8a215n4g"
+	remoteSecretID  = "deadbeef-1bad-500d-9000-4b1d0d06f00d/9m4e2mr0ui3e8a215n4g"
 )
 
 func (s *SecretURISuite) TestParseURI(c *gc.C) {
@@ -57,6 +58,13 @@ func (s *SecretURISuite) TestParseURI(c *gc.C) {
 			},
 		}, {
 			in:  remoteSecretURI,
+			str: remoteSecretURI,
+			expected: &secrets.URI{
+				ID:         secretID,
+				SourceUUID: secretSource,
+			},
+		}, {
+			in:  remoteSecretID,
 			str: remoteSecretURI,
 			expected: &secrets.URI{
 				ID:         secretID,
@@ -118,6 +126,14 @@ func (s *SecretURISuite) TestWithSource(c *gc.C) {
 	uri = uri.WithSource(secretSource)
 	c.Assert(uri.SourceUUID, gc.Equals, secretSource)
 	c.Assert(uri.ID, gc.Equals, secretID)
+}
+
+func (s *SecretURISuite) TestIsLocal(c *gc.C) {
+	URI := secrets.NewURI()
+	c.Assert(URI.IsLocal("other-uuid"), jc.IsTrue)
+	URI2 := URI.WithSource("some-uuid")
+	c.Assert(URI2.IsLocal("some-uuid"), jc.IsTrue)
+	c.Assert(URI2.IsLocal("other-uuid"), jc.IsFalse)
 }
 
 type SecretSuite struct{}

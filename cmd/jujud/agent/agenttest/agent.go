@@ -126,7 +126,6 @@ func (s *AgentSuite) SetUpSuite(c *gc.C) {
 	s.JujuConnSuite.SetUpSuite(c)
 
 	s.InitialDBOps = make([]func(db *sql.DB) error, 0)
-	s.PatchValue(&database.DefaultBindAddress, "127.0.0.1")
 }
 
 // PrimeAgent writes the configuration file and tools for an agent
@@ -175,7 +174,11 @@ func (s *AgentSuite) PrimeAgentVersion(c *gc.C, tag names.Tag, password string, 
 			CACert:            stateInfo.CACert,
 			Controller:        coretesting.ControllerTag,
 			Model:             apiInfo.ModelTag,
-		})
+
+			QueryTracingEnabled:   controller.DefaultQueryTracingEnabled,
+			QueryTracingThreshold: controller.DefaultQueryTracingThreshold,
+		},
+	)
 	c.Assert(err, jc.ErrorIsNil)
 	conf.SetPassword(password)
 	c.Assert(conf.Write(), gc.IsNil)
@@ -236,15 +239,17 @@ func (s *AgentSuite) WriteStateAgentConfig(
 				DataDir: s.DataDir(),
 				LogDir:  s.LogDir,
 			}),
-			Tag:                tag,
-			UpgradedToVersion:  vers.Number,
-			Password:           password,
-			Nonce:              agent.BootstrapNonce,
-			APIAddresses:       apiAddr,
-			CACert:             stateInfo.CACert,
-			Controller:         s.State.ControllerTag(),
-			Model:              modelTag,
-			MongoMemoryProfile: controller.DefaultMongoMemoryProfile,
+			Tag:                   tag,
+			UpgradedToVersion:     vers.Number,
+			Password:              password,
+			Nonce:                 agent.BootstrapNonce,
+			APIAddresses:          apiAddr,
+			CACert:                stateInfo.CACert,
+			Controller:            s.State.ControllerTag(),
+			Model:                 modelTag,
+			MongoMemoryProfile:    controller.DefaultMongoMemoryProfile,
+			QueryTracingEnabled:   controller.DefaultQueryTracingEnabled,
+			QueryTracingThreshold: controller.DefaultQueryTracingThreshold,
 		},
 		controller.StateServingInfo{
 			Cert:         coretesting.ServerCert,

@@ -10,58 +10,82 @@ import (
 	"github.com/juju/worker/v3/catacomb"
 
 	"github.com/juju/juju/core/changestream"
-	"github.com/juju/juju/worker/dbaccessor"
+	coredatabase "github.com/juju/juju/core/database"
+	"github.com/juju/juju/worker/changestream/eventqueue"
+	"github.com/juju/juju/worker/changestream/stream"
+	"github.com/juju/juju/worker/filenotifywatcher"
 )
 
 // DBGetter describes the ability to supply a sql.DB
 // reference for a particular database.
-type DBGetter = dbaccessor.DBGetter
+type DBGetter = coredatabase.DBGetter
 
-// ChangeStream represents a stream of changes that flows from the underlying
-// change log table in the database.
-type ChangeStream interface {
-	// Changes returns a channel for a given namespace (database).
-	// The channel will return events represented by change log rows
-	// from the database.
-	// The change event IDs will be monotonically increasing
-	// (though not necessarily sequential).
-	// Events will be coalesced into a single change if they are
-	// for the same entity and edit type.
-	Changes(namespace string) (<-chan changestream.ChangeEvent, error)
+// FileNotifyWatcher is the interface that the worker uses to interact with the
+// file notify watcher.
+type FileNotifyWatcher = filenotifywatcher.FileNotifyWatcher
+
+// FileNotifier represents a way to watch for changes in a namespace folder
+// directory.
+type FileNotifier interface {
+	// Changes returns a channel if a file was created or deleted.
+	Changes() (<-chan bool, error)
 }
 
-// DBStream is the interface that the worker uses to interact with the raw
-// database stream. This is not namespaced and works exactly on the raw
-// database.
-type DBStream interface {
+// ChangeStream represents an interface for getting an event queue for
+// a particular namespace.
+type ChangeStream interface {
+	EventQueue(string) (EventQueue, error)
+}
+
+// EventQueue represents an interface for managing subscriptions to listen to
+// changes from the database change log.
+type EventQueue interface {
+	// Subscribe returns a new subscription to listen to changes from the
+	// database change log.
+	Subscribe(...changestream.SubscriptionOption) (changestream.Subscription, error)
+}
+
+// EventQueueWorker represents a worker for subscribing to events from the
+// database change log.
+type EventQueueWorker interface {
 	worker.Worker
-	Changes() <-chan changestream.ChangeEvent
+	EventQueue() EventQueue
 }
 
 // WorkerConfig encapsulates the configuration options for the
 // changestream worker.
 type WorkerConfig struct {
-	DBGetter  DBGetter
-	Clock     clock.Clock
-	Logger    Logger
-	NewStream StreamFn
+	DBGetter            DBGetter
+	FileNotifyWatcher   FileNotifyWatcher
+	Clock               clock.Clock
+	Logger              Logger
+	NewEventQueueWorker EventQueueWorkerFn
 }
 
 // Validate ensures that the config values are valid.
 func (c *WorkerConfig) Validate() error {
+	if c.DBGetter == nil {
+		return errors.NotValidf("missing DBGetter")
+	}
+	if c.FileNotifyWatcher == nil {
+		return errors.NotValidf("missing FileNotifyWatcher")
+	}
 	if c.Clock == nil {
 		return errors.NotValidf("missing clock")
 	}
 	if c.Logger == nil {
 		return errors.NotValidf("missing logger")
 	}
-
+	if c.NewEventQueueWorker == nil {
+		return errors.NotValidf("missing NewEventQueueWorker")
+	}
 	return nil
 }
 
 type changeStreamWorker struct {
 	cfg      WorkerConfig
 	catacomb catacomb.Catacomb
+	runner   *worker.Runner
 }
 
 func newWorker(cfg WorkerConfig) (*changeStreamWorker, error) {
@@ -72,11 +96,20 @@ func newWorker(cfg WorkerConfig) (*changeStreamWorker, error) {
 
 	w := &changeStreamWorker{
 		cfg: cfg,
+		runner: worker.NewRunner(worker.RunnerParams{
+			// Prevent the runner from restarting the worker, if one of the
+			// workers dies, we want to stop the whole thing.
+			IsFatal: func(err error) bool { return false },
+			Clock:   cfg.Clock,
+		}),
 	}
 
 	if err = catacomb.Invoke(catacomb.Plan{
 		Site: &w.catacomb,
 		Work: w.loop,
+		Init: []worker.Worker{
+			w.runner,
+		},
 	}); err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -85,6 +118,8 @@ func newWorker(cfg WorkerConfig) (*changeStreamWorker, error) {
 }
 
 func (w *changeStreamWorker) loop() (err error) {
+	defer w.runner.Kill()
+
 	for {
 		select {
 		case <-w.catacomb.Dying():
@@ -103,19 +138,99 @@ func (w *changeStreamWorker) Wait() error {
 	return w.catacomb.Wait()
 }
 
-// Changes returns a channel containing all the change events for the given
-// namespace.
-func (w *changeStreamWorker) Changes(namespace string) (<-chan changestream.ChangeEvent, error) {
-	db, err := w.cfg.DBGetter.GetDB(namespace)
-	if err != nil {
-		return nil, errors.Annotatef(err, "getting db for namespace %q", namespace)
+// EventQueue returns a new EventQueue for the given namespace. The EventQueue
+// will be subscribed to the given options.
+func (w *changeStreamWorker) EventQueue(namespace string) (EventQueue, error) {
+	if e, err := w.runner.Worker(namespace, w.catacomb.Dying()); err == nil {
+		return e.(EventQueueWorker).EventQueue(), nil
 	}
 
-	// TODO (stickupkid): We could potentially cache the streams here and hand
-	// out the same stream for the same namespace.
-	stream := w.cfg.NewStream(db, w.cfg.Clock, w.cfg.Logger)
-	if err := w.catacomb.Add(stream); err != nil {
+	db, err := w.cfg.DBGetter.GetDB(namespace)
+	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	return stream.Changes(), nil
+
+	eqWorker, err := w.cfg.NewEventQueueWorker(db, fileNotifyWatcher{
+		fileNotifier: w.cfg.FileNotifyWatcher,
+		fileName:     namespace,
+	}, w.cfg.Clock, w.cfg.Logger)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	if err := w.runner.StartWorker(namespace, func() (worker.Worker, error) {
+		return eqWorker, nil
+	}); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	return eqWorker.EventQueue(), nil
+}
+
+// fileNotifyWatcher is a wrapper around the FileNotifyWatcher that is used to
+// filter the events to only those that are for the given namespace.
+type fileNotifyWatcher struct {
+	fileNotifier FileNotifyWatcher
+	fileName     string
+}
+
+func (f fileNotifyWatcher) Changes() (<-chan bool, error) {
+	return f.fileNotifier.Changes(f.fileName)
+}
+
+// NewEventQueueWorker creates a new EventQueueWorker.
+func NewEventQueueWorker(db coredatabase.TrackedDB, fileNotifier FileNotifier, clock clock.Clock, logger Logger) (EventQueueWorker, error) {
+	stream := stream.New(db, fileNotifier, clock, logger)
+
+	eventQueue, err := eventqueue.New(stream, logger)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	w := &eventQueueWorker{
+		eventQueue: eventQueue,
+	}
+
+	if err := catacomb.Invoke(catacomb.Plan{
+		Site: &w.catacomb,
+		Work: w.loop,
+		Init: []worker.Worker{
+			stream,
+			eventQueue,
+		},
+	}); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	return w, nil
+}
+
+// eventQueueWorker is a worker that is responsible for managing the lifecycle
+// of both the DBStream and the EventQueue.
+type eventQueueWorker struct {
+	catacomb catacomb.Catacomb
+
+	eventQueue *eventqueue.EventQueue
+}
+
+// Kill is part of the worker.Worker interface.
+func (w *eventQueueWorker) Kill() {
+	w.catacomb.Kill(nil)
+}
+
+// Wait is part of the worker.Worker interface.
+func (w *eventQueueWorker) Wait() error {
+	return w.catacomb.Wait()
+}
+
+// EventQueue returns the event queue for this worker.
+func (w *eventQueueWorker) EventQueue() EventQueue {
+	return w.eventQueue
+}
+
+func (w *eventQueueWorker) loop() error {
+	select {
+	case <-w.catacomb.Dying():
+		return w.catacomb.ErrDying()
+	}
 }

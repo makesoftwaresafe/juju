@@ -41,35 +41,35 @@ formatted YAML-formatted file.
 
 Sample yaml file shows five credentials being stored against four clouds:
 
-  credentials:
-    aws:
-      <credential-name>:
-        auth-type: access-key
-        access-key: <key>
-        secret-key: <key>
-    azure:
-      <credential-name>:
-        auth-type: service-principal-secret
-        application-id: <uuid>
-        application-password: <password>
-        subscription-id: <uuid>
-    lxd:
-      <credential-a>:
-        auth-type: interactive
-        trust-password: <password>
-      <credential-b>:
-        auth-type: interactive
-        trust-password: <password>
-    google:
-      <credential-name>:
-        auth-type: oauth2
-        project-id: <project-id>
-        private-key: <private-key>
-        client-email: <email>
-        client-id: <client-id>
+    credentials:
+      aws:
+        <credential-name>:
+          auth-type: access-key
+          access-key: <key>
+          secret-key: <key>
+      azure:
+        <credential-name>:
+          auth-type: service-principal-secret
+          application-id: <uuid>
+          application-password: <password>
+          subscription-id: <uuid>
+      lxd:
+        <credential-a>:
+          auth-type: interactive
+          trust-password: <password>
+        <credential-b>:
+          auth-type: interactive
+          trust-password: <password>
+      google:
+        <credential-name>:
+          auth-type: oauth2
+          project-id: <project-id>
+          private-key: <private-key>
+          client-email: <email>
+          client-id: <client-id>
 
 The <credential-name> parameter of each credential is arbitrary, but must
-be unique within each <cloud-name>. This allows allow each cloud to store 
+be unique within each <cloud-name>. This allows each cloud to store 
 multiple credentials.
 
 The format for a credential is cloud-specific. Thus, it's best to use
@@ -77,13 +77,6 @@ The format for a credential is cloud-specific. Thus, it's best to use
 adding this new credential locally and / or uploading it to a controller 
 in a correct format for the desired cloud.
 
-Examples:
-    juju add-credential google
-    juju add-credential google --client
-    juju add-credential google -c mycontroller
-    juju add-credential aws -f ~/credentials.yaml -c mycontroller
-    juju add-credential aws -f ~/credentials.yaml
-    juju add-credential aws -f ~/credentials.yaml --client
 
 Notes:
 If you are setting up Juju for the first time, consider running
@@ -102,13 +95,15 @@ Further help:
 Please visit https://discourse.charmhub.io/t/1508 for cloud-specific
 instructions.
 
-See also: 
-    credentials
-    remove-credential
-    update-credential
-    default-credential
-    default-region
-    autoload-credentials
+`
+
+const usageAddCredentialExamples = `
+    juju add-credential google
+    juju add-credential google --client
+    juju add-credential google -c mycontroller
+    juju add-credential aws -f ~/credentials.yaml -c mycontroller
+    juju add-credential aws -f ~/credentials.yaml
+    juju add-credential aws -f ~/credentials.yaml --client
 `
 
 type addCredentialCommand struct {
@@ -129,9 +124,6 @@ type addCredentialCommand struct {
 	// These attributes are used when adding credentials to a controller.
 	remoteCloudFound  bool
 	credentialAPIFunc func() (CredentialAPI, error)
-
-	// existsLocally whether this credential already exists locally.
-	existsLocally bool
 }
 
 // NewAddCredentialCommand returns a command to add credential information.
@@ -149,10 +141,19 @@ func NewAddCredentialCommand() cmd.Command {
 
 func (c *addCredentialCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
-		Name:    "add-credential",
-		Args:    "<cloud name>",
-		Purpose: usageAddCredentialSummary,
-		Doc:     usageAddCredentialDetails,
+		Name:     "add-credential",
+		Args:     "<cloud name>",
+		Purpose:  usageAddCredentialSummary,
+		Doc:      usageAddCredentialDetails,
+		Examples: usageAddCredentialExamples,
+		SeeAlso: []string{
+			"credentials",
+			"remove-credential",
+			"update-credential",
+			"default-credential",
+			"default-region",
+			"autoload-credentials",
+		},
 	})
 }
 

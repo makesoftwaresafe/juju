@@ -33,6 +33,7 @@ import (
 	"github.com/juju/juju/apiserver/facades/agent/reboot"
 	"github.com/juju/juju/apiserver/facades/agent/resourceshookcontext"
 	"github.com/juju/juju/apiserver/facades/agent/retrystrategy"
+	"github.com/juju/juju/apiserver/facades/agent/secretsdrain"
 	"github.com/juju/juju/apiserver/facades/agent/secretsmanager"
 	"github.com/juju/juju/apiserver/facades/agent/storageprovisioner"
 	"github.com/juju/juju/apiserver/facades/agent/unitassigner"
@@ -57,7 +58,6 @@ import (
 	"github.com/juju/juju/apiserver/facades/client/cloud"      // ModelUser Read
 	"github.com/juju/juju/apiserver/facades/client/controller" // ModelUser Admin (although some methods check for read only)
 	"github.com/juju/juju/apiserver/facades/client/credentialmanager"
-	"github.com/juju/juju/apiserver/facades/client/firewallrules"
 	"github.com/juju/juju/apiserver/facades/client/highavailability" // ModelUser Write
 	"github.com/juju/juju/apiserver/facades/client/imagemetadatamanager"
 	"github.com/juju/juju/apiserver/facades/client/keymanager"     // ModelUser Write
@@ -157,7 +157,6 @@ func AllFacades() *facade.Registry {
 	environupgrader.Register(registry)
 	fanconfigurer.Register(registry)
 	firewaller.Register(registry)
-	firewallrules.Register(registry)
 	highavailability.Register(registry)
 	hostkeyreporter.Register(registry)
 	imagemetadata.Register(registry)
@@ -200,6 +199,7 @@ func AllFacades() *facade.Registry {
 	secretbackends.Register(registry)
 	secretbackendmanager.Register(registry)
 	secretsmanager.Register(registry)
+	secretsdrain.Register(registry)
 	sshclient.Register(registry)
 	spaces.Register(registry)
 	statushistory.Register(registry)
@@ -239,6 +239,7 @@ func AllFacades() *facade.Registry {
 	registry.MustRegister("ModelSummaryWatcher", 1, newModelSummaryWatcher, reflect.TypeOf((*SrvModelSummaryWatcher)(nil)))
 	registry.MustRegister("SecretsTriggerWatcher", 1, newSecretsTriggerWatcher, reflect.TypeOf((*srvSecretTriggerWatcher)(nil)))
 	registry.MustRegister("SecretBackendsRotateWatcher", 1, newSecretBackendsRotateWatcher, reflect.TypeOf((*srvSecretBackendsRotateWatcher)(nil)))
+	registry.MustRegister("SecretsRevisionWatcher", 1, newSecretsRevisionWatcher, reflect.TypeOf((*srvSecretsRevisionWatcher)(nil)))
 
 	return registry
 }

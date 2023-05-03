@@ -47,6 +47,7 @@ import (
 	"github.com/juju/juju/core/cache"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/container"
+	coredatabase "github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/instance"
 	corelease "github.com/juju/juju/core/lease"
 	corelogger "github.com/juju/juju/core/logger"
@@ -252,6 +253,7 @@ type environState struct {
 	maxAddr        int // maximum allocated address last byte
 	insts          map[instance.Id]*dummyInstance
 	globalRules    firewall.IngressRules
+	modelRules     firewall.IngressRules
 	bootstrapped   bool
 	mux            *apiserverhttp.Mux
 	httpServer     *httptest.Server
@@ -278,7 +280,6 @@ type environ struct {
 	cloud        environscloudspec.CloudSpec
 	ecfgMutex    sync.Mutex
 	ecfgUnlocked *environConfig
-	spacesMutex  sync.RWMutex
 }
 
 var _ environs.Environ = (*environ)(nil)
@@ -1019,6 +1020,7 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 				},
 				MetricsCollector: apiserver.NewMetricsCollector(),
 				SysLogger:        noopSysLogger{},
+				DBGetter:         stubDBGetter{},
 			})
 			if err != nil {
 				panic(err)
@@ -1051,6 +1053,15 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, callCtx context.Provi
 type noopSysLogger struct{}
 
 func (noopSysLogger) Log([]corelogger.LogRecord) error { return nil }
+
+type stubDBGetter struct{}
+
+func (s stubDBGetter) GetDB(namespace string) (coredatabase.TrackedDB, error) {
+	if namespace != "controller" {
+		return nil, errors.Errorf(`expected a request for "controller" DB; got %q`, namespace)
+	}
+	return nil, nil
+}
 
 func leaseManager(controllerUUID string, st *state.State) (*lease.Manager, error) {
 	dummyStore := newLeaseStore(clock.WallClock)
@@ -1157,10 +1168,16 @@ func (e *environ) DestroyController(ctx context.ProviderCallContext, controllerU
 	return nil
 }
 
+var unsupportedConstraints = []string{
+	constraints.CpuPower,
+	constraints.VirtType,
+	constraints.ImageID,
+}
+
 // ConstraintsValidator is defined on the Environs interface.
 func (e *environ) ConstraintsValidator(ctx context.ProviderCallContext) (constraints.Validator, error) {
 	validator := constraints.NewValidator()
-	validator.RegisterUnsupported([]string{constraints.CpuPower, constraints.VirtType})
+	validator.RegisterUnsupported(unsupportedConstraints)
 	validator.RegisterConflicts([]string{constraints.InstanceType}, []string{constraints.Mem})
 	validator.RegisterVocabulary(constraints.Arch, []string{arch.AMD64, arch.ARM64, arch.I386, arch.PPC64EL, arch.S390X})
 	return validator, nil
@@ -1732,6 +1749,67 @@ func (e *environ) IngressRules(ctx context.ProviderCallContext) (rules firewall.
 	estate.mu.Lock()
 	defer estate.mu.Unlock()
 	for _, r := range estate.globalRules {
+		rules = append(rules, r)
+	}
+	rules.Sort()
+	return
+}
+
+func (e *environ) OpenModelPorts(ctx context.ProviderCallContext, rules firewall.IngressRules) error {
+	estate, err := e.state()
+	if err != nil {
+		return err
+	}
+	estate.mu.Lock()
+	defer estate.mu.Unlock()
+	for _, r := range rules {
+		if len(r.SourceCIDRs) == 0 {
+			r.SourceCIDRs.Add(firewall.AllNetworksIPV4CIDR)
+			r.SourceCIDRs.Add(firewall.AllNetworksIPV6CIDR)
+		}
+		found := false
+		for _, rule := range estate.modelRules {
+			if r.String() == rule.String() {
+				found = true
+			}
+		}
+		if !found {
+			estate.modelRules = append(estate.modelRules, r)
+		}
+	}
+
+	return nil
+}
+
+func (e *environ) CloseModelPorts(ctx context.ProviderCallContext, rules firewall.IngressRules) error {
+	estate, err := e.state()
+	if err != nil {
+		return err
+	}
+	estate.mu.Lock()
+	defer estate.mu.Unlock()
+	for _, r := range rules {
+		for i, rule := range estate.modelRules {
+			if len(r.SourceCIDRs) == 0 {
+				r.SourceCIDRs.Add(firewall.AllNetworksIPV4CIDR)
+				r.SourceCIDRs.Add(firewall.AllNetworksIPV6CIDR)
+			}
+			if r.String() == rule.String() {
+				estate.modelRules = estate.modelRules[:i+copy(estate.modelRules[i:], estate.modelRules[i+1:])]
+			}
+		}
+	}
+	return nil
+}
+
+func (e *environ) ModelIngressRules(ctx context.ProviderCallContext) (rules firewall.IngressRules, err error) {
+	estate, err := e.state()
+	if err != nil {
+		return nil, err
+	}
+	estate.mu.Lock()
+	defer estate.mu.Unlock()
+	for _, r := range estate.modelRules {
 		rules = append(rules, r)
 	}
 	rules.Sort()

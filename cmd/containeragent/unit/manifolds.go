@@ -43,6 +43,8 @@ import (
 	"github.com/juju/juju/worker/muxhttpserver"
 	"github.com/juju/juju/worker/proxyupdater"
 	"github.com/juju/juju/worker/retrystrategy"
+	"github.com/juju/juju/worker/s3caller"
+	"github.com/juju/juju/worker/secretdrainworker"
 	"github.com/juju/juju/worker/uniter"
 	"github.com/juju/juju/worker/upgradesteps"
 )
@@ -152,6 +154,17 @@ func Manifolds(config manifoldsConfig) dependency.Manifolds {
 			APIConfigWatcherName: apiConfigWatcherName,
 			NewConnection:        apicaller.OnlyConnect,
 			Logger:               loggo.GetLogger("juju.worker.apicaller"),
+		}),
+
+		// The S3 API caller is a shim API that wraps the /charms REST
+		// API for uploading and downloading charms. It provides a
+		// S3-compatible API.
+		s3CallerName: s3caller.Manifold(s3caller.ManifoldConfig{
+			AgentName:            agentName,
+			APIConfigWatcherName: apiConfigWatcherName,
+			APICallerName:        apiCallerName,
+			NewS3Client:          s3caller.NewS3Client,
+			Logger:               loggo.GetLogger("juju.worker.s3caller"),
 		}),
 
 		// The log sender is a leaf worker that sends log messages to some
@@ -303,6 +316,7 @@ func Manifolds(config manifoldsConfig) dependency.Manifolds {
 			AgentName:                    agentName,
 			ModelType:                    model.CAAS,
 			APICallerName:                apiCallerName,
+			S3CallerName:                 s3CallerName,
 			MachineLock:                  config.MachineLock,
 			Clock:                        config.Clock,
 			LeadershipTrackerName:        leadershipTrackerName,
@@ -332,6 +346,15 @@ func Manifolds(config manifoldsConfig) dependency.Manifolds {
 			Logger:        loggo.GetLogger("juju.worker.caasunitsmanager"),
 			Hub:           config.LocalHub,
 		}),
+
+		// The secretDrainWorker is the worker that drains secrets from the inactive backend to the current active backend.
+		secretDrainWorker: ifNotMigrating(secretdrainworker.Manifold(secretdrainworker.ManifoldConfig{
+			APICallerName:         apiCallerName,
+			Logger:                loggo.GetLogger("juju.worker.secretdrainworker"),
+			NewSecretsDrainFacade: secretdrainworker.NewSecretsDrainFacade,
+			NewWorker:             secretdrainworker.NewWorker,
+			NewBackendsClient:     secretdrainworker.NewBackendsClient,
+		})),
 	}
 
 	// If the container agent is colocated with the controller for the controller charm, then it doesn't
@@ -362,6 +385,7 @@ const (
 	agentName            = "agent"
 	apiConfigWatcherName = "api-config-watcher"
 	apiCallerName        = "api-caller"
+	s3CallerName         = "s3-caller"
 	uniterName           = "uniter"
 	logSenderName        = "log-sender"
 
@@ -387,6 +411,8 @@ const (
 
 	caasUnitTerminationWorker = "caas-unit-termination-worker"
 	caasUnitsManager          = "caas-units-manager"
+
+	secretDrainWorker = "secret-drain-worker"
 )
 
 type noopStatusSetter struct{}

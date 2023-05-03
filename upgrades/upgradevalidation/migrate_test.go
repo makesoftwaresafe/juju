@@ -4,8 +4,6 @@
 package upgradevalidation_test
 
 import (
-	"net/http"
-
 	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	jujutesting "github.com/juju/testing"
@@ -47,6 +45,7 @@ var ubuntuVersions = []string{
 	"21.04",
 	"21.10",
 	"22.10",
+	"23.04",
 }
 
 func makeBases(os string, vers []string) []state.Base {
@@ -134,7 +133,7 @@ func (s *migrateSuite) setupJuju3Target(c *gc.C) (*gomock.Controller, environscl
 	server.EXPECT().ServerVersion().Return("5.2")
 
 	s.PatchValue(&upgradevalidation.NewServerFactory,
-		func(httpClient *http.Client) lxd.ServerFactory {
+		func(_ lxd.NewHTTPClientFunc) lxd.ServerFactory {
 			return serverFactory
 		},
 	)

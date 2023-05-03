@@ -15,6 +15,7 @@ import (
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/leadership"
+	corelogger "github.com/juju/juju/core/logger"
 	coresecrets "github.com/juju/juju/core/secrets"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/cloudspec"
@@ -25,7 +26,7 @@ import (
 	"github.com/juju/juju/state"
 )
 
-var logger = loggo.GetLogger("juju.apiserver.common.secrets")
+var logger = loggo.GetLoggerWithLabels("juju.apiserver.common.secrets", corelogger.SECRETS)
 
 // For testing.
 var (
@@ -43,15 +44,15 @@ func getSecretBackendsState(m Model) state.SecretBackendsStorage {
 }
 
 // BackendConfigGetter is a func used to get secret backend config.
-type BackendConfigGetter func(backendIDs []string) (*provider.ModelBackendConfigInfo, error)
+type BackendConfigGetter func(backendIDs []string, wantAll bool) (*provider.ModelBackendConfigInfo, error)
 
 // BackendAdminConfigGetter is a func used to get admin level secret backend config.
 type BackendAdminConfigGetter func() (*provider.ModelBackendConfigInfo, error)
 
 // AdminBackendConfigInfo returns the admin config for the secret backends is use by
 // the specified model.
-// If no backend is configured, the "internal" backend is used for machine models and
-// a k8s backend with the same namespace is used for k8s models.
+// If external backend is configured, it returns the external backend together with the "internal" backend and
+// the k8s backend for k8s models.
 func AdminBackendConfigInfo(model Model) (*provider.ModelBackendConfigInfo, error) {
 	cfg, err := model.Config()
 	if err != nil {
@@ -59,48 +60,44 @@ func AdminBackendConfigInfo(model Model) (*provider.ModelBackendConfigInfo, erro
 	}
 	backendName := cfg.SecretBackend()
 
-	var backendType string
-	switch backendName {
-	case provider.Auto:
-		backendType = juju.BackendType
-		if model.Type() == state.ModelTypeCAAS {
-			backendType = kubernetes.BackendType
-		}
-	case provider.Internal:
-		backendType = juju.BackendType
-	}
-
 	var info provider.ModelBackendConfigInfo
 	info.Configs = make(map[string]provider.ModelBackendConfig)
-	if backendType != "" {
-		if backendType == juju.BackendType {
-			info.ActiveID = model.ControllerUUID()
-			info.Configs[info.ActiveID] = provider.ModelBackendConfig{
-				ControllerUUID: model.ControllerUUID(),
-				ModelUUID:      model.UUID(),
-				ModelName:      model.Name(),
-				BackendConfig:  juju.BuiltInConfig(),
-			}
-		} else {
-			spec, err := cloudSpecForModel(model)
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			k8sConfig, err := kubernetes.BuiltInConfig(spec)
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			info.ActiveID = model.UUID()
-			info.Configs[info.ActiveID] = provider.ModelBackendConfig{
-				ControllerUUID: model.ControllerUUID(),
-				ModelUUID:      model.UUID(),
-				ModelName:      model.Name(),
-				BackendConfig:  *k8sConfig,
-			}
-		}
-	}
+
+	// We need to include builtin backends for secret draining and accessing those secrets while drain is in progress.
 	// TODO(secrets) - only use those in use by model
 	// For now, we'll return all backends on the controller.
+	jujuBackendID := model.ControllerUUID()
+	info.Configs[jujuBackendID] = provider.ModelBackendConfig{
+		ControllerUUID: model.ControllerUUID(),
+		ModelUUID:      model.UUID(),
+		ModelName:      model.Name(),
+		BackendConfig:  juju.BuiltInConfig(),
+	}
+	if backendName == provider.Auto || backendName == provider.Internal {
+		info.ActiveID = jujuBackendID
+	}
+
+	if model.Type() == state.ModelTypeCAAS {
+		spec, err := cloudSpecForModel(model)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		k8sConfig, err := kubernetes.BuiltInConfig(spec)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		k8sBackendID := model.UUID()
+		info.Configs[k8sBackendID] = provider.ModelBackendConfig{
+			ControllerUUID: model.ControllerUUID(),
+			ModelUUID:      model.UUID(),
+			ModelName:      model.Name(),
+			BackendConfig:  *k8sConfig,
+		}
+		if backendName == provider.Auto {
+			info.ActiveID = k8sBackendID
+		}
+	}
+
 	backendState := GetSecretBackendsState(model)
 	backends, err := backendState.ListSecretBackends()
 	if err != nil {
@@ -134,7 +131,7 @@ func AdminBackendConfigInfo(model Model) (*provider.ModelBackendConfigInfo, erro
 // owned by the agent, and read only those secrets shared with the agent.
 // The result includes config for all relevant backends, including the id
 // of the current active backend.
-func BackendConfigInfo(model Model, backendIDs []string, authTag names.Tag, leadershipChecker leadership.Checker) (*provider.ModelBackendConfigInfo, error) {
+func BackendConfigInfo(model Model, backendIDs []string, wantAll bool, authTag names.Tag, leadershipChecker leadership.Checker) (*provider.ModelBackendConfigInfo, error) {
 	adminModelCfg, err := AdminBackendConfigInfo(model)
 	if err != nil {
 		return nil, errors.Annotate(err, "getting configured secrets providers")
@@ -144,7 +141,13 @@ func BackendConfigInfo(model Model, backendIDs []string, authTag names.Tag, lead
 		Configs:  make(map[string]provider.ModelBackendConfig),
 	}
 	if len(backendIDs) == 0 {
-		backendIDs = []string{adminModelCfg.ActiveID}
+		if wantAll {
+			for id := range adminModelCfg.Configs {
+				backendIDs = append(backendIDs, id)
+			}
+		} else {
+			backendIDs = []string{adminModelCfg.ActiveID}
+		}
 	}
 	for _, backendID := range backendIDs {
 		cfg, ok := adminModelCfg.Configs[backendID]
@@ -433,4 +436,72 @@ func PingBackend(p provider.SecretBackendProvider, cfg provider.ConfigAttrs) err
 		return errors.Annotate(err, "checking backend")
 	}
 	return b.Ping()
+}
+
+// GetSecretMetadata returns the secrets metadata for the given filter.
+func GetSecretMetadata(
+	authTag names.Tag, secretsState SecretsMetaState, leadershipChecker leadership.Checker,
+	filter func(*coresecrets.SecretMetadata, *coresecrets.SecretRevisionMetadata) bool,
+) (params.ListSecretResults, error) {
+	var result params.ListSecretResults
+	listFilter := state.SecretsFilter{
+		// TODO: there is a bug that operator agents can't get any unit owned secrets!
+		// Because the authTag here is the application tag, but not unit tag.
+		OwnerTags: []names.Tag{authTag},
+	}
+	// Unit leaders can also get metadata for secrets owned by the app.
+	// TODO(wallyworld) - temp fix for old podspec charms
+	isLeader, err := IsLeaderUnit(authTag, leadershipChecker)
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+	if isLeader {
+		appOwner := names.NewApplicationTag(AuthTagApp(authTag))
+		listFilter.OwnerTags = append(listFilter.OwnerTags, appOwner)
+	}
+
+	secrets, err := secretsState.ListSecrets(listFilter)
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+	for _, md := range secrets {
+		secretResult := params.ListSecretResult{
+			URI:              md.URI.String(),
+			Version:          md.Version,
+			OwnerTag:         md.OwnerTag,
+			RotatePolicy:     md.RotatePolicy.String(),
+			NextRotateTime:   md.NextRotateTime,
+			Description:      md.Description,
+			Label:            md.Label,
+			LatestRevision:   md.LatestRevision,
+			LatestExpireTime: md.LatestExpireTime,
+			CreateTime:       md.CreateTime,
+			UpdateTime:       md.UpdateTime,
+		}
+		revs, err := secretsState.ListSecretRevisions(md.URI)
+		if err != nil {
+			return params.ListSecretResults{}, errors.Trace(err)
+		}
+		for _, r := range revs {
+			if filter != nil && !filter(md, r) {
+				continue
+			}
+			var valueRef *params.SecretValueRef
+			if r.ValueRef != nil {
+				valueRef = &params.SecretValueRef{
+					BackendID:  r.ValueRef.BackendID,
+					RevisionID: r.ValueRef.RevisionID,
+				}
+			}
+			secretResult.Revisions = append(secretResult.Revisions, params.SecretRevision{
+				Revision: r.Revision,
+				ValueRef: valueRef,
+			})
+		}
+		if len(secretResult.Revisions) == 0 {
+			continue
+		}
+		result.Results = append(result.Results, secretResult)
+	}
+	return result, nil
 }

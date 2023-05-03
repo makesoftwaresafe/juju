@@ -8,12 +8,12 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-	"sync"
 
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/utils/v3"
 
+	coredatabase "github.com/juju/juju/core/database"
 	"github.com/juju/juju/core/lease"
 	"github.com/juju/juju/database"
 )
@@ -25,8 +25,8 @@ type StoreLogger interface {
 
 // StoreConfig encapsulates data required to construct a lease store instance.
 type StoreConfig struct {
-	// DB is the SQL database that backs this lease store.
-	DB *sql.DB
+	// TrackedDB is the SQL database that backs this lease store.
+	TrackedDB coredatabase.TrackedDB
 
 	// Logger is used to emit store-specific diagnostics.
 	Logger StoreLogger
@@ -35,25 +35,21 @@ type StoreConfig struct {
 // Store implements lease.Store using a database
 // supporting SQLite-compatible dialects.
 type Store struct {
-	db     *sql.DB
-	logger StoreLogger
-
-	cache   map[string]*sql.Stmt
-	cacheMu sync.RWMutex
+	trackedDB coredatabase.TrackedDB
+	logger    StoreLogger
 }
 
 // NewStore returns a reference to a new database-backed lease store.
 func NewStore(cfg StoreConfig) *Store {
 	return &Store{
-		db:     cfg.DB,
-		logger: cfg.Logger,
-		cache:  make(map[string]*sql.Stmt),
+		trackedDB: cfg.TrackedDB,
+		logger:    cfg.Logger,
 	}
 }
 
 // Leases (lease.Store) returns all leases in the database,
 // optionally filtering using the input keys.
-func (s *Store) Leases(keys ...lease.Key) (map[lease.Key]lease.Info, error) {
+func (s *Store) Leases(ctx context.Context, keys ...lease.Key) (map[lease.Key]lease.Info, error) {
 	// TODO (manadart 2022-11-30): We expect the variadic `keys` argument to be
 	// length 0 or 1. It was a work-around for design constraints at the time.
 	// Either filter the result here for len(keys) > 1, or fix the design.
@@ -63,7 +59,6 @@ func (s *Store) Leases(keys ...lease.Key) (map[lease.Key]lease.Info, error) {
 		return nil, errors.NotSupportedf("filtering with more than one lease key")
 	}
 
-	name := "Leases"
 	q := `
 SELECT t.type, l.model_uuid, l.name, l.holder, l.expiry
 FROM   lease l JOIN lease_type t ON l.lease_type_id = t.id`[1:]
@@ -76,82 +71,60 @@ WHERE  t.type = ?
 AND    l.model_uuid = ?
 AND    l.name = ?`
 
-		name = "LeasesForKey"
 		key := keys[0]
 		args = []any{key.Namespace, key.ModelUUID, key.Lease}
 	}
 
-	stmt, err := s.getPrepared(context.Background(), name, q)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
+	var result map[lease.Key]lease.Info
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, q, args...)
+		if err != nil {
+			return errors.Trace(err)
+		}
 
-	rows, err := stmt.Query(args...)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	result, err := leasesFromRows(rows)
+		result, err = leasesFromRows(rows)
+		return errors.Trace(err)
+	})
 	return result, err
 }
 
 // ClaimLease (lease.Store) claims the lease indicated by the input key,
 // for the holder and duration indicated by the input request.
 // The lease must not already be held, otherwise an error is returned.
-func (s *Store) ClaimLease(key lease.Key, req lease.Request, stop <-chan struct{}) error {
+func (s *Store) ClaimLease(ctx context.Context, key lease.Key, req lease.Request) error {
 	if err := req.Validate(); err != nil {
 		return errors.Trace(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error)
-
-	go func() {
-		q := `
+	q := `
 INSERT INTO lease (uuid, lease_type_id, model_uuid, name, holder, start, expiry)
 SELECT ?, id, ?, ?, ?, datetime('now'), datetime('now', ?) 
 FROM   lease_type
-WHERE  type = ?`[1:]
+WHERE  type = ?;`[1:]
 
-		stmt, err := s.getPrepared(ctx, "ClaimLease", q)
-		if err != nil {
-			errCh <- err
-			return
-		}
+	uuid := utils.MustNewUUID().String()
 
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		d := fmt.Sprintf("+%d seconds", int64(math.Ceil(req.Duration.Seconds())))
 
-		_, err = stmt.ExecContext(
-			ctx, utils.MustNewUUID().String(), key.ModelUUID, key.Lease, req.Holder, d, key.Namespace)
-		errCh <- err
-	}()
-
-	select {
-	case <-stop:
-		cancel()
-		return errors.Trace(<-errCh)
-	case err := <-errCh:
-		cancel()
-		if database.IsErrConstraintUnique(err) {
-			return lease.ErrHeld
-		}
+		_, err := tx.ExecContext(ctx, q, uuid, key.ModelUUID, key.Lease, req.Holder, d, key.Namespace)
 		return errors.Trace(err)
+	})
+	if database.IsErrConstraintUnique(err) {
+		return lease.ErrHeld
 	}
+	return errors.Trace(err)
 }
 
 // ExtendLease (lease.Store) ensures the input lease will be held for at least
 // the requested duration starting from now.
 // If the input holder does not currently hold the lease, an error is returned.
-func (s *Store) ExtendLease(key lease.Key, req lease.Request, stop <-chan struct{}) error {
+func (s *Store) ExtendLease(ctx context.Context, key lease.Key, req lease.Request) error {
 	if err := req.Validate(); err != nil {
 		return errors.Trace(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error)
-
-	go func() {
-		q := `
+	q := `
 UPDATE lease
 SET    expiry = datetime('now', ?)
 WHERE  uuid = (
@@ -163,15 +136,9 @@ WHERE  uuid = (
     AND    l.holder = ?
 )`[1:]
 
-		stmt, err := s.getPrepared(ctx, "ExtendLease", q)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		d := fmt.Sprintf("+%d seconds", int64(math.Ceil(req.Duration.Seconds())))
-
-		result, err := stmt.ExecContext(ctx, d, key.Namespace, key.ModelUUID, key.Lease, req.Holder)
+		result, err := tx.ExecContext(ctx, q, d, key.Namespace, key.ModelUUID, key.Lease, req.Holder)
 
 		// If no rows were affected, then either this key does not exist or
 		// it is not held by the input holder, constituting an invalid request.
@@ -182,28 +149,16 @@ WHERE  uuid = (
 				err = lease.ErrInvalid
 			}
 		}
-		errCh <- err
-	}()
-
-	select {
-	case <-stop:
-		cancel()
-		return errors.Trace(<-errCh)
-	case err := <-errCh:
-		cancel()
 		return errors.Trace(err)
-	}
+	})
+	return errors.Trace(err)
 }
 
 // RevokeLease (lease.Store) deletes the lease from the store,
 // provided it exists and is held by the input holder.
 // If either of these conditions is false, an error is returned.
-func (s *Store) RevokeLease(key lease.Key, holder string, stop <-chan struct{}) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error)
-
-	go func() {
-		q := `
+func (s *Store) RevokeLease(ctx context.Context, key lease.Key, holder string) error {
+	q := `
 DELETE FROM lease
 WHERE  uuid = (
     SELECT l.uuid
@@ -212,15 +167,11 @@ WHERE  uuid = (
     AND    l.model_uuid = ?
     AND    l.name = ?
     AND    l.holder = ?
-)`[1:]
+);`[1:]
 
-		stmt, err := s.getPrepared(ctx, "RevokeLease", q)
-		if err != nil {
-			errCh <- err
-			return
-		}
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
 
-		result, err := stmt.ExecContext(ctx, key.Namespace, key.ModelUUID, key.Lease, holder)
+		result, err := tx.ExecContext(ctx, q, key.Namespace, key.ModelUUID, key.Lease, holder)
 		if err == nil {
 			var affected int64
 			affected, err = result.RowsAffected()
@@ -228,79 +179,53 @@ WHERE  uuid = (
 				err = lease.ErrInvalid
 			}
 		}
-		errCh <- err
-	}()
-
-	select {
-	case <-stop:
-		cancel()
-		return errors.Trace(<-errCh)
-	case err := <-errCh:
-		cancel()
 		return errors.Trace(err)
-	}
+	})
+	return errors.Trace(err)
 }
 
 // LeaseGroup (lease.Store) returns all leases
 // for the input namespace and model.
-func (s *Store) LeaseGroup(namespace, modelUUID string) (map[lease.Key]lease.Info, error) {
+func (s *Store) LeaseGroup(ctx context.Context, namespace, modelUUID string) (map[lease.Key]lease.Info, error) {
 	q := `
 SELECT t.type, l.model_uuid, l.name, l.holder, l.expiry
 FROM   lease l JOIN lease_type t ON l.lease_type_id = t.id
 WHERE  t.type = ?
-AND    l.model_uuid = ?`[1:]
+AND    l.model_uuid = ?;`[1:]
 
-	stmt, err := s.getPrepared(context.Background(), "LeaseGroup", q)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
+	var result map[lease.Key]lease.Info
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, q, namespace, modelUUID)
+		if err != nil {
+			return errors.Trace(err)
+		}
 
-	rows, err := stmt.Query(namespace, modelUUID)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	result, err := leasesFromRows(rows)
+		result, err = leasesFromRows(rows)
+		return errors.Trace(err)
+	})
 	return result, errors.Trace(err)
 }
 
 // PinLease (lease.Store) adds the input entity into the lease_pin table
 // to indicate that the lease indicated by the input key must not expire,
 // and that this entity requires such behaviour.
-func (s *Store) PinLease(key lease.Key, entity string, stop <-chan struct{}) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error)
-
-	go func() {
-		q := `
+func (s *Store) PinLease(ctx context.Context, key lease.Key, entity string) error {
+	q := `
 INSERT INTO lease_pin (uuid, lease_uuid, entity_id)
 SELECT ?, l.uuid, ?
 FROM   lease l JOIN lease_type t ON l.lease_type_id = t.id
 WHERE  t.type = ?
 AND    l.model_uuid = ?
-AND    l.name = ?`[1:]
+AND    l.name = ?;`[1:]
 
-		stmt, err := s.getPrepared(ctx, "PinLease", q)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		_, err = stmt.ExecContext(ctx, utils.MustNewUUID().String(), entity, key.Namespace, key.ModelUUID, key.Lease)
-		errCh <- err
-	}()
-
-	select {
-	case <-stop:
-		cancel()
-		return errors.Trace(<-errCh)
-	case err := <-errCh:
-		cancel()
-		if database.IsErrConstraintUnique(err) {
-			return nil
-		}
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, q, utils.MustNewUUID().String(), entity, key.Namespace, key.ModelUUID, key.Lease)
 		return errors.Trace(err)
+	})
+	if database.IsErrConstraintUnique(err) {
+		return nil
 	}
+	return errors.Trace(err)
 }
 
 // UnpinLease (lease.Store) removes the record indicated by the input
@@ -308,12 +233,8 @@ AND    l.name = ?`[1:]
 // no longer requires the lease to be pinned.
 // When there are no entities associated with a particular lease,
 // it is determined not to be pinned, and can expire normally.
-func (s *Store) UnpinLease(key lease.Key, entity string, stop <-chan struct{}) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error)
-
-	go func() {
-		q := `
+func (s *Store) UnpinLease(ctx context.Context, key lease.Key, entity string) error {
+	q := `
 DELETE FROM lease_pin
 WHERE  uuid = (
     SELECT p.uuid
@@ -324,92 +245,54 @@ WHERE  uuid = (
     AND    l.model_uuid = ?
     AND    l.name = ?
     AND    p.entity_id = ?   
-)`[1:]
-
-		stmt, err := s.getPrepared(ctx, "UnpinLease", q)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		_, err = stmt.ExecContext(ctx, key.Namespace, key.ModelUUID, key.Lease, entity)
-		errCh <- err
-	}()
-
-	select {
-	case <-stop:
-		cancel()
-		return errors.Trace(<-errCh)
-	case err := <-errCh:
-		cancel()
+);`[1:]
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, q, key.Namespace, key.ModelUUID, key.Lease, entity)
 		return errors.Trace(err)
-	}
+	})
+	return errors.Trace(err)
 }
 
 // Pinned (lease.Store) returns all leases that are currently pinned,
 // and the entities requiring such behaviour for them.
-func (s *Store) Pinned() (map[lease.Key][]string, error) {
+func (s *Store) Pinned(ctx context.Context) (map[lease.Key][]string, error) {
 	q := `
 SELECT   l.uuid, t.type, l.model_uuid, l.name, p.entity_id
 FROM     lease l 
          JOIN lease_type t ON l.lease_type_id = t.id
-         JOIN lease_pin p on l.uuid = p.lease_uuid
-ORDER BY l.uuid`[1:]
+		 JOIN lease_pin p on l.uuid = p.lease_uuid
+ORDER BY l.uuid;`[1:]
 
-	stmt, err := s.getPrepared(context.Background(), "Pinned", q)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	rows, err := stmt.Query()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	seen := set.NewStrings()
-	result := make(map[lease.Key][]string)
-	for rows.Next() {
-		var leaseUUID string
-		var key lease.Key
-		var entity string
-
-		if err := rows.Scan(&leaseUUID, &key.Namespace, &key.ModelUUID, &key.Lease, &entity); err != nil {
-			_ = rows.Close()
-			return nil, errors.Trace(err)
+	var result map[lease.Key][]string
+	err := s.trackedDB.Txn(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, q)
+		if err != nil {
+			return errors.Trace(err)
 		}
 
-		if !seen.Contains(leaseUUID) {
-			result[key] = []string{entity}
-			seen.Add(leaseUUID)
-		} else {
-			result[key] = append(result[key], entity)
+		seen := set.NewStrings()
+
+		result = make(map[lease.Key][]string)
+		for rows.Next() {
+			var leaseUUID string
+			var key lease.Key
+			var entity string
+
+			if err := rows.Scan(&leaseUUID, &key.Namespace, &key.ModelUUID, &key.Lease, &entity); err != nil {
+				_ = rows.Close()
+				return errors.Trace(err)
+			}
+
+			if !seen.Contains(leaseUUID) {
+				result[key] = []string{entity}
+				seen.Add(leaseUUID)
+			} else {
+				result[key] = append(result[key], entity)
+			}
 		}
-	}
-
-	return result, errors.Trace(rows.Err())
-}
-
-// getPrepared returns a prepared statement for the input name,
-// ensuring that the first call for a given name caches the statement.
-// thereafter the statement is returned from the cache.
-func (s *Store) getPrepared(ctx context.Context, name string, stmt string) (*sql.Stmt, error) {
-	s.cacheMu.RLock()
-	if cachedStmt, ok := s.cache[name]; ok {
-		s.cacheMu.RUnlock()
-		return cachedStmt, nil
-	}
-	s.cacheMu.RUnlock()
-
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-
-	prepared, err := s.db.PrepareContext(ctx, stmt)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	s.cache[name] = prepared
-	return prepared, nil
+		return errors.Trace(rows.Err())
+	})
+	return result, errors.Trace(err)
 }
 
 // leasesFromRows returns lease info from rows returned from the backing DB.

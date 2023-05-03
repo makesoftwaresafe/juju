@@ -40,7 +40,7 @@ func (c *Client) GetSecretBackendConfig(backendID *string) (*provider.ModelBacke
 	if backendID != nil {
 		args.BackendIDs = []string{*backendID}
 	}
-	err := c.facade.FacadeCall("GetSecretBackendConfig", args, &results)
+	err := c.facade.FacadeCall("GetSecretBackendConfigs", args, &results)
 	if err != nil && !errors.Is(err, errors.NotFound) {
 		return nil, errors.Trace(err)
 	}
@@ -261,19 +261,9 @@ func (c *Client) GetConsumerSecretsRevisionInfo(unitName string, uris []string) 
 }
 
 // SecretMetadata returns metadata for the specified secrets.
-func (c *Client) SecretMetadata(filter coresecrets.Filter) ([]coresecrets.SecretOwnerMetadata, error) {
-	arg := params.ListSecretsArgs{
-		Filter: params.SecretsFilter{
-			OwnerTag: filter.OwnerTag,
-			Revision: filter.Revision,
-		},
-	}
-	if filter.URI != nil {
-		uri := filter.URI.String()
-		arg.Filter.URI = &uri
-	}
+func (c *Client) SecretMetadata() ([]coresecrets.SecretOwnerMetadata, error) {
 	var results params.ListSecretResults
-	err := c.facade.FacadeCall("GetSecretMetadata", arg, &results)
+	err := c.facade.FacadeCall("GetSecretMetadata", nil, &results)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

@@ -74,13 +74,12 @@ Model names may only contain lowercase letters, digits and hyphens, and
 may not start with a hyphen.
 
 To add a model, Juju requires a credential:
-
-    * if you have a default (or just one) credential defined at client
-     (i.e. in credentials.yaml), then juju will use that;
-    * if you have no default (and multiple) credentials defined at the client,
-     then you must specify one using --credential;
-    * as the admin user you can omit the credential,
-     and the credential used to bootstrap will be used.
+* if you have a default (or just one) credential defined at client
+  (i.e. in credentials.yaml), then juju will use that;
+* if you have no default (and multiple) credentials defined at the client,
+  then you must specify one using --credential;
+* as the admin user you can omit the credential,
+  and the credential used to bootstrap will be used.
 
 To add a credential for add-model, use one of the "juju add-credential" or
 "juju autoload-credentials" commands. These will add credentials
@@ -97,10 +96,11 @@ without a cloud qualifier, then it is assumed to be in the same cloud
 as the controller model.
 
 When adding --config, the default-series key is deprecated in favour of
-default-base .e.g. ubuntu@22.04.
+default-base, e.g. ubuntu@22.04.
 
-Examples:
+`
 
+const addModelHelpExamples = `
     juju add-model mymodel
     juju add-model mymodel us-east-1
     juju add-model mymodel aws/us-east-1
@@ -110,10 +110,11 @@ Examples:
 
 func (c *addModelCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
-		Name:    "add-model",
-		Args:    "<model name> [cloud|region|(cloud/region)]",
-		Purpose: "Adds a workload model.",
-		Doc:     strings.TrimSpace(addModelHelpDoc),
+		Name:     "add-model",
+		Args:     "<model name> [cloud|region|(cloud/region)]",
+		Purpose:  "Adds a workload model.",
+		Doc:      strings.TrimSpace(addModelHelpDoc),
+		Examples: addModelHelpExamples,
 	})
 }
 

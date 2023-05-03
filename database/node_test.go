@@ -7,18 +7,21 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"net"
 	"os"
 	"path"
 	"strconv"
+	"time"
 
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/yaml.v3"
 
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/controller"
 	"github.com/juju/juju/database/app"
+	"github.com/juju/juju/database/dqlite"
+	dqlitetesting "github.com/juju/juju/database/testing"
 	jujutesting "github.com/juju/juju/testing"
 )
 
@@ -27,6 +30,14 @@ type nodeManagerSuite struct {
 }
 
 var _ = gc.Suite(&nodeManagerSuite{})
+
+func (s *nodeManagerSuite) SetUpTest(c *gc.C) {
+	s.IsolationSuite.SetUpTest(c)
+
+	if !dqlite.Enabled {
+		c.Skip("This requires a dqlite server to be running")
+	}
+}
 
 func (s *nodeManagerSuite) TestEnsureDataDirSuccess(c *gc.C) {
 	subDir := strconv.Itoa(rand.Intn(10))
@@ -96,7 +107,7 @@ func (s *nodeManagerSuite) TestIsBootstrappedNode(c *gc.C) {
 	dataDir, err := m.EnsureDataDir()
 	c.Assert(err, jc.ErrorIsNil)
 
-	clusterFile := path.Join(dataDir, "cluster.yaml")
+	clusterFile := path.Join(dataDir, dqliteClusterFileName)
 
 	// Multiple nodes indicates the cluster has mutated since bootstrap.
 	data := `
@@ -144,16 +155,101 @@ func (s *nodeManagerSuite) TestIsBootstrappedNode(c *gc.C) {
 	c.Check(asBootstrapped, jc.IsTrue)
 }
 
+func (s *nodeManagerSuite) TestSetClusterServersSuccess(c *gc.C) {
+	subDir := strconv.Itoa(rand.Intn(10))
+
+	cfg := fakeAgentConfig{dataDir: "/tmp/" + subDir}
+	s.AddCleanup(func(*gc.C) { _ = os.RemoveAll(cfg.DataDir()) })
+
+	m := NewNodeManager(cfg, stubLogger{})
+	ctx := context.TODO()
+
+	dataDir, err := m.EnsureDataDir()
+	c.Assert(err, jc.ErrorIsNil)
+
+	clusterFile := path.Join(dataDir, dqliteClusterFileName)
+
+	// Write a cluster.yaml file into the Dqlite data directory.
+	data := []byte(`
+- Address: 127.0.0.1:17666
+  ID: 3297041220608546238
+  Role: 0
+`[1:])
+
+	err = os.WriteFile(clusterFile, data, 0600)
+	c.Assert(err, jc.ErrorIsNil)
+
+	servers := []dqlite.NodeInfo{
+		{
+			ID:      3297041220608546238,
+			Address: "10.6.6.6:17666",
+			Role:    0,
+		},
+	}
+
+	err = m.SetClusterServers(ctx, servers)
+	c.Assert(err, jc.ErrorIsNil)
+
+	data, err = os.ReadFile(clusterFile)
+	c.Assert(err, jc.ErrorIsNil)
+
+	// cluster.yaml should reflect the new server list.
+	var result []dqlite.NodeInfo
+	err = yaml.Unmarshal(data, &result)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(result, jc.DeepEquals, servers)
+}
+
+func (s *nodeManagerSuite) TestSetNodeInfoSuccess(c *gc.C) {
+	subDir := strconv.Itoa(rand.Intn(10))
+
+	cfg := fakeAgentConfig{dataDir: "/tmp/" + subDir}
+	s.AddCleanup(func(*gc.C) { _ = os.RemoveAll(cfg.DataDir()) })
+
+	m := NewNodeManager(cfg, stubLogger{})
+	dataDir, err := m.EnsureDataDir()
+	c.Assert(err, jc.ErrorIsNil)
+
+	infoFile := path.Join(dataDir, "info.yaml")
+
+	// Write a cluster.yaml file into the Dqlite data directory.
+	data := []byte(`
+Address: 127.0.0.1:17666
+ID: 3297041220608546238
+Role: 0
+`[1:])
+
+	err = os.WriteFile(infoFile, data, 0600)
+	c.Assert(err, jc.ErrorIsNil)
+
+	server := dqlite.NodeInfo{
+		ID:      3297041220608546238,
+		Address: "10.6.6.6:17666",
+		Role:    0,
+	}
+
+	err = m.SetNodeInfo(server)
+	c.Assert(err, jc.ErrorIsNil)
+
+	data, err = os.ReadFile(infoFile)
+	c.Assert(err, jc.ErrorIsNil)
+
+	// info.yaml should reflect the new node info.
+	var result dqlite.NodeInfo
+	err = yaml.Unmarshal(data, &result)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(result, jc.DeepEquals, server)
+}
+
 func (s *nodeManagerSuite) TestWithAddressOptionSuccess(c *gc.C) {
 	m := NewNodeManager(nil, stubLogger{})
+	m.port = dqlitetesting.FindTCPPort(c)
 
-	withAddress, err := m.WithAddressOption()
+	dqliteApp, err := app.New(c.MkDir(), m.WithAddressOption("127.0.0.1"))
 	c.Assert(err, jc.ErrorIsNil)
 
-	dqlite, err := app.New(c.MkDir(), withAddress)
+	err = dqliteApp.Close()
 	c.Assert(err, jc.ErrorIsNil)
-
-	_ = dqlite.Close()
 }
 
 func (s *nodeManagerSuite) TestWithTLSOptionSuccess(c *gc.C) {
@@ -163,68 +259,22 @@ func (s *nodeManagerSuite) TestWithTLSOptionSuccess(c *gc.C) {
 	withTLS, err := m.WithTLSOption()
 	c.Assert(err, jc.ErrorIsNil)
 
-	dqlite, err := app.New(c.MkDir(), withTLS)
+	dqliteApp, err := app.New(c.MkDir(), withTLS)
 	c.Assert(err, jc.ErrorIsNil)
 
-	_ = dqlite.Close()
+	err = dqliteApp.Close()
+	c.Assert(err, jc.ErrorIsNil)
 }
 
 func (s *nodeManagerSuite) TestWithClusterOptionSuccess(c *gc.C) {
-	// Hack to get a bind address to add to config.
-	h := NewNodeManager(fakeAgentConfig{}, stubLogger{})
-	err := h.ensureBindAddress()
-	c.Assert(err, jc.ErrorIsNil)
-
-	cfg := fakeAgentConfig{
-		apiAddrs: []string{
-			"10.0.0.5:17070",
-			h.bindAddress,     // Filtered out as not being us.
-			"127.0.0.1:17070", // Filtered out as a non-local-cloud address.
-		},
-	}
-
+	cfg := fakeAgentConfig{}
 	m := NewNodeManager(cfg, stubLogger{})
 
-	withCluster, err := m.WithClusterOption()
+	dqliteApp, err := app.New(c.MkDir(), m.WithClusterOption([]string{"10.6.6.6"}))
 	c.Assert(err, jc.ErrorIsNil)
 
-	dqlite, err := app.New(c.MkDir(), withCluster)
+	err = dqliteApp.Close()
 	c.Assert(err, jc.ErrorIsNil)
-
-	_ = dqlite.Close()
-}
-
-func (s *nodeManagerSuite) TestWithClusterNotHASuccess(c *gc.C) {
-	// Hack to get a bind address to add to config.
-	h := NewNodeManager(fakeAgentConfig{}, stubLogger{})
-	err := h.ensureBindAddress()
-	c.Assert(err, jc.ErrorIsNil)
-
-	cfg := fakeAgentConfig{apiAddrs: []string{h.bindAddress}}
-
-	m := NewNodeManager(cfg, stubLogger{})
-
-	withCluster, err := m.WithClusterOption()
-	c.Assert(err, jc.ErrorIsNil)
-
-	dqlite, err := app.New(c.MkDir(), withCluster)
-	c.Assert(err, jc.ErrorIsNil)
-
-	_ = dqlite.Close()
-}
-
-func (s *nodeManagerSuite) TestIgnoreInterface(c *gc.C) {
-	shouldIgnore := []string{
-		"lxdbr0",
-		"virbr0",
-		"docker0",
-	}
-	for _, devName := range shouldIgnore {
-		c.Check(ignoreInterface(net.Interface{Name: devName}), jc.IsTrue)
-	}
-
-	c.Check(ignoreInterface(net.Interface{Flags: net.FlagLoopback}), jc.IsTrue)
-	c.Check(ignoreInterface(net.Interface{Name: "enp5s0"}), jc.IsFalse)
 }
 
 type fakeAgentConfig struct {
@@ -256,4 +306,110 @@ func (cfg fakeAgentConfig) StateServingInfo() (controller.StateServingInfo, bool
 // APIAddresses implements agent.Config.
 func (cfg fakeAgentConfig) APIAddresses() ([]string, error) {
 	return cfg.apiAddrs, nil
+}
+
+type slowQuerySuite struct {
+	testing.IsolationSuite
+}
+
+var _ = gc.Suite(&slowQuerySuite{})
+
+func (s *slowQuerySuite) TestSlowQueryParsing(c *gc.C) {
+	tests := []struct {
+		name      string
+		msg       string
+		args      []any
+		threshold time.Duration
+		expected  queryType
+	}{
+		{
+			name:     "empty",
+			msg:      "",
+			expected: normalQuery,
+		},
+		{
+			name:     "normal query",
+			msg:      "hello world",
+			expected: normalQuery,
+		},
+		{
+			name: "wrong args",
+			msg:  "%.3fs request query: %q",
+			args: []any{
+				time.Second.Seconds(),
+			},
+			threshold: time.Millisecond,
+			expected:  normalQuery,
+		},
+		{
+			name:      "no args",
+			msg:       "%.3fs request query: %q",
+			args:      []any{},
+			threshold: time.Millisecond,
+			expected:  normalQuery,
+		},
+		{
+			name:      "too many args",
+			msg:       "%.3fs request query: %q",
+			args:      []any{1, 2, 3, 4},
+			threshold: time.Millisecond,
+			expected:  normalQuery,
+		},
+		{
+			name: "request slow query",
+			msg:  "%.3fs request query: %q",
+			args: []any{
+				time.Second.Seconds(),
+				"SELECT * FROM foo",
+			},
+			threshold: time.Millisecond,
+			expected:  slowQuery,
+		},
+		{
+			name: "request slow exec",
+			msg:  "%.3fs request exec: %q",
+			args: []any{
+				time.Second.Seconds(),
+				"INSERT INTO foo (bar) VALUES (666)",
+			},
+			threshold: time.Millisecond,
+			expected:  slowQuery,
+		},
+		{
+			name: "request slow exec",
+			msg:  "%.3fs request exec: %q",
+			args: []any{
+				time.Second.Seconds(),
+				"INSERT INTO foo (bar) VALUES (666)",
+			},
+			threshold: time.Millisecond,
+			expected:  slowQuery,
+		},
+		{
+			name: "request slow exec - ignored",
+			msg:  "%.3fs request exec: %q",
+			args: []any{
+				time.Second.Seconds(),
+				"INSERT INTO foo (bar) VALUES (666)",
+			},
+			threshold: time.Second * 2,
+			expected:  ignoreSlowQuery,
+		},
+		{
+			name: "request slow exec - ignored",
+			msg:  "%.3fs request exec: %q",
+			args: []any{
+				time.Second.Seconds(),
+				"INSERT INTO foo (bar) VALUES (666)",
+			},
+			threshold: time.Second * 2,
+			expected:  ignoreSlowQuery,
+		},
+	}
+
+	for _, test := range tests {
+		c.Logf("test %q", test.name)
+		queryType := parseSlowQuery(test.msg, test.args, test.threshold)
+		c.Assert(queryType, jc.DeepEquals, test.expected)
+	}
 }

@@ -3,14 +3,6 @@ on:
   push:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'testcharms/**'
-      - 'tests/main.sh'
-      - 'tests/includes/**'
-      - 'tests/suites/smoke/**'
-      - '.github/workflows/smoke.yml'
   workflow_dispatch:
 
 permissions:
@@ -44,13 +36,13 @@ jobs:
 
     - name: Setup MicroK8s
       if: matrix.cloud == 'microk8s'
-      uses: balchua/microk8s-actions@v0.3.1
+      uses: balchua/microk8s-actions@v0.3.2
       with:
         channel: "1.25-strict/stable"
         addons: '["dns", "hostpath-storage", "rbac"]'
 
     - name: Set up Go
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@v4
       with:
         go-version-file: 'go.mod'
         cache: true

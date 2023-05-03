@@ -13,6 +13,7 @@ import (
 	"github.com/juju/charm/v10"
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
+	"github.com/juju/featureflag"
 	"github.com/juju/loggo"
 	"github.com/juju/names/v4"
 	"github.com/juju/schema"
@@ -22,6 +23,7 @@ import (
 	goyaml "gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/apiserver/common"
+	commoncrossmodel "github.com/juju/juju/apiserver/common/crossmodel"
 	"github.com/juju/juju/apiserver/common/storagecommon"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
@@ -46,6 +48,7 @@ import (
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
 	environsconfig "github.com/juju/juju/environs/config"
+	"github.com/juju/juju/feature"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/stateenvirons"
@@ -88,6 +91,7 @@ type APIBase struct {
 	authorizer facade.Authorizer
 	check      BlockChecker
 	updateBase UpdateBase
+	repoDeploy DeployFromRepository
 
 	model     Model
 	modelType state.ModelType
@@ -113,10 +117,12 @@ type CaasBrokerInterface interface {
 }
 
 func newFacadeBase(ctx facade.Context) (*APIBase, error) {
-	model, err := ctx.State().Model()
+	m, err := ctx.State().Model()
 	if err != nil {
 		return nil, errors.Annotate(err, "getting model")
 	}
+	// modelShim wraps the AllPorts() API.
+	model := &modelShim{Model: m}
 	storageAccess, err := getStorageState(ctx.State())
 	if err != nil {
 		return nil, errors.Annotate(err, "getting state")
@@ -129,7 +135,8 @@ func newFacadeBase(ctx facade.Context) (*APIBase, error) {
 		registry           storage.ProviderRegistry
 		caasBroker         caas.Broker
 	)
-	if model.Type() == state.ModelTypeCAAS {
+	modelType := model.Type()
+	if modelType == state.ModelTypeCAAS {
 		caasBroker, err = stateenvirons.GetNewCAASBrokerFunc(caas.New)(model)
 		if err != nil {
 			return nil, errors.Annotate(err, "getting caas client")
@@ -152,10 +159,11 @@ func newFacadeBase(ctx facade.Context) (*APIBase, error) {
 		return nil, errors.Trace(err)
 	}
 
+	charmhubHTTPClient := ctx.HTTPClient(facade.CharmhubHTTPClient)
 	chURL, _ := modelCfg.CharmHubURL()
 	chClient, err := charmhub.NewClient(charmhub.Config{
 		URL:        chURL,
-		HTTPClient: ctx.HTTPClient(facade.CharmhubHTTPClient),
+		HTTPClient: charmhubHTTPClient,
 		Logger:     logger,
 	})
 	if err != nil {
@@ -163,14 +171,24 @@ func newFacadeBase(ctx facade.Context) (*APIBase, error) {
 	}
 
 	updateBase := NewUpdateBaseAPI(state, makeUpdateSeriesValidator(chClient))
+	validatorCfg := validatorConfig{
+		charmhubHTTPClient: charmhubHTTPClient,
+		caasBroker:         caasBroker,
+		model:              m,
+		registry:           registry,
+		state:              state,
+		storagePoolManager: storagePoolManager,
+	}
+	repoDeploy := NewDeployFromRepositoryAPI(state, makeDeployFromRepositoryValidator(validatorCfg))
 
 	return NewAPIBase(
 		state,
 		storageAccess,
 		ctx.Auth(),
 		updateBase,
+		repoDeploy,
 		blockChecker,
-		&modelShim{Model: model}, // modelShim wraps the AllPorts() API.
+		model,
 		leadershipReader,
 		stateCharm,
 		DeployApplication,
@@ -187,6 +205,7 @@ func NewAPIBase(
 	storageAccess StorageInterface,
 	authorizer facade.Authorizer,
 	updateBase UpdateBase,
+	repoDeploy DeployFromRepository,
 	blockChecker BlockChecker,
 	model Model,
 	leadershipReader leadership.Reader,
@@ -205,6 +224,7 @@ func NewAPIBase(
 		storageAccess:         storageAccess,
 		authorizer:            authorizer,
 		updateBase:            updateBase,
+		repoDeploy:            repoDeploy,
 		check:                 blockChecker,
 		model:                 model,
 		modelType:             model.Type(),
@@ -276,17 +296,6 @@ func (api *APIBase) Deploy(args params.ApplicationsDeploy) (params.ErrorResults,
 	}
 
 	for i, arg := range args.Applications {
-		// If either the charm origin ID or Hash is set before a charm is
-		// downloaded, charm download will fail for charms with a forced series.
-		// The logic (refreshConfig) in sending the correct request to charmhub
-		// will break.
-		if arg.CharmOrigin != nil &&
-			((arg.CharmOrigin.ID != "" && arg.CharmOrigin.Hash == "") ||
-				(arg.CharmOrigin.ID == "" && arg.CharmOrigin.Hash != "")) {
-			err := errors.BadRequestf("programming error, Deploy, neither CharmOrigin ID nor Hash can be set before a charm is downloaded. See CharmHubRepository GetDownloadURL.")
-			result.Results[i].Error = apiservererrors.ServerError(err)
-			continue
-		}
 		if err := common.ValidateCharmOrigin(arg.CharmOrigin); err != nil {
 			result.Results[i].Error = apiservererrors.ServerError(err)
 			continue
@@ -404,31 +413,42 @@ func splitApplicationAndCharmConfigFromYAML(modelType state.ModelType, inYaml, a
 	return appConfigAttrs, string(charmConfig), nil
 }
 
-func caasPrecheck(
-	ch Charm,
+// caasDeployParams contains deploy configuration requiring prechecks
+// specific to a caas.
+type caasDeployParams struct {
+	applicationName string
+	attachStorage   []string
+	charm           CharmMeta
+	config          map[string]string
+	placement       []*instance.Placement
+	storage         map[string]storage.Constraints
+}
+
+// precheck, checks the deploy config based on caas specific
+// requirements.
+func (c caasDeployParams) precheck(
 	model Model,
-	args params.ApplicationDeploy,
 	storagePoolManager poolmanager.PoolManager,
 	registry storage.ProviderRegistry,
 	caasBroker CaasBrokerInterface,
 ) error {
-	if len(args.AttachStorage) > 0 {
+	if len(c.attachStorage) > 0 {
 		return errors.Errorf(
 			"AttachStorage may not be specified for container models",
 		)
 	}
-	if len(args.Placement) > 1 {
+	if len(c.placement) > 1 {
 		return errors.Errorf(
 			"only 1 placement directive is supported for container models, got %d",
-			len(args.Placement),
+			len(c.placement),
 		)
 	}
-	for _, s := range ch.Meta().Storage {
+	for _, s := range c.charm.Meta().Storage {
 		if s.Type == charm.StorageBlock {
 			return errors.Errorf("block storage %q is not supported for container charms", s.Name)
 		}
 	}
-	serviceType := args.Config[k8s.ServiceTypeConfigKey]
+	serviceType := c.config[k8s.ServiceTypeConfigKey]
 	if _, err := k8s.CaasServiceToK8s(caas.ServiceType(serviceType)); err != nil {
 		return errors.NotValidf("service type %q", serviceType)
 	}
@@ -439,7 +459,7 @@ func caasPrecheck(
 	}
 
 	// For older charms, operator-storage model config is mandatory.
-	if k8s.RequireOperatorStorage(ch) {
+	if k8s.RequireOperatorStorage(c.charm) {
 		storageClassName, _ := cfg.AllAttrs()[k8sconstants.OperatorStorageKey].(string)
 		if storageClassName == "" {
 			return errors.New(
@@ -451,7 +471,7 @@ func caasPrecheck(
 		}
 		sp, err := caasoperatorprovisioner.CharmStorageParams("", storageClassName, cfg, "", storagePoolManager, registry)
 		if err != nil {
-			return errors.Annotatef(err, "getting operator storage params for %q", args.ApplicationName)
+			return errors.Annotatef(err, "getting operator storage params for %q", c.applicationName)
 		}
 		if sp.Provider != string(k8sconstants.StorageProviderType) {
 			poolName := cfg.AllAttrs()[k8sconstants.OperatorStorageKey]
@@ -464,13 +484,13 @@ func caasPrecheck(
 	}
 
 	workloadStorageClass, _ := cfg.AllAttrs()[k8sconstants.WorkloadStorageKey].(string)
-	for storageName, cons := range args.Storage {
+	for storageName, cons := range c.storage {
 		if cons.Pool == "" && workloadStorageClass == "" {
 			return errors.Errorf("storage pool for %q must be specified since there's no model default storage class", storageName)
 		}
 		_, err := caasoperatorprovisioner.CharmStorageParams("", workloadStorageClass, cfg, cons.Pool, storagePoolManager, registry)
 		if err != nil {
-			return errors.Annotatef(err, "getting workload storage params for %q", args.ApplicationName)
+			return errors.Annotatef(err, "getting workload storage params for %q", c.applicationName)
 		}
 	}
 
@@ -478,7 +498,7 @@ func caasPrecheck(
 	if err != nil {
 		return errors.Trace(err)
 	}
-	if err := checkCAASMinVersion(ch, caasVersion); err != nil {
+	if err := checkCAASMinVersion(c.charm, caasVersion); err != nil {
 		return errors.Trace(err)
 	}
 	return nil
@@ -507,7 +527,7 @@ func deployApplication(
 
 	// This check is done early so that errors deeper in the call-stack do not
 	// leave an application deployment in an unrecoverable error state.
-	if err := checkMachinePlacement(backend, args); err != nil {
+	if err := checkMachinePlacement(backend, args.ApplicationName, args.Placement); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -523,12 +543,20 @@ func deployApplication(
 
 	modelType := model.Type()
 	if modelType != state.ModelTypeIAAS {
-		if err := caasPrecheck(ch, model, args, storagePoolManager, registry, caasBroker); err != nil {
+		caas := caasDeployParams{
+			applicationName: args.ApplicationName,
+			attachStorage:   args.AttachStorage,
+			charm:           ch,
+			config:          args.Config,
+			placement:       args.Placement,
+			storage:         args.Storage,
+		}
+		if err := caas.precheck(model, storagePoolManager, registry, caasBroker); err != nil {
 			return errors.Trace(err)
 		}
 	}
 
-	appConfig, _, charmSettings, _, err := parseCharmSettings(modelType, ch, args.ApplicationName, args.Config, args.ConfigYAML, environsconfig.UseDefaults)
+	appConfig, _, charmSettings, _, err := parseCharmSettings(modelType, ch.Config(), args.ApplicationName, args.Config, args.ConfigYAML, environsconfig.UseDefaults)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -634,7 +662,7 @@ func convertCharmOrigin(origin *params.CharmOrigin, curl *charm.URL) (corecharm.
 // charm as specified by the provided config map and config yaml payload. Any
 // model-specific application settings will be automatically extracted and
 // returned back as an *application.Config.
-func parseCharmSettings(modelType state.ModelType, ch Charm, appName string, cfg map[string]string, configYaml string, defaults environsconfig.Defaulting) (*config.Config, environschema.Fields, charm.Settings, schema.Defaults, error) {
+func parseCharmSettings(modelType state.ModelType, chCfg *charm.Config, appName string, cfg map[string]string, configYaml string, defaults environsconfig.Defaulting) (*config.Config, environschema.Fields, charm.Settings, schema.Defaults, error) {
 	// Split out the app config from the charm config for any config
 	// passed in as a map as opposed to YAML.
 	var (
@@ -685,7 +713,7 @@ func parseCharmSettings(modelType state.ModelType, ch Charm, appName string, cfg
 	// If there isn't a charm YAML, then we can just return the charmConfig as
 	// the settings and no need to attempt to parse an empty yaml.
 	if len(charmYamlConfig) == 0 {
-		settings, err := ch.Config().ParseSettingsStrings(charmConfig)
+		settings, err := chCfg.ParseSettingsStrings(charmConfig)
 		if err != nil {
 			return nil, nil, nil, nil, errors.Trace(err)
 		}
@@ -694,7 +722,7 @@ func parseCharmSettings(modelType state.ModelType, ch Charm, appName string, cfg
 
 	var charmSettings charm.Settings
 	// Parse the charm YAML and check the yaml against the charm config.
-	if charmSettings, err = ch.Config().ParseSettingsYAML([]byte(charmYamlConfig), appName); err != nil {
+	if charmSettings, err = chCfg.ParseSettingsYAML([]byte(charmYamlConfig), appName); err != nil {
 		// Check if this is 'juju get' output and parse it as such
 		jujuGetSettings, pErr := charmConfigFromYamlConfigValues(charmYamlConfig)
 		if pErr != nil {
@@ -708,7 +736,7 @@ func parseCharmSettings(modelType state.ModelType, ch Charm, appName string, cfg
 	// provided via the YAML payload.
 	if len(charmConfig) != 0 {
 		// Parse config in a compatible way (see function comment).
-		overrideSettings, err := parseSettingsCompatible(ch.Config(), charmConfig)
+		overrideSettings, err := parseSettingsCompatible(chCfg, charmConfig)
 		if err != nil {
 			return nil, nil, nil, nil, errors.Trace(err)
 		}
@@ -720,16 +748,19 @@ func parseCharmSettings(modelType state.ModelType, ch Charm, appName string, cfg
 	return appConfig, appCfgSchema, charmSettings, schemaDefaults, nil
 }
 
+type MachinePlacementBackend interface {
+	Machine(string) (Machine, error)
+}
+
 // checkMachinePlacement does a non-exhaustive validation of any supplied
 // placement directives.
 // If the placement scope is for a machine, ensure that the machine exists.
 // If the placement is for a machine or a container on an existing machine,
 // check that the machine is not locked for series upgrade.
-func checkMachinePlacement(backend Backend, args params.ApplicationDeploy) error {
+func checkMachinePlacement(backend MachinePlacementBackend, app string, placement []*instance.Placement) error {
 	errTemplate := "cannot deploy %q to machine %s"
-	app := args.ApplicationName
 
-	for _, p := range args.Placement {
+	for _, p := range placement {
 		if p == nil {
 			continue
 		}
@@ -834,7 +865,7 @@ func (api *APIBase) setConfig(app Application, generation, settingsYAML string, 
 	// parseCharmSettings is passed false for useDefaults because setConfig
 	// should not care about defaults.
 	// If defaults are wanted, one should call unsetApplicationConfig.
-	appConfig, appConfigSchema, charmSettings, defaults, err := parseCharmSettings(api.modelType, ch, app.Name(), settingsStrings, settingsYAML, environsconfig.NoDefaults)
+	appConfig, appConfigSchema, charmSettings, defaults, err := parseCharmSettings(api.modelType, ch.Config(), app.Name(), settingsStrings, settingsYAML, environsconfig.NoDefaults)
 	if err != nil {
 		return errors.Annotate(err, "parsing settings for application")
 	}
@@ -1041,21 +1072,25 @@ func (api *APIBase) setCharmWithAgentValidation(
 	return api.applicationSetCharm(params, newCharm, origin)
 }
 
-// applicationSetCharm sets the charm for the given for the application.
+// applicationSetCharm sets the charm and updated config
+// for the given application.
 func (api *APIBase) applicationSetCharm(
 	params setCharmParams,
 	newCharm Charm,
 	newOrigin *state.CharmOrigin,
 ) error {
-	var err error
-	var settings charm.Settings
-	if params.ConfigSettingsYAML != "" {
-		settings, err = newCharm.Config().ParseSettingsYAML([]byte(params.ConfigSettingsYAML), params.AppName)
-	} else if len(params.ConfigSettingsStrings) > 0 {
-		settings, err = parseSettingsCompatible(newCharm.Config(), params.ConfigSettingsStrings)
+	model, err := api.backend.Model()
+	if err != nil {
+		return errors.Annotate(err, "retrieving model")
 	}
+	modelType := model.Type()
+
+	appConfig, appSchema, charmSettings, appDefaults, err := parseCharmSettings(modelType, newCharm.Config(), params.AppName, params.ConfigSettingsStrings, params.ConfigSettingsYAML, environsconfig.NoDefaults)
 	if err != nil {
 		return errors.Annotate(err, "parsing config settings")
+	}
+	if err := appConfig.Validate(); err != nil {
+		return errors.Annotate(err, "validating config settings")
 	}
 	var stateStorageConstraints map[string]state.StorageConstraints
 	if len(params.StorageConstraints) > 0 {
@@ -1073,11 +1108,6 @@ func (api *APIBase) applicationSetCharm(
 	}
 
 	// Enforce "assumes" requirements if the feature flag is enabled.
-	model, err := api.backend.Model()
-	if err != nil {
-		return errors.Annotate(err, "retrieving model")
-	}
-
 	if err := assertCharmAssumptions(newCharm.Meta().Assumes, model, api.backend.ControllerConfig); err != nil {
 		if !errors.IsNotSupported(err) || !params.Force.Force {
 			return errors.Trace(err)
@@ -1090,13 +1120,15 @@ func (api *APIBase) applicationSetCharm(
 	cfg := state.SetCharmConfig{
 		Charm:              api.stateCharm(newCharm),
 		CharmOrigin:        newOrigin,
-		ConfigSettings:     settings,
 		ForceBase:          force.ForceBase,
 		ForceUnits:         force.ForceUnits,
 		Force:              force.Force,
-		ResourceIDs:        params.ResourceIDs,
+		PendingResourceIDs: params.ResourceIDs,
 		StorageConstraints: stateStorageConstraints,
 		EndpointBindings:   params.EndpointBindings,
+	}
+	if len(charmSettings) > 0 {
+		cfg.ConfigSettings = charmSettings
 	}
 
 	// Disallow downgrading from a v2 charm to a v1 charm.
@@ -1108,7 +1140,14 @@ func (api *APIBase) applicationSetCharm(
 		return errors.New("cannot downgrade from v2 charm format to v1")
 	}
 
-	return params.Application.SetCharm(cfg)
+	// TODO(wallyworld) - do in a single transaction
+	if err := params.Application.SetCharm(cfg); err != nil {
+		return errors.Annotate(err, "updating charm config")
+	}
+	if attr := appConfig.Attributes(); len(attr) > 0 {
+		return params.Application.UpdateApplicationConfig(attr, nil, appSchema, appDefaults)
+	}
+	return nil
 }
 
 // charmConfigFromYamlConfigValues will parse a yaml produced by juju get and
@@ -1978,10 +2017,20 @@ func (api *APIBase) SetRelationsSuspended(args params.RelationSuspendedArgs) (pa
 		if rel.Suspended() == arg.Suspended {
 			return nil
 		}
-		_, err = api.backend.OfferConnectionForRelation(rel.Tag().Id())
+		oc, err := api.backend.OfferConnectionForRelation(rel.Tag().Id())
 		if errors.IsNotFound(err) {
 			return errors.Errorf("cannot set suspend status for %q which is not associated with an offer", rel.Tag().Id())
 		}
+		if oc != nil && !arg.Suspended && rel.Suspended() {
+			ok, err := commoncrossmodel.CheckCanConsume(api.authorizer, api.backend, api.backend.ControllerTag(), api.model.ModelTag(), oc)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			if !ok {
+				return apiservererrors.ErrPerm
+			}
+		}
+
 		message := arg.Message
 		if !arg.Suspended {
 			message = ""
@@ -2061,7 +2110,7 @@ func (api *APIBase) consumeOne(arg params.ConsumeApplicationArg) error {
 	if appName == "" {
 		appName = arg.OfferName
 	}
-	_, err = api.saveRemoteApplication(sourceModelTag, appName, externalControllerUUID, arg.ApplicationOfferDetails, arg.Macaroon)
+	_, err = api.saveRemoteApplication(sourceModelTag, appName, externalControllerUUID, arg.ApplicationOfferDetails, arg.Macaroon, arg.AuthToken)
 	return err
 }
 
@@ -2073,6 +2122,7 @@ func (api *APIBase) saveRemoteApplication(
 	externalControllerUUID string,
 	offer params.ApplicationOfferDetails,
 	mac *macaroon.Macaroon,
+	authToken string,
 ) (RemoteApplication, error) {
 	remoteEps := make([]charm.Relation, len(offer.Endpoints))
 	for j, ep := range offer.Endpoints {
@@ -2119,6 +2169,7 @@ func (api *APIBase) saveRemoteApplication(
 		Spaces:                 remoteSpaces,
 		Bindings:               offer.Bindings,
 		Macaroon:               mac,
+		AuthToken:              authToken,
 	})
 }
 
@@ -2892,7 +2943,7 @@ func (api *APIBase) crossModelRelationData(rel Relation, appName string, erd *pa
 	return nil
 }
 
-func checkCAASMinVersion(ch Charm, caasVersion *version.Number) (err error) {
+func checkCAASMinVersion(ch CharmMeta, caasVersion *version.Number) (err error) {
 	// check caas min version.
 	charmDeployment := ch.Meta().Deployment
 	if caasVersion == nil || charmDeployment == nil || charmDeployment.MinVersion == "" {
@@ -2932,4 +2983,36 @@ func (api *APIBase) Leader(entity params.Entity) (params.StringResult, error) {
 		result.Error = apiservererrors.ServerError(errors.NotFoundf("leader for %s", entity.Tag))
 	}
 	return result, nil
+}
+
+// DeployFromRepository is a one-stop deployment method for repository
+// charms. Only a charm name is required to deploy. If argument validation
+// fails, a list of all errors found in validation will be returned. If a
+// local resource is provided, details required for uploading the validated
+// resource will be returned.
+func (api *APIBase) DeployFromRepository(args params.DeployFromRepositoryArgs) (params.DeployFromRepositoryResults, error) {
+	if !featureflag.Enabled(feature.ServerSideCharmDeploy) {
+		return params.DeployFromRepositoryResults{}, errors.NotImplementedf("this facade method is under develop")
+	}
+
+	if err := api.checkCanWrite(); err != nil {
+		return params.DeployFromRepositoryResults{}, errors.Trace(err)
+	}
+	if err := api.check.RemoveAllowed(); err != nil {
+		return params.DeployFromRepositoryResults{}, errors.Trace(err)
+	}
+
+	results := make([]params.DeployFromRepositoryResult, len(args.Args))
+	for i, entity := range args.Args {
+		info, pending, errs := api.repoDeploy.DeployFromRepository(entity)
+		if len(errs) > 0 {
+			results[i].Errors = apiservererrors.ServerErrors(errs)
+			continue
+		}
+		results[i].Info = info
+		results[i].PendingResourceUploads = pending
+	}
+	return params.DeployFromRepositoryResults{
+		Results: results,
+	}, nil
 }

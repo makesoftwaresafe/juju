@@ -11,6 +11,9 @@ on:
       - 'snap/**'
       - '.github/workflows/upgrade.yml'
       - '.github/setup-lxd/**'
+      - 'scripts/dqlite/**'
+      - 'Makefile'
+      - 'make_functions.sh'
     branches-ignore:
       - 'develop'
   workflow_dispatch:
@@ -23,7 +26,8 @@ jobs:
   Upgrade:
     name: Upgrade
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    # Disabled until 3.2.0 is released.
+    if: false && github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +48,7 @@ jobs:
           set -euxo pipefail
           sudo snap install snapcraft --classic
           sudo snap install yq
-          sudo snap install juju --channel=3.0/stable
+          sudo snap install juju --channel=3.1/stable
           mkdir -p ~/.local/share
           echo "/snap/bin" >> $GITHUB_PATH
 
@@ -73,7 +77,7 @@ jobs:
 
       - name: Set up Go
         if: env.RUN_TEST == 'RUN'
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -86,7 +90,7 @@ jobs:
 
       - name: Setup k8s
         if: env.RUN_TEST == 'RUN' && matrix.model_type == 'microk8s'
-        uses: balchua/microk8s-actions@v0.3.1
+        uses: balchua/microk8s-actions@v0.3.2
         with:
           channel: "1.25-strict/stable"
           addons: '["dns", "hostpath-storage"]'

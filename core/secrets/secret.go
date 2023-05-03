@@ -55,7 +55,7 @@ const (
 var validUUID = regexp.MustCompile(uuidSnippet)
 
 var secretURIParse = regexp.MustCompile(`^` +
-	fmt.Sprintf(`(?P<id>%s)`, idSnippet) +
+	fmt.Sprintf(`((?P<source>%s)/)?(?P<id>%s)`, uuidSnippet, idSnippet) +
 	`$`)
 
 // ParseURI parses the specified string into a URI.
@@ -77,16 +77,21 @@ func ParseURI(str string) (*URI, error) {
 	if idStr == "" {
 		idStr = u.Opaque
 	}
-	matches := secretURIParse.FindStringSubmatch(idStr)
-	if matches == nil {
+	valid := secretURIParse.MatchString(idStr)
+	if !valid {
 		return nil, errors.NotValidf("secret URI %q", str)
 	}
-	id, err := xid.FromString(matches[1])
+	sourceUUID := secretURIParse.ReplaceAllString(idStr, "$source")
+	if sourceUUID == "" {
+		sourceUUID = u.Host
+	}
+	idPart := secretURIParse.ReplaceAllString(idStr, "$id")
+	id, err := xid.FromString(idPart)
 	if err != nil {
 		return nil, errors.NotValidf("secret URI %q", str)
 	}
 	result := &URI{
-		SourceUUID: u.Host,
+		SourceUUID: sourceUUID,
 		ID:         id.String(),
 	}
 	return result, nil
@@ -105,6 +110,12 @@ func (u *URI) WithSource(uuid string) *URI {
 	return u
 }
 
+// IsLocal returns true if this URI is local
+// to the specified uuid.
+func (u *URI) IsLocal(sourceUUID string) bool {
+	return u.SourceUUID == "" || u.SourceUUID == sourceUUID
+}
+
 // Name generates the secret name.
 func (u URI) Name(revision int) string {
 	return fmt.Sprintf("%s-%d", u.ID, revision)
@@ -121,7 +132,6 @@ func (u *URI) String() string {
 	if u.SourceUUID == "" {
 		urlValue := url.URL{
 			Scheme: SecretScheme,
-			Host:   u.SourceUUID,
 			Opaque: str,
 		}
 		return urlValue.String()
@@ -180,6 +190,12 @@ type SecretRevisionMetadata struct {
 type SecretOwnerMetadata struct {
 	Metadata  SecretMetadata
 	Revisions []int
+}
+
+// SecretMetadataForDrain holds a secret metadata and any backend references of revisions for drain.
+type SecretMetadataForDrain struct {
+	Metadata  SecretMetadata
+	Revisions []SecretRevisionMetadata
 }
 
 // SecretConsumerMetadata holds metadata about a secret

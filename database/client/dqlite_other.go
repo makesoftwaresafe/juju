@@ -1,5 +1,4 @@
 //go:build !dqlite
-// +build !dqlite
 
 // Copyright 2023 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
@@ -9,20 +8,29 @@ package client
 import (
 	"context"
 	"net"
+
+	"github.com/juju/juju/database/dqlite"
 )
 
-type NodeInfo struct {
-	Address string
+type Client struct{}
+
+func (c *Client) Cluster(context.Context) ([]dqlite.NodeInfo, error) {
+	return nil, nil
 }
 
-type YamlNodeStore struct{}
+type YamlNodeStore struct {
+}
 
 func NewYamlNodeStore(_ string) (*YamlNodeStore, error) {
 	return &YamlNodeStore{}, nil
 }
 
-func (s *YamlNodeStore) Get(_ context.Context) ([]NodeInfo, error) {
+func (s *YamlNodeStore) Get(context.Context) ([]dqlite.NodeInfo, error) {
 	return nil, nil
+}
+
+func (s *YamlNodeStore) Set(context.Context, []dqlite.NodeInfo) error {
+	return nil
 }
 
 // LogFunc is a function that can be used for logging.
@@ -33,22 +41,22 @@ type LogLevel int
 
 // Available logging levels.
 const (
-	None LogLevel = iota
-	Debug
-	Info
-	Warn
-	Error
+	LogNone LogLevel = iota
+	LogDebug
+	LogInfo
+	LogWarn
+	LogError
 )
 
 func (l LogLevel) String() string {
 	switch l {
-	case Debug:
+	case LogDebug:
 		return "DEBUG"
-	case Info:
+	case LogInfo:
 		return "INFO"
-	case Warn:
+	case LogWarn:
 		return "WARN"
-	case Error:
+	case LogError:
 		return "ERROR"
 	default:
 		return "UNKNOWN"

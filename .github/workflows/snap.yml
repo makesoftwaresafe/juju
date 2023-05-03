@@ -8,6 +8,9 @@ on:
       - 'go.mod'
       - 'snap/**'
       - '.github/workflows/snap.yml'
+      - 'scripts/dqlite/**'
+      - 'Makefile'
+      - 'make_functions.sh'
   workflow_dispatch:
 
 permissions:
@@ -36,7 +39,7 @@ jobs:
 
     - name: Set up Go
       if: env.RUN_TEST == 'RUN'
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@v4
       with:
         go-version-file: 'go.mod'
         cache: true

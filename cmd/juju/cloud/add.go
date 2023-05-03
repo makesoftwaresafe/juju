@@ -79,22 +79,22 @@ Use --client option to add cloud to the current client.
 
 A cloud definition file has the following YAML format:
 
-clouds:                           # mandatory
-  mycloud:                        # <cloud name> argument
-    type: openstack               # <cloud type>, see below
-    auth-types: [ userpass ]
-    regions:
-      london:
-        endpoint: https://london.mycloud.com:35574/v3.0/
+    clouds:                           # mandatory
+      mycloud:                        # <cloud name> argument
+        type: openstack               # <cloud type>, see below
+        auth-types: [ userpass ]
+        regions:
+          london:
+            endpoint: https://london.mycloud.com:35574/v3.0/
 
-<cloud types> for private clouds: 
+Cloud types for private clouds: 
  - lxd
  - maas
  - manual
  - openstack
  - vsphere
 
-<cloud types> for public clouds:
+Cloud types for public clouds:
  - azure
  - ec2
  - gce
@@ -115,19 +115,16 @@ Other cloud combinations can only be force added as the user must consider
 network routability, etc - concerns that are outside of scope of Juju.
 When forced addition is desired, use --force.
 
-Examples:
+`
+
+const usageAddCloudExamples = `
     juju add-cloud
     juju add-cloud --force
     juju add-cloud mycloud ~/mycloud.yaml
     juju add-cloud --controller mycontroller mycloud 
     juju add-cloud --controller mycontroller mycloud --credential mycred
     juju add-cloud --client mycloud ~/mycloud.yaml
-
-See also: 
-    clouds
-    update-cloud
-    remove-cloud
-    update-credential`
+`
 
 // AddCloudAPI - Implemented by cloudapi.Client.
 type AddCloudAPI interface {
@@ -198,10 +195,17 @@ func (c *AddCloudCommand) cloudAPI() (AddCloudAPI, error) {
 // Info returns help information about the command.
 func (c *AddCloudCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
-		Name:    "add-cloud",
-		Args:    "<cloud name> [<cloud definition file>]",
-		Purpose: usageAddCloudSummary,
-		Doc:     fmt.Sprintf(usageAddCloudDetails, jujucloud.CurrentWhiteList()),
+		Name:     "add-cloud",
+		Args:     "<cloud name> [<cloud definition file>]",
+		Purpose:  usageAddCloudSummary,
+		Doc:      fmt.Sprintf(usageAddCloudDetails, jujucloud.CurrentWhiteList()),
+		Examples: usageAddCloudExamples,
+		SeeAlso: []string{
+			"clouds",
+			"update-cloud",
+			"remove-cloud",
+			"update-credential",
+		},
 	})
 }
 

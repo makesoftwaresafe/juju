@@ -1,5 +1,4 @@
 //go:build !dqlite
-// +build !dqlite
 
 // Copyright 2023 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
@@ -63,6 +62,12 @@ func WithLogFunc(log client.LogFunc) Option {
 	return func() {}
 }
 
+// WithTracing will emit a log message at the given level every time a
+// statement gets executed.
+func WithTracing(level client.LogLevel) Option {
+	return func() {}
+}
+
 // App is a high-level helper for initializing a typical dqlite-based Go
 // application.
 //
@@ -85,12 +90,12 @@ func New(dir string, options ...Option) (*App, error) {
 // If this method returns without error it means that those initial
 // tasks have succeeded and follow-up operations like Open() are more
 // likely to succeed quickly.
-func (*App) Ready(ctx context.Context) error {
+func (*App) Ready(_ context.Context) error {
 	return nil
 }
 
 // Open the dqlite database with the given name
-func (a *App) Open(ctx context.Context, name string) (*sql.DB, error) {
+func (a *App) Open(_ context.Context, name string) (*sql.DB, error) {
 	path := name
 	if name != ":memory:" {
 		path = filepath.Join(a.dir, name)
@@ -114,6 +119,10 @@ func (*App) Handover(context.Context) error {
 // ID returns the dqlite ID of this application node.
 func (*App) ID() uint64 {
 	return 1
+}
+
+func (*App) Client(context.Context) (*client.Client, error) {
+	return &client.Client{}, nil
 }
 
 func (*App) Close() error {

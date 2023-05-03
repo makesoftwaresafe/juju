@@ -57,6 +57,7 @@ import (
 	"github.com/juju/juju/worker/diskmanager"
 	"github.com/juju/juju/worker/externalcontrollerupdater"
 	"github.com/juju/juju/worker/fanconfigurer"
+	"github.com/juju/juju/worker/filenotifywatcher"
 	"github.com/juju/juju/worker/fortress"
 	"github.com/juju/juju/worker/gate"
 	"github.com/juju/juju/worker/hostkeyreporter"
@@ -648,10 +649,8 @@ func commonManifolds(config ManifoldsConfig) dependency.Manifolds {
 			LeaseManagerName:       leaseManagerName,
 			UpgradeGateName:        upgradeStepsGateName,
 			AuditConfigUpdaterName: auditConfigUpdaterName,
-			// Synthetic dependency - if raft-transport bounces we
-			// need to bounce api-server too, otherwise http-server
-			// can't shutdown properly.
 			CharmhubHTTPClientName: charmhubHTTPClientName,
+			DBAccessorName:         dbAccessorName,
 
 			PrometheusRegisterer:              config.PrometheusRegisterer,
 			RegisterIntrospectionHTTPHandlers: config.RegisterIntrospectionHTTPHandlers,
@@ -692,17 +691,29 @@ func commonManifolds(config ManifoldsConfig) dependency.Manifolds {
 		})),
 
 		dbAccessorName: ifController(dbaccessor.Manifold(dbaccessor.ManifoldConfig{
-			AgentName: agentName,
-			Clock:     config.Clock,
-			Logger:    loggo.GetLogger("juju.worker.dbaccessor"),
-			NewApp:    dbaccessor.NewApp,
+			AgentName:            agentName,
+			Clock:                config.Clock,
+			Hub:                  config.CentralHub,
+			Logger:               loggo.GetLogger("juju.worker.dbaccessor"),
+			PrometheusRegisterer: config.PrometheusRegisterer,
+			NewApp:               dbaccessor.NewApp,
+			NewDBWorker:          dbaccessor.NewTrackedDBWorker,
+			NewMetricsCollector:  dbaccessor.NewMetricsCollector,
+		})),
+
+		fileNotifyWatcherName: ifController(filenotifywatcher.Manifold(filenotifywatcher.ManifoldConfig{
+			Clock:             config.Clock,
+			Logger:            loggo.GetLogger("juju.worker.filenotifywatcher"),
+			NewWatcher:        filenotifywatcher.NewWatcher,
+			NewINotifyWatcher: filenotifywatcher.NewINotifyWatcher,
 		})),
 
 		changeStreamName: ifController(changestream.Manifold(changestream.ManifoldConfig{
-			DBAccessor: dbAccessorName,
-			Clock:      config.Clock,
-			Logger:     loggo.GetLogger("juju.worker.changestream"),
-			NewStream:  changestream.NewStream,
+			DBAccessor:          dbAccessorName,
+			FileNotifyWatcher:   fileNotifyWatcherName,
+			Clock:               config.Clock,
+			Logger:              loggo.GetLogger("juju.worker.changestream"),
+			NewEventQueueWorker: changestream.NewEventQueueWorker,
 		})),
 
 		auditConfigUpdaterName: ifController(auditconfigupdater.Manifold(auditconfigupdater.ManifoldConfig{
@@ -1058,6 +1069,7 @@ const (
 	controllerPortName     = "controller-port"
 	stateName              = "state"
 	apiCallerName          = "api-caller"
+	s3CallerName           = "s3-caller"
 	apiConfigWatcherName   = "api-config-watcher"
 	centralHubName         = "central-hub"
 	presenceName           = "presence"
@@ -1108,6 +1120,7 @@ const (
 	multiwatcherName              = "multiwatcher"
 	peergrouperName               = "peer-grouper"
 	dbAccessorName                = "db-accessor"
+	fileNotifyWatcherName         = "file-notify-watcher"
 	changeStreamName              = "change-stream"
 	certificateUpdaterName        = "certificate-updater"
 	auditConfigUpdaterName        = "audit-config-updater"

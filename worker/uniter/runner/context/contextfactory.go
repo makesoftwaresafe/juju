@@ -71,7 +71,7 @@ type SecretsAccessor interface {
 
 	// SecretMetadata is used by secrets-get to fetch
 	// metadata for secrets.
-	SecretMetadata(filter secrets.Filter) ([]secrets.SecretOwnerMetadata, error)
+	SecretMetadata() ([]secrets.SecretOwnerMetadata, error)
 
 	// SecretRotated records the outcome of rotating a secret.
 	SecretRotated(uri string, oldRevision int) error
@@ -406,7 +406,7 @@ func (f *contextFactory) updateContext(ctx *HookContext) (err error) {
 	}
 
 	var machPortRanges map[names.UnitTag]network.GroupedPortRanges
-	var appPortRanges network.GroupedPortRanges
+	var appPortRanges map[names.UnitTag]network.GroupedPortRanges
 	switch f.modelType {
 	case model.IAAS:
 		if machPortRanges, err = f.state.OpenedMachinePortRangesByEndpoint(f.machineTag); err != nil {
@@ -418,17 +418,14 @@ func (f *contextFactory) updateContext(ctx *HookContext) (err error) {
 			f.logger.Warningf("cannot get legacy private address for %v: %v", f.unit.Name(), err)
 		}
 	case model.CAAS:
-		if appPortRanges, err = f.state.OpenedApplicationPortRangesByEndpoint(f.unit.ApplicationTag()); err != nil {
+		if appPortRanges, err = f.state.OpenedPortRangesByEndpoint(); err != nil && !errors.Is(err, errors.NotSupported) {
 			return errors.Trace(err)
 		}
 	}
 
 	ctx.portRangeChanges = newPortRangeChangeRecorder(ctx.logger, f.unit.Tag(), f.modelType, machPortRanges, appPortRanges)
 	ctx.secretChanges = newSecretsChangeRecorder(ctx.logger)
-	owner := f.unit.Tag().String()
-	info, err := ctx.secretsClient.SecretMetadata(secrets.Filter{
-		OwnerTag: &owner,
-	})
+	info, err := ctx.secretsClient.SecretMetadata()
 	if err != nil {
 		return err
 	}

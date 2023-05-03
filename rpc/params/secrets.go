@@ -12,6 +12,16 @@ import (
 	"github.com/juju/juju/core/secrets"
 )
 
+// SecretBackendConfigResultsV1 holds config info for creating
+// secret backend clients for a specific model.
+type SecretBackendConfigResultsV1 struct {
+	ControllerUUID string                         `json:"model-controller"`
+	ModelUUID      string                         `json:"model-uuid"`
+	ModelName      string                         `json:"model-name"`
+	ActiveID       string                         `json:"active-id"`
+	Configs        map[string]SecretBackendConfig `json:"configs,omitempty"`
+}
+
 // SecretBackendArgs holds args for querying secret backends.
 type SecretBackendArgs struct {
 	BackendIDs []string `json:"backend-ids"`
@@ -148,6 +158,19 @@ type GetSecretContentArg struct {
 	Label   string `json:"label,omitempty"`
 	Refresh bool   `json:"refresh,omitempty"`
 	Peek    bool   `json:"peek,omitempty"`
+}
+
+// ChangeSecretBackendArgs holds a slice of args for updating secret backend IDs.
+type ChangeSecretBackendArgs struct {
+	Args []ChangeSecretBackendArg `json:"args"`
+}
+
+// ChangeSecretBackendArg holds the arg for updating a secret backend for a secret.
+// It holds the secret contents as well if the new backend is the internal backend.
+type ChangeSecretBackendArg struct {
+	URI      string              `json:"uri"`
+	Revision int                 `json:"revision"`
+	Content  SecretContentParams `json:"content,omitempty"`
 }
 
 // SecretContentResults holds secret value results.
@@ -400,6 +423,73 @@ type GetRemoteSecretContentArg struct {
 	// URI is the secret URI.
 	URI string `json:"uri"`
 
-	// Latest is true if the latest revision should be used.
-	Latest bool `json:"latest,omitempty"`
+	// Refresh is true if the latest revision should be used from here on.
+	Refresh bool `json:"refresh,omitempty"`
+
+	// Peek is true if we want the latest revision just this once.
+	Peek bool `json:"peek,omitempty"`
+}
+
+// GetRemoteSecretAccessArgs holds args for fetching info
+// about access to a remote secret.
+type GetRemoteSecretAccessArgs struct {
+	Args []GetRemoteSecretAccessArg `json:"relations"`
+}
+
+// GetRemoteSecretAccessArg holds args for fetching info
+// about access to a remote secret.
+type GetRemoteSecretAccessArg struct {
+	// ApplicationToken is the application token on the remote model.
+	ApplicationToken string `json:"application-token"`
+
+	// UnitId uniquely identifies the remote unit.
+	UnitId int `json:"unit-id"`
+
+	// URI is the secret URI.
+	URI string `json:"uri"`
+}
+
+// WatchRemoteSecretChangesArgs holds args for watching
+// changes to a remote secret.
+type WatchRemoteSecretChangesArgs struct {
+	Args []WatchRemoteSecretChangesArg `json:"relations"`
+}
+
+// WatchRemoteSecretChangesArg holds info for watching
+// changes to a remote secret.
+type WatchRemoteSecretChangesArg struct {
+	// ApplicationToken is the application token on the remote model.
+	ApplicationToken string `json:"application-token"`
+
+	// Macaroons are used for authentication.
+	Macaroons macaroon.Slice `json:"macaroons,omitempty"`
+
+	// BakeryVersion is the version of the bakery used to mint macaroons.
+	BakeryVersion bakery.Version `json:"bakery-version,omitempty"`
+}
+
+// LatestSecretRevisionChanges holds a collection of secret revision changes
+// for updating consumers when secrets get new revisions added.
+type LatestSecretRevisionChanges struct {
+	Changes []SecretRevisionChange `json:"changes"`
+}
+
+// SecretRevisionChange describes a secret revision change.
+type SecretRevisionChange struct {
+	URI      string `json:"uri"`
+	Revision int    `json:"revision"`
+}
+
+// SecretRevisionWatchResult holds a SecretRevisionWatcher id, baseline state
+// (in the Changes field), and an error (if any).
+type SecretRevisionWatchResult struct {
+	WatcherId string                 `json:"watcher-id"`
+	Changes   []SecretRevisionChange `json:"changes"`
+	Error     *Error                 `json:"error,omitempty"`
+}
+
+// SecretRevisionWatchResults holds the results for any API call which ends up
+// returning a list of SecretRevisionWatchers.
+type SecretRevisionWatchResults struct {
+	Results []SecretRevisionWatchResult `json:"results"`
 }

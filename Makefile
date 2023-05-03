@@ -1,3 +1,8 @@
+.PHONY: help
+help:
+	@echo "Usage: \n"
+	@sed -n 's/^## //p' ${MAKEFILE_LIST} | sort | column -t -s ':' |  sed -e 's/^/ /'
+
 # Export this first, incase we want to change it in the included makefiles.
 export CGO_ENABLED=0
 
@@ -80,17 +85,23 @@ JUJU_GOMOD_MODE ?= readonly
 # if the tree that is checked out is dirty (modified) or clean.
 GIT_TREE_STATE = $(if $(shell git -C $(PROJECT_DIR) rev-parse --is-inside-work-tree 2>/dev/null | grep -e 'true'),$(if $(shell git -C $(PROJECT_DIR) status --porcelain),dirty,clean),archive)
 
-# BUILD_AGENT_TARGETS is a list of make targets the get built that fall under
-# the category of Juju agents. These targets are also the ones we are more then
-# likely wanting to cross compile.
+# BUILD_AGENT_TARGETS is a list of make targets that get built, that fall under
+# the category of Juju agents, that are not CGO. These targets are also the ones
+# we are more then likely wanting to cross compile.
 # NOTES:
 # - We filter pebble here for only linux builds as that is only what it will
 #   compile for at the moment.
 define BUILD_AGENT_TARGETS
 	$(call tool_platform_paths,jujuc,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
-	$(call tool_platform_paths,jujud,$(filter linux%,${AGENT_PACKAGE_PLATFORMS})) \
 	$(call tool_platform_paths,containeragent,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
 	$(call tool_platform_paths,pebble,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
+endef
+
+# BUILD_CGO_AGENT_TARGETS is a list of make targets that get built, that fall
+# under the category of Juju agents, that are CGO. These targets are also the
+# ones we are more then likely wanting to cross compile.
+define BUILD_CGO_AGENT_TARGETS
+	$(call tool_platform_paths,jujud,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
 endef
 
 # BUILD_CLIENT_TARGETS is a list of make targets that get built that fall under
@@ -138,11 +149,10 @@ else
 endif
 TEST_TIMEOUT := $(TEST_TIMEOUT)
 
+TEST_ARGS ?=
 # Limit concurrency on s390x.
 ifeq ($(shell echo "${GOARCH}" | sed -E 's/.*(s390x).*/golang/'), golang)
-	TEST_ARGS ?= -p 4
-else
-	TEST_ARGS ?=
+	TEST_ARGS += -p 4
 endif
 
 # Enable coverage testing.
@@ -261,11 +271,6 @@ endef
 
 default: build
 
-.PHONY: help
-help:
-	@echo "Usage: \n"
-	@sed -n 's/^##//p' ${MAKEFILE_LIST} | sort | column -t -s ':' |  sed -e 's/^/ /'
-
 .PHONY: juju
 juju: PACKAGE = github.com/juju/juju/cmd/juju
 juju:
@@ -304,17 +309,16 @@ pebble:
 
 .PHONY: phony_explicit
 phony_explicit:
-## phone_explicit is a dummy target that can be added to pattern targets to
-## them phony make.
+# phone_explicit: is a dummy target that can be added to pattern targets to phony make.
 
 ${BUILD_DIR}/%/bin/juju: PACKAGE = github.com/juju/juju/cmd/juju
 ${BUILD_DIR}/%/bin/juju: phony_explicit
-## build for juju
+# build for juju
 	$(run_go_build)
 
 ${BUILD_DIR}/%/bin/jujuc: PACKAGE = github.com/juju/juju/cmd/jujuc
 ${BUILD_DIR}/%/bin/jujuc: phony_explicit
-## build for jujuc
+# build for jujuc
 	$(run_go_build)
 
 ${BUILD_DIR}/%/bin/jujud: PACKAGE = github.com/juju/juju/cmd/jujud
@@ -337,7 +341,7 @@ ${BUILD_DIR}/%/bin/pebble: phony_explicit
 # build for pebble
 	$(run_go_build)
 
-${JUJU_METADATA_SOURCE}/tools/released/juju-${JUJU_VERSION}-%.tgz: phony_explicit juju $(BUILD_AGENT_TARGETS)
+${JUJU_METADATA_SOURCE}/tools/released/juju-${JUJU_VERSION}-%.tgz: phony_explicit juju $(BUILD_AGENT_TARGETS) $(BUILD_CGO_AGENT_TARGETS)
 	@echo "Packaging simplestream tools for juju ${JUJU_VERSION} on $*"
 	@mkdir -p ${JUJU_METADATA_SOURCE}/tools/released
 	@tar czf "$@" -C $(call bin_platform_paths,$(subst -,/,$*)) .
@@ -349,19 +353,23 @@ simplestreams: juju juju-metadata ${SIMPLESTREAMS_TARGETS}
 
 .PHONY: build
 build: rebuild-schema go-build
-## build builds all the targets specified by BUILD_AGENT_TARGETS and
-## BUILD_CLIENT_TARGETS while also rebuilding a new schema.
+## build: builds all the targets including rebuilding a new schema.
 
 .PHONY: go-agent-build
-go-agent-build: $(BUILD_AGENT_TARGETS)
+go-agent-build: $(BUILD_AGENT_TARGETS) $(BUILD_CGO_AGENT_TARGETS)
+
+.PHONY: go-agent-build-no-cgo
+go-agent-build-no-cgo: $(BUILD_AGENT_TARGETS)
+
+.PHONY: go-client-build
+go-client-build: $(BUILD_CLIENT_TARGETS)
 
 .PHONY: go-build
-go-build: go-agent-build $(BUILD_CLIENT_TARGETS)
-## build builds all the targets specified by BUILD_AGENT_TARGETS and
-## BUILD_CLIENT_TARGETS.
+go-build: go-agent-build go-client-build
+## build: builds all the targets withouth rebuilding a new schema.
 
 .PHONY: release-build
-release-build: $(BUILD_MAIN_TARGETS) $(BUILD_AGENT_TARGETS)
+release-build: go-agent-build
 ## release-build: Construct Juju binaries, without building schema
 
 .PHONY: release-install
@@ -381,6 +389,11 @@ check: pre-check run-tests
 .PHONY: test
 test: run-tests
 ## test: Verify Juju code using unit tests
+
+.PHONY: race-test
+race-test:
+## race-test: Verify Juju code using unit tests with the race detector enabled
+	+make run-tests TEST_ARGS="$(TEST_ARGS) -race"
 
 .PHONY: run-tests run-go-tests
 # Can't make the length of the TMP dir too long or it hits socket name length issues.
@@ -556,8 +569,7 @@ image-check-build-skip:
 
 .PHONY: docker-builder
 docker-builder:
-## docker-builder: Makes sure that there is a buildx context for building the
-## oci images
+## docker-builder: Makes sure that there is a buildx context for building the oci images
 	-@docker buildx create --name ${DOCKER_BUILDX_CONTEXT}
 
 .PHONY: image-check
@@ -591,7 +603,7 @@ push-release-operator-image: operator-image
 
 .PHONY: host-install
 host-install:
-## install juju for host os/architecture
+## host-install: installs juju for host os/architecture
 	+GOOS=$(GOHOSTOS) GOARCH=$(GOHOSTARCH) make juju
 
 .PHONY: minikube-operator-update

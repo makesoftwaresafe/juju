@@ -12,6 +12,7 @@ import (
 	"github.com/juju/charm/v10"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
+	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
 	jujutxn "github.com/juju/txn/v3"
 	gc "gopkg.in/check.v1"
@@ -941,7 +942,6 @@ type destroyMachineTestCase struct {
 	target    *state.Unit
 	host      *state.Machine
 	desc      string
-	flipHook  []jujutxn.TestHook
 	destroyed bool
 }
 
@@ -2039,10 +2039,24 @@ func (s *UnitSuite) TestDestroyAlsoDeletesSecretPermissions(c *gc.C) {
 	_, err := store.CreateSecret(uri, cp)
 	c.Assert(err, jc.ErrorIsNil)
 
+	// Make a relation for the access scope.
+	endpoint1, err := s.application.Endpoint("juju-info")
+	c.Assert(err, jc.ErrorIsNil)
+	application2 := s.Factory.MakeApplication(c, &factory.ApplicationParams{
+		Charm: s.Factory.MakeCharm(c, &factory.CharmParams{
+			Name: "logging",
+		}),
+	})
+	endpoint2, err := application2.Endpoint("info")
+	c.Assert(err, jc.ErrorIsNil)
+	rel := s.Factory.MakeRelation(c, &factory.RelationParams{
+		Endpoints: []state.Endpoint{endpoint1, endpoint2},
+	})
+
 	unit := s.Factory.MakeUnit(c, nil)
 	err = s.State.GrantSecretAccess(uri, state.SecretAccessParams{
 		LeaderToken: &fakeToken{},
-		Scope:       unit.Tag(),
+		Scope:       rel.Tag(),
 		Subject:     unit.Tag(),
 		Role:        secrets.RoleView,
 	})
@@ -2084,6 +2098,34 @@ func (s *UnitSuite) TestDestroyAlsoDeletesOwnedSecrets(c *gc.C) {
 	cp.Owner = s.unit.Tag()
 	_, err = store.CreateSecret(uri, cp)
 	c.Assert(err, jc.ErrorIsNil)
+}
+
+func (s *UnitSuite) TestDestroyAlsoDeletesConsumerInfo(c *gc.C) {
+	mysql := s.AddTestingApplication(c, "mysql", s.AddTestingCharm(c, "mysql"))
+	_, err := mysql.AddUnit(state.AddUnitParams{})
+	c.Assert(err, jc.ErrorIsNil)
+
+	store := state.NewSecrets(s.State)
+	uri := secrets.NewURI()
+	cp := state.CreateSecretParams{
+		Version: 1,
+		Owner:   names.NewUnitTag("mysql/0"),
+		UpdateSecretParams: state.UpdateSecretParams{
+			LeaderToken: &fakeToken{},
+			Label:       ptr("label"),
+			Data:        map[string]string{"foo": "bar"},
+		},
+	}
+	_, err = store.CreateSecret(uri, cp)
+	c.Assert(err, jc.ErrorIsNil)
+
+	err = s.State.SaveSecretConsumer(uri, s.unit.UnitTag(), &secrets.SecretConsumerMetadata{CurrentRevision: 666})
+	c.Assert(err, jc.ErrorIsNil)
+
+	err = s.unit.Destroy()
+	c.Assert(err, jc.ErrorIsNil)
+	_, err = s.State.GetSecretConsumer(uri, s.unit.Tag())
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *UnitSuite) TestSetClearResolvedWhenNotAlive(c *gc.C) {
@@ -2887,7 +2929,6 @@ func unitMachine(c *gc.C, st *state.State, u *state.Unit) *state.Machine {
 
 type CAASUnitSuite struct {
 	ConnSuite
-	charm       *state.Charm
 	application *state.Application
 	operatorApp *state.Application
 }

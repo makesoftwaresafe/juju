@@ -66,7 +66,7 @@ type ModelConstraintsClient interface {
 
 const bundleDiffDoc = `
 Bundle can be a local bundle file or the name of a bundle in
-the charm store. The bundle can also be combined with overlays (in the
+Charmhub. The bundle can also be combined with overlays (in the
 same way as the deploy command) before comparing with the model.
 
 The map-machines option works similarly as for the deploy command, but
@@ -77,18 +77,15 @@ generation.
 
 Specifying a base will retrieve the bundle for the relevant store for
 the give base.
+`
 
-Examples:
-
+const bundleDiffExamples = `
     juju diff-bundle localbundle.yaml
     juju diff-bundle charmed-kubernetes
     juju diff-bundle charmed-kubernetes --overlay local-config.yaml --overlay extra.yaml
 	juju diff-bundle charmed-kubernetes --base ubuntu@22.04
     juju diff-bundle -m othermodel hadoop-spark
     juju diff-bundle localbundle.yaml --map-machines 3=4
-
-See also:
-    deploy
 `
 
 // NewDiffBundleCommand returns a command to compare a bundle against
@@ -135,7 +132,6 @@ type diffBundleCommand struct {
 	newAPIRootFn               func() (base.APICallCloser, error)
 	modelConfigClientFunc      func(base.APICallCloser) ModelConfigClient
 	modelConstraintsClientFunc func() (ModelConstraintsClient, error)
-	newCharmHubClient          func(string) (store.DownloadBundleClient, error)
 }
 
 // IsSuperCommand is part of cmd.Command.
@@ -147,10 +143,14 @@ func (c *diffBundleCommand) AllowInterspersedFlags() bool { return true }
 // Info is part of cmd.Command.
 func (c *diffBundleCommand) Info() *cmd.Info {
 	return jujucmd.Info(&cmd.Info{
-		Name:    "diff-bundle",
-		Args:    "<bundle file or name>",
-		Purpose: "Compare a bundle with a model and report any differences.",
-		Doc:     bundleDiffDoc,
+		Name:     "diff-bundle",
+		Args:     "<bundle file or name>",
+		Purpose:  "Compare a bundle with a model and report any differences.",
+		Doc:      bundleDiffDoc,
+		Examples: bundleDiffExamples,
+		SeeAlso: []string{
+			"deploy",
+		},
 	})
 }
 
@@ -161,7 +161,7 @@ func (c *diffBundleCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.StringVar(&c.arch, "arch", "", fmt.Sprintf("specify an arch <%s>", c.archArgumentList()))
 	f.StringVar(&c.series, "series", "", "specify a series. DEPRECATED: use --base")
 	f.StringVar(&c.base, "base", "", "specify a base")
-	f.StringVar(&c.channelStr, "channel", "", "Channel to use when getting the bundle from the charm hub or charm store")
+	f.StringVar(&c.channelStr, "channel", "", "Channel to use when getting the bundle from Charmhub")
 	f.Var(cmd.NewAppendStringsValue(&c.bundleOverlays), "overlay", "Bundles to overlay on the primary bundle, applied in order")
 	f.StringVar(&c.machineMap, "map-machines", "", "Indicates how existing machines correspond to bundle machines")
 	f.BoolVar(&c.annotations, "annotations", false, "Include differences in annotations")

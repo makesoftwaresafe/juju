@@ -16,7 +16,9 @@ import (
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/macaroon.v2"
 
+	apitesting "github.com/juju/juju/api/testing"
 	facademocks "github.com/juju/juju/apiserver/facade/mocks"
 	"github.com/juju/juju/apiserver/facades/agent/secretsmanager"
 	"github.com/juju/juju/apiserver/facades/agent/secretsmanager/mocks"
@@ -80,7 +82,11 @@ func (s *SecretsManagerSuite) setup(c *gc.C) *gomock.Controller {
 
 	s.clock = testclock.NewClock(time.Now())
 
-	backendConfigGetter := func(backendIds []string) (*provider.ModelBackendConfigInfo, error) {
+	backendConfigGetter := func(backendIds []string, wantAll bool) (*provider.ModelBackendConfigInfo, error) {
+		// wantAll is for 3.1 compatibility only.
+		if wantAll {
+			return nil, errors.NotSupportedf("wantAll")
+		}
 		return &provider.ModelBackendConfigInfo{
 			ActiveID: "backend-id",
 			Configs: map[string]provider.ModelBackendConfig{
@@ -151,10 +157,10 @@ func ptr[T any](v T) *T {
 	return &v
 }
 
-func (s *SecretsManagerSuite) TestGetSecretBackendConfig(c *gc.C) {
+func (s *SecretsManagerSuite) TestGetSecretBackendConfigs(c *gc.C) {
 	defer s.setup(c).Finish()
 
-	result, err := s.facade.GetSecretBackendConfig(params.SecretBackendArgs{
+	result, err := s.facade.GetSecretBackendConfigs(params.SecretBackendArgs{
 		BackendIDs: []string{"backend-id"},
 	})
 	c.Assert(err, jc.ErrorIsNil)
@@ -469,7 +475,7 @@ func (s *SecretsManagerSuite) TestRemoveSecretRevision(c *gc.C) {
 	})
 }
 
-func (s *SecretsManagerSuite) TestGetConsumerSecretsRevisionInfo(c *gc.C) {
+func (s *SecretsManagerSuite) TestGetConsumerSecretsRevisionInfoHavingConsumerLabel(c *gc.C) {
 	defer s.setup(c).Finish()
 
 	s.expectSecretAccessQuery(1)
@@ -488,6 +494,86 @@ func (s *SecretsManagerSuite) TestGetConsumerSecretsRevisionInfo(c *gc.C) {
 	c.Assert(results, jc.DeepEquals, params.SecretConsumerInfoResults{
 		Results: []params.SecretConsumerInfoResult{{
 			Label:    "label",
+			Revision: 666,
+		}},
+	})
+}
+
+func (s *SecretsManagerSuite) TestGetConsumerRemoteSecretsRevisionInfo(c *gc.C) {
+	defer s.setup(c).Finish()
+
+	uri := coresecrets.NewURI().WithSource("deadbeef-1bad-500d-9000-4b1d0d06f00d")
+	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, names.NewApplicationTag("mariadb")).Return(
+		&coresecrets.SecretConsumerMetadata{
+			LatestRevision: 666,
+			Label:          "label",
+		}, nil)
+
+	results, err := s.facade.GetConsumerSecretsRevisionInfo(params.GetSecretConsumerInfoArgs{
+		ConsumerTag: "application-mariadb",
+		URIs:        []string{uri.String()},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(results, jc.DeepEquals, params.SecretConsumerInfoResults{
+		Results: []params.SecretConsumerInfoResult{{
+			Label:    "label",
+			Revision: 666,
+		}},
+	})
+}
+
+func (s *SecretsManagerSuite) TestGetConsumerSecretsRevisionInfoHavingNoConsumerLabel(c *gc.C) {
+	defer s.setup(c).Finish()
+
+	s.expectSecretAccessQuery(1)
+	uri := coresecrets.NewURI()
+	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, names.NewApplicationTag("mariadb")).Return(
+		&coresecrets.SecretConsumerMetadata{
+			LatestRevision: 666,
+		}, nil)
+	s.secretsState.EXPECT().ListSecrets(
+		state.SecretsFilter{
+			OwnerTags: []names.Tag{names.NewUnitTag("mariadb/0"), names.NewApplicationTag("mariadb")},
+		}).Return(nil, nil)
+
+	results, err := s.facade.GetConsumerSecretsRevisionInfo(params.GetSecretConsumerInfoArgs{
+		ConsumerTag: "application-mariadb",
+		URIs:        []string{uri.String()},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(results, jc.DeepEquals, params.SecretConsumerInfoResults{
+		Results: []params.SecretConsumerInfoResult{{
+			Revision: 666,
+		}},
+	})
+}
+
+func (s *SecretsManagerSuite) TestGetConsumerSecretsRevisionInfoForPeerUnitsAccessingAppOwnedSecrets(c *gc.C) {
+	defer s.setup(c).Finish()
+
+	s.expectSecretAccessQuery(1)
+	uri := coresecrets.NewURI()
+	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, names.NewApplicationTag("mariadb")).Return(
+		&coresecrets.SecretConsumerMetadata{
+			LatestRevision: 666,
+		}, nil)
+	s.secretsState.EXPECT().ListSecrets(
+		state.SecretsFilter{
+			OwnerTags: []names.Tag{names.NewUnitTag("mariadb/0"), names.NewApplicationTag("mariadb")},
+		}).Return([]*coresecrets.SecretMetadata{{
+		URI:      uri,
+		OwnerTag: "application-mariadb",
+		Label:    "owner-label",
+	}}, nil)
+
+	results, err := s.facade.GetConsumerSecretsRevisionInfo(params.GetSecretConsumerInfoArgs{
+		ConsumerTag: "application-mariadb",
+		URIs:        []string{uri.String()},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(results, jc.DeepEquals, params.SecretConsumerInfoResults{
+		Results: []params.SecretConsumerInfoResult{{
+			Label:    "owner-label",
 			Revision: 666,
 		}},
 	})
@@ -863,14 +949,14 @@ func (s *SecretsManagerSuite) TestGetSecretContentConsumerUpdateArg(c *gc.C) {
 
 	s.expectgetAppOwnedOrUnitOwnedSecretMetadataNotFound()
 	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, names.NewUnitTag("mariadb/0")).Return(
-		&coresecrets.SecretConsumerMetadata{CurrentRevision: 666, LatestRevision: 666}, nil,
+		&coresecrets.SecretConsumerMetadata{CurrentRevision: 666, LatestRevision: 668}, nil,
 	)
 	s.secretsState.EXPECT().GetSecret(uri).Return(&coresecrets.SecretMetadata{LatestRevision: 668}, nil)
 	s.secretsConsumer.EXPECT().SaveSecretConsumer(
 		uri, names.NewUnitTag("mariadb/0"), &coresecrets.SecretConsumerMetadata{
 			Label:           "label",
 			CurrentRevision: 668,
-			LatestRevision:  666,
+			LatestRevision:  668,
 		}).Return(nil)
 
 	s.secretsState.EXPECT().GetSecretValue(uri, 668).Return(
@@ -900,7 +986,7 @@ func (s *SecretsManagerSuite) TestGetSecretContentConsumerPeekArg(c *gc.C) {
 
 	s.expectgetAppOwnedOrUnitOwnedSecretMetadataNotFound()
 	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, names.NewUnitTag("mariadb/0")).Return(
-		&coresecrets.SecretConsumerMetadata{CurrentRevision: 666, LatestRevision: 666}, nil,
+		&coresecrets.SecretConsumerMetadata{CurrentRevision: 666, LatestRevision: 668}, nil,
 	)
 	s.secretsState.EXPECT().GetSecret(uri).Return(&coresecrets.SecretMetadata{LatestRevision: 668}, nil)
 	s.secretsState.EXPECT().GetSecretValue(uri, 668).Return(
@@ -928,6 +1014,8 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerNoRe
 	uri := coresecrets.NewURI().WithSource(anotherUUID)
 
 	consumer := names.NewUnitTag("mariadb/0")
+	scopeTag := names.NewRelationTag("foo:bar baz:bar")
+	mac := apitesting.MustNewMacaroon("id")
 
 	s.remoteClient = mocks.NewMockCrossModelSecretsClient(ctrl)
 
@@ -935,7 +1023,12 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerNoRe
 	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, consumer).Return(&coresecrets.SecretConsumerMetadata{
 		CurrentRevision: 665,
 	}, nil)
-	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 665, false, "token", 0).Return(
+
+	s.remoteClient.EXPECT().GetSecretAccessScope(uri, "token", 0).Return("scope-token", nil)
+	s.crossModelState.EXPECT().GetRemoteEntity("scope-token").Return(scopeTag, nil)
+	s.crossModelState.EXPECT().GetMacaroon(scopeTag).Return(mac, nil)
+
+	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 665, false, false, "token", 0, macaroon.Slice{mac}).Return(
 		&secrets.ContentParams{
 			ValueRef: &coresecrets.ValueRef{
 				BackendID:  "backend-id",
@@ -987,6 +1080,8 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerNoRe
 	uri := coresecrets.NewURI().WithSource(anotherUUID)
 
 	consumer := names.NewUnitTag("mariadb/0")
+	scopeTag := names.NewRelationTag("foo:bar baz:bar")
+	mac := apitesting.MustNewMacaroon("id")
 
 	s.remoteClient = mocks.NewMockCrossModelSecretsClient(ctrl)
 
@@ -994,7 +1089,12 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerNoRe
 	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, consumer).Return(&coresecrets.SecretConsumerMetadata{
 		CurrentRevision: 665,
 	}, nil)
-	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 665, false, "token", 0).Return(
+
+	s.remoteClient.EXPECT().GetSecretAccessScope(uri, "token", 0).Return("scope-token", nil)
+	s.crossModelState.EXPECT().GetRemoteEntity("scope-token").Return(scopeTag, nil)
+	s.crossModelState.EXPECT().GetMacaroon(scopeTag).Return(mac, nil)
+
+	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 665, false, false, "token", 0, macaroon.Slice{mac}).Return(
 		&secrets.ContentParams{
 			ValueRef: &coresecrets.ValueRef{
 				BackendID:  "backend-id",
@@ -1012,8 +1112,7 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerNoRe
 
 	s.secretsConsumer.EXPECT().SaveSecretConsumer(uri, consumer, &coresecrets.SecretConsumerMetadata{
 		Label:           "foo",
-		LatestRevision:  666,
-		CurrentRevision: 666,
+		CurrentRevision: 665,
 	})
 
 	results, err := s.facade.GetSecretContentInfo(params.GetSecretContentArgs{
@@ -1052,6 +1151,8 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerRefr
 	uri := coresecrets.NewURI().WithSource(anotherUUID)
 
 	consumer := names.NewUnitTag("mariadb/0")
+	scopeTag := names.NewRelationTag("foo:bar baz:bar")
+	mac := apitesting.MustNewMacaroon("id")
 
 	s.remoteClient = mocks.NewMockCrossModelSecretsClient(ctrl)
 
@@ -1059,7 +1160,12 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelExistingConsumerRefr
 	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, consumer).Return(&coresecrets.SecretConsumerMetadata{
 		CurrentRevision: 665,
 	}, nil)
-	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 665, true, "token", 0).Return(
+
+	s.remoteClient.EXPECT().GetSecretAccessScope(uri, "token", 0).Return("scope-token", nil)
+	s.crossModelState.EXPECT().GetRemoteEntity("scope-token").Return(scopeTag, nil)
+	s.crossModelState.EXPECT().GetMacaroon(scopeTag).Return(mac, nil)
+
+	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 665, true, false, "token", 0, macaroon.Slice{mac}).Return(
 		&secrets.ContentParams{
 			ValueRef: &coresecrets.ValueRef{
 				BackendID:  "backend-id",
@@ -1116,12 +1222,19 @@ func (s *SecretsManagerSuite) TestGetSecretContentCrossModelNewConsumer(c *gc.C)
 	uri := coresecrets.NewURI().WithSource(anotherUUID)
 
 	consumer := names.NewUnitTag("mariadb/0")
+	scopeTag := names.NewRelationTag("foo:bar baz:bar")
+	mac := apitesting.MustNewMacaroon("id")
 
 	s.remoteClient = mocks.NewMockCrossModelSecretsClient(ctrl)
 
 	s.crossModelState.EXPECT().GetToken(names.NewApplicationTag("mariadb")).Return("token", nil)
 	s.secretsConsumer.EXPECT().GetSecretConsumer(uri, consumer).Return(nil, errors.NotFoundf(""))
-	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 0, true, "token", 0).Return(
+
+	s.remoteClient.EXPECT().GetSecretAccessScope(uri, "token", 0).Return("scope-token", nil)
+	s.crossModelState.EXPECT().GetRemoteEntity("scope-token").Return(scopeTag, nil)
+	s.crossModelState.EXPECT().GetMacaroon(scopeTag).Return(mac, nil)
+
+	s.remoteClient.EXPECT().GetRemoteSecretContentInfo(uri, 0, true, false, "token", 0, macaroon.Slice{mac}).Return(
 		&secrets.ContentParams{
 			ValueRef: &coresecrets.ValueRef{
 				BackendID:  "backend-id",

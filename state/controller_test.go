@@ -47,6 +47,7 @@ func (s *ControllerSuite) TestControllerAndModelConfigInitialisation(c *gc.C) {
 		controller.Features,
 		controller.IdentityURL,
 		controller.IdentityPublicKey,
+		controller.LoginTokenRefreshURL,
 		controller.JujuDBSnapChannel,
 		controller.JujuHASpace,
 		controller.JujuManagementSpace,
@@ -67,6 +68,8 @@ func (s *ControllerSuite) TestControllerAndModelConfigInitialisation(c *gc.C) {
 		controller.AgentLogfileMaxSize,
 		controller.ControllerResourceDownloadLimit,
 		controller.ApplicationResourceDownloadLimit,
+		controller.QueryTracingEnabled,
+		controller.QueryTracingThreshold,
 	)
 	for _, controllerAttr := range controller.ControllerOnlyConfigAttributes {
 		v, ok := controllerSettings.Get(controllerAttr)

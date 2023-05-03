@@ -4,6 +4,7 @@
 package featuretests
 
 import (
+	"context"
 	"time"
 
 	"github.com/juju/cmd/v3/cmdtesting"
@@ -28,6 +29,7 @@ import (
 	"github.com/juju/juju/cmd/jujud/agent/agenttest"
 	"github.com/juju/juju/controller"
 	corelogger "github.com/juju/juju/core/logger"
+	"github.com/juju/juju/database"
 	"github.com/juju/juju/state"
 	coretesting "github.com/juju/juju/testing"
 	"github.com/juju/juju/testing/factory"
@@ -71,14 +73,23 @@ func (s *dblogSuite) TestControllerAgentLogsGoToDBCAAS(c *gc.C) {
 	// Ensure controller config matches agent config so the agent worker
 	// does not exist with ErrRestartAgent.
 	err = s.State.UpdateControllerConfig(map[string]interface{}{
-		controller.MongoMemoryProfile: controller.MongoProfLow}, nil)
+		controller.MongoMemoryProfile:    controller.MongoProfLow,
+		controller.QueryTracingEnabled:   controller.DefaultQueryTracingEnabled,
+		controller.QueryTracingThreshold: controller.DefaultQueryTracingThreshold.String(),
+	}, nil)
 	c.Assert(err, jc.ErrorIsNil)
 	vers := version.Binary{
 		Number:  jujuversion.Current,
 		Arch:    arch.HostArch(),
 		Release: "kubernetes",
 	}
-	s.PrimeAgentVersion(c, node.Tag(), password, vers)
+
+	cfg, _ := s.PrimeAgentVersion(c, node.Tag(), password, vers)
+
+	logger := loggo.GetLogger("juju.featuretests")
+	err = database.BootstrapDqlite(context.TODO(), database.NewNodeManager(cfg, logger), logger, s.InitialDBOps...)
+	c.Assert(err, jc.ErrorIsNil)
+
 	s.assertAgentLogsGoToDB(c, node.Tag(), true)
 }
 
