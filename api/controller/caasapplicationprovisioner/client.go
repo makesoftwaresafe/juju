@@ -4,6 +4,8 @@
 package caasapplicationprovisioner
 
 import (
+	"fmt"
+
 	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
@@ -13,10 +15,12 @@ import (
 	"github.com/juju/juju/api/common"
 	charmscommon "github.com/juju/juju/api/common/charms"
 	apiwatcher "github.com/juju/juju/api/watcher"
+	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/resources"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/docker"
@@ -115,6 +119,30 @@ func (c *Client) Life(entityName string) (life.Value, error) {
 	return results.Results[0].Life, nil
 }
 
+func (c *Client) WatchProvisioningInfo(applicationName string) (watcher.NotifyWatcher, error) {
+	args := params.Entities{
+		Entities: []params.Entity{
+			{Tag: names.NewApplicationTag(applicationName).String()},
+		},
+	}
+	var results params.NotifyWatchResults
+
+	if err := c.facade.FacadeCall("WatchProvisioningInfo", args, &results); err != nil {
+		return nil, err
+	}
+
+	if len(results.Results) != 1 {
+		return nil, fmt.Errorf("expected 1 result when watching provisioning info for application %q", applicationName)
+	}
+
+	result := results.Results[0]
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	return apiwatcher.NewNotifyWatcher(c.facade.RawAPICaller(), result), nil
+}
+
 // ProvisioningInfo holds the info needed to provision an operator.
 type ProvisioningInfo struct {
 	Version              version.Number
@@ -124,7 +152,7 @@ type ProvisioningInfo struct {
 	Constraints          constraints.Value
 	Filesystems          []storage.KubernetesFilesystemParams
 	Devices              []devices.KubernetesDeviceParams
-	Series               string
+	Base                 series.Base
 	ImageDetails         resources.DockerImageDetails
 	CharmModifiedVersion int
 	CharmURL             *charm.URL
@@ -151,13 +179,17 @@ func (c *Client) ProvisioningInfo(applicationName string) (ProvisioningInfo, err
 		return ProvisioningInfo{}, errors.Trace(maybeNotFound(err))
 	}
 
+	base, err := series.ParseBase(r.Base.Name, r.Base.Channel)
+	if err != nil {
+		return ProvisioningInfo{}, errors.Trace(err)
+	}
 	info := ProvisioningInfo{
 		Version:              r.Version,
 		APIAddresses:         r.APIAddresses,
 		CACert:               r.CACert,
 		Tags:                 r.Tags,
 		Constraints:          r.Constraints,
-		Series:               r.Series,
+		Base:                 base,
 		ImageDetails:         params.ConvertDockerImageInfo(r.ImageRepo),
 		CharmModifiedVersion: r.CharmModifiedVersion,
 		Trust:                r.Trust,
@@ -261,32 +293,6 @@ func (c *Client) Units(appName string) ([]params.CAASUnit, error) {
 		}
 	}
 	return out, nil
-}
-
-// GarbageCollect cleans up units that have gone away permanently.
-// Only observed units will be deleted as new units could have surfaced between
-// the capturing of kubernetes pod state/application state and this call.
-func (c *Client) GarbageCollect(
-	appName string, observedUnits []names.Tag, desiredReplicas int, activePodNames []string, force bool) error {
-	var result params.ErrorResults
-	observedEntities := params.Entities{
-		Entities: make([]params.Entity, len(observedUnits)),
-	}
-	for i, v := range observedUnits {
-		observedEntities.Entities[i].Tag = v.String()
-	}
-	args := params.CAASApplicationGarbageCollectArgs{Args: []params.CAASApplicationGarbageCollectArg{{
-		Application:     params.Entity{Tag: names.NewApplicationTag(appName).String()},
-		ObservedUnits:   observedEntities,
-		DesiredReplicas: desiredReplicas,
-		ActivePodNames:  activePodNames,
-		Force:           force,
-	}}}
-	err := c.facade.FacadeCall("CAASApplicationGarbageCollect", args, &result)
-	if err != nil {
-		return err
-	}
-	return result.OneError()
 }
 
 // ApplicationOCIResources returns all the OCI image resources for an application.
@@ -410,4 +416,69 @@ func (c *Client) RemoveUnit(unitName string) error {
 		return nil
 	}
 	return resultErr
+}
+
+// DestroyUnits is responsible for starting the process of destroying units
+// associated with this application.
+func (c *Client) DestroyUnits(unitNames []string) error {
+	args := params.DestroyUnitsParams{}
+	args.Units = make([]params.DestroyUnitParams, 0, len(unitNames))
+
+	fmt.Println(unitNames)
+	for _, unitName := range unitNames {
+		tag := names.NewUnitTag(unitName)
+		args.Units = append(args.Units, params.DestroyUnitParams{
+			UnitTag: tag.String(),
+		})
+	}
+	result := params.DestroyUnitResults{}
+
+	err := c.facade.FacadeCall("DestroyUnits", args, &result)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if len(result.Results) != len(unitNames) {
+		return fmt.Errorf("expected %d results got %d", len(unitNames), len(result.Results))
+	}
+
+	for _, res := range result.Results {
+		if res.Error != nil {
+			return errors.Trace(apiservererrors.RestoreError(res.Error))
+		}
+	}
+
+	return nil
+}
+
+// ProvisioningState returns the current provisioning state for the CAAS application.
+// The result can be nil.
+func (c *Client) ProvisioningState(appName string) (*params.CAASApplicationProvisioningState, error) {
+	var result params.CAASApplicationProvisioningStateResult
+	args := params.Entity{Tag: names.NewApplicationTag(appName).String()}
+	err := c.facade.FacadeCall("ProvisioningState", args, &result)
+	if err != nil {
+		return nil, err
+	}
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return result.ProvisioningState, nil
+}
+
+// SetProvisioningState sets the provisioning state for the CAAS application.
+func (c *Client) SetProvisioningState(appName string, state params.CAASApplicationProvisioningState) error {
+	var result params.ErrorResult
+	args := params.CAASApplicationProvisioningStateArg{
+		Application:       params.Entity{Tag: names.NewApplicationTag(appName).String()},
+		ProvisioningState: state,
+	}
+	err := c.facade.FacadeCall("SetProvisioningState", args, &result)
+	if err != nil {
+		return err
+	}
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
 }

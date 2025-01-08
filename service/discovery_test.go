@@ -12,7 +12,6 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/juju/featureflag"
-	"github.com/juju/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3/exec"
 	"github.com/juju/version/v2"
@@ -26,6 +25,7 @@ import (
 	"github.com/juju/juju/service/systemd"
 	"github.com/juju/juju/service/upstart"
 	"github.com/juju/juju/service/windows"
+	"github.com/juju/juju/testing"
 )
 
 var maybeSystemd = service.InitSystemSystemd
@@ -98,7 +98,7 @@ func (dt discoveryTest) checkService(c *gc.C, svc service.Service, err error, na
 
 func (dt discoveryTest) checkInitSystem(c *gc.C, name string, err error) {
 	if dt.expected == "" {
-		if !c.Check(err, jc.Satisfies, errors.IsNotFound) {
+		if !c.Check(errors.Is(err, errors.NotFound), jc.IsTrue) {
 			c.Logf("found init system %q", name)
 		}
 	} else {

@@ -6,9 +6,9 @@ package agentbootstrap_test
 import (
 	stdcontext "context"
 	"io/ioutil"
-	"net"
 	"path/filepath"
 
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -43,7 +43,7 @@ import (
 
 type bootstrapSuite struct {
 	testing.BaseSuite
-	mgoInst gitjujutesting.MgoInstance
+	mgoInst mgotesting.MgoInstance
 }
 
 var _ = gc.Suite(&bootstrapSuite{})
@@ -76,18 +76,16 @@ LXC_BRIDGE="ignored"`[1:])
 	err := ioutil.WriteFile(lxcFakeNetConfig, netConf, 0644)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(err, jc.ErrorIsNil)
-	s.PatchValue(&network.InterfaceByNameAddrs, func(name string) ([]net.Addr, error) {
+	s.PatchValue(&network.AddressesForInterfaceName, func(name string) ([]string, error) {
 		if name == "foobar" {
-			// The addresses on the LXC bridge
-			return []net.Addr{
-				&net.IPAddr{IP: net.IPv4(10, 0, 3, 1)},
-				&net.IPAddr{IP: net.IPv4(10, 0, 3, 4)},
+			return []string{
+				"10.0.3.1",
+				"10.0.3.4",
 			}, nil
 		} else if name == network.DefaultLXDBridge {
-			// The addresses on the LXD bridge
-			return []net.Addr{
-				&net.IPAddr{IP: net.IPv4(10, 0, 4, 1)},
-				&net.IPAddr{IP: net.IPv4(10, 0, 4, 4)},
+			return []string{
+				"10.0.4.1",
+				"10.0.4.4",
 			}, nil
 		} else if name == network.DefaultKVMBridge {
 			// claim we don't have a virbr0 bridge

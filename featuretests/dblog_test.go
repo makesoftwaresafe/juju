@@ -9,8 +9,8 @@ import (
 	"github.com/juju/cmd/v3/cmdtesting"
 	"github.com/juju/loggo"
 	"github.com/juju/mgo/v2/bson"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
-	jujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
 	"github.com/juju/utils/v3/arch"
@@ -18,7 +18,6 @@ import (
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/agent"
-	"github.com/juju/juju/agent/addons"
 	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/common"
 	"github.com/juju/juju/caas/kubernetes/provider"
@@ -93,6 +92,10 @@ func (s *dblogSuite) TestMachineAgentLogsGoToDBIAAS(c *gc.C) {
 	s.assertAgentLogsGoToDB(c, m.Tag(), false)
 }
 
+func noPreUpgradeSteps(_ *state.StatePool, _ agent.Config, isController, isCaas bool) error {
+	return nil
+}
+
 func (s *dblogSuite) assertAgentLogsGoToDB(c *gc.C, tag names.Tag, isCaas bool) {
 	aCfg := agentconf.NewAgentConf(s.DataDir())
 	err := aCfg.ReadConfig(tag.String())
@@ -102,7 +105,6 @@ func (s *dblogSuite) assertAgentLogsGoToDB(c *gc.C, tag names.Tag, isCaas bool) 
 	machineAgentFactory := agentcmd.MachineAgentFactoryFn(
 		aCfg,
 		logger,
-		addons.DefaultIntrospectionSocketName,
 		noPreUpgradeSteps,
 		c.MkDir(),
 	)
@@ -149,12 +151,12 @@ type debugLogDbSuite struct {
 }
 
 func (s *debugLogDbSuite) SetUpSuite(c *gc.C) {
-	jujutesting.MgoServer.Restart()
+	mgotesting.MgoServer.Restart()
 	s.AgentSuite.SetUpSuite(c)
 }
 
 func (s *debugLogDbSuite) TearDownSuite(c *gc.C) {
-	jujutesting.MgoServer.Restart()
+	mgotesting.MgoServer.Restart()
 	s.AgentSuite.TearDownSuite(c)
 }
 
@@ -193,7 +195,7 @@ func (s *debugLogDbSuite1) TestLogsAPI(c *gc.C) {
 
 	messages := make(chan common.LogMessage)
 	go func(numMessages int) {
-		client := apiclient.NewClient(s.APIState)
+		client := apiclient.NewClient(s.APIState, coretesting.NoopLogger{})
 		logMessages, err := client.WatchDebugLog(common.DebugLogParams{})
 		c.Assert(err, jc.ErrorIsNil)
 
@@ -302,7 +304,7 @@ func (s *debugLogDbSuite2) TestLogsUsesStartTime(c *gc.C) {
 	}})
 	c.Assert(err, jc.ErrorIsNil)
 
-	client := apiclient.NewClient(s.APIState)
+	client := apiclient.NewClient(s.APIState, coretesting.NoopLogger{})
 	logMessages, err := client.WatchDebugLog(common.DebugLogParams{
 		StartTime: t3,
 	})

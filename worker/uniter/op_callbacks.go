@@ -63,7 +63,9 @@ func (opc *operationCallbacks) PrepareHook(hi hook.Info) (string, error) {
 func (opc *operationCallbacks) CommitHook(hi hook.Info) error {
 	switch {
 	case hi.Kind == hooks.Start:
-		opc.u.Probe.SetHasStarted()
+		opc.u.Probe.SetHasStarted(true)
+	case hi.Kind == hooks.Stop:
+		opc.u.Probe.SetHasStarted(false)
 	case hi.Kind.IsWorkload():
 	case hi.Kind.IsRelation():
 		return opc.u.relationStateTracker.CommitHook(hi)
@@ -123,7 +125,11 @@ func (opc *operationCallbacks) ActionStatus(actionId string) (string, error) {
 }
 
 // GetArchiveInfo is part of the operation.Callbacks interface.
-func (opc *operationCallbacks) GetArchiveInfo(charmURL *corecharm.URL) (charm.BundleInfo, error) {
+func (opc *operationCallbacks) GetArchiveInfo(url string) (charm.BundleInfo, error) {
+	charmURL, err := corecharm.ParseURL(url)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	ch, err := opc.u.st.Charm(charmURL)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -132,7 +138,7 @@ func (opc *operationCallbacks) GetArchiveInfo(charmURL *corecharm.URL) (charm.Bu
 }
 
 // SetCurrentCharm is part of the operation.Callbacks interface.
-func (opc *operationCallbacks) SetCurrentCharm(charmURL *corecharm.URL) error {
+func (opc *operationCallbacks) SetCurrentCharm(charmURL string) error {
 	return opc.u.unit.SetCharmURL(charmURL)
 }
 

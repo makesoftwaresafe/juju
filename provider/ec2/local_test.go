@@ -37,6 +37,7 @@ import (
 	"github.com/juju/juju/core/network"
 	corenetwork "github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/network/firewall"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
@@ -88,7 +89,6 @@ type localServer struct {
 
 	defaultVPC *types.Vpc
 	zones      []types.AvailabilityZone
-	subnets    []types.Subnet
 }
 
 func (srv *localServer) startServer(c *gc.C) {
@@ -417,7 +417,7 @@ func (t *localServerSuite) TestSystemdBootstrapInstanceUserDataAndState(c *gc.C)
 	c.Assert(userDataMap["runcmd"], jc.DeepEquals, []interface{}{
 		"set -xe",
 		"install -D -m 644 /dev/null '/var/lib/juju/nonce.txt'",
-		"printf '%s\\n' 'user-admin:bootstrap' > '/var/lib/juju/nonce.txt'",
+		"echo 'user-admin:bootstrap' > '/var/lib/juju/nonce.txt'",
 	})
 
 	// check that a new instance will be started with a machine agent
@@ -494,9 +494,9 @@ func (t *localServerSuite) TestUpstartBootstrapInstanceUserDataAndState(c *gc.C)
 	c.Assert(userDataMap["runcmd"], jc.DeepEquals, []interface{}{
 		"set -xe",
 		"install -D -m 644 /dev/null '/etc/init/juju-clean-shutdown.conf'",
-		"printf '%s\\n' '\nauthor \"Juju Team <juju@lists.ubuntu.com>\"\ndescription \"Stop all network interfaces on shutdown\"\nstart on runlevel [016]\ntask\nconsole output\n\nexec /sbin/ifdown -a -v --force\n' > '/etc/init/juju-clean-shutdown.conf'",
+		"echo '\nauthor \"Juju Team <juju@lists.ubuntu.com>\"\ndescription \"Stop all network interfaces on shutdown\"\nstart on runlevel [016]\ntask\nconsole output\n\nexec /sbin/ifdown -a -v --force\n' > '/etc/init/juju-clean-shutdown.conf'",
 		"install -D -m 644 /dev/null '/var/lib/juju/nonce.txt'",
-		"printf '%s\\n' 'user-admin:bootstrap' > '/var/lib/juju/nonce.txt'",
+		"echo 'user-admin:bootstrap' > '/var/lib/juju/nonce.txt'",
 	})
 
 	// check that a new instance will be started with a machine agent
@@ -810,7 +810,7 @@ func (t *localServerSuite) TestStartInstanceAvailZoneImpaired(c *gc.C) {
 
 func (t *localServerSuite) TestStartInstanceAvailZoneUnknown(c *gc.C) {
 	_, err := t.testStartInstanceAvailZone(c, "test-unknown")
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 	c.Assert(errors.Details(err), gc.Matches, `.*availability zone \"\" not valid.*`)
 }
 
@@ -890,26 +890,26 @@ func (t *localServerSuite) TestStartInstanceZoneIndependent(c *gc.C) {
 	c.Assert(err, gc.ErrorMatches, "unknown placement directive: nonsense")
 	// The returned error should indicate that it is independent
 	// of the availability zone specified.
-	c.Assert(err, jc.Satisfies, environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsTrue)
 }
 
 func (t *localServerSuite) TestStartInstanceSubnet(c *gc.C) {
-	inst, err := t.testStartInstanceSubnet(c, "0.1.2.0/24")
+	inst, err := t.testStartInstanceSubnet(c, "10.1.2.0/24")
 	c.Assert(err, jc.ErrorIsNil)
 	ec2Inst := ec2.InstanceSDKEC2(inst)
 	c.Assert(aws.ToString(ec2Inst.Placement.AvailabilityZone), gc.Equals, "test-available")
 }
 
 func (t *localServerSuite) TestStartInstanceSubnetUnavailable(c *gc.C) {
-	// See addTestingSubnets, 0.1.3.0/24 is in state "unavailable", but is in
+	// See addTestingSubnets, 10.1.3.0/24 is in state "unavailable", but is in
 	// an AZ that would otherwise be available
-	_, err := t.testStartInstanceSubnet(c, "0.1.3.0/24")
-	c.Assert(err, gc.ErrorMatches, `subnet "0.1.3.0/24" is "unavailable"`)
+	_, err := t.testStartInstanceSubnet(c, "10.1.3.0/24")
+	c.Assert(err, gc.ErrorMatches, `subnet "10.1.3.0/24" is "unavailable"`)
 }
 
 func (t *localServerSuite) TestStartInstanceSubnetAZUnavailable(c *gc.C) {
-	// See addTestingSubnets, 0.1.4.0/24 is in an AZ that is unavailable
-	_, err := t.testStartInstanceSubnet(c, "0.1.4.0/24")
+	// See addTestingSubnets, 10.1.4.0/24 is in an AZ that is unavailable
+	_, err := t.testStartInstanceSubnet(c, "10.1.4.0/24")
 	c.Assert(err, gc.ErrorMatches, `availability zone "test-unavailable" is "unavailable"`)
 }
 
@@ -947,7 +947,7 @@ func (t *localServerSuite) TestDeriveAvailabilityZoneSubnetWrongVPC(c *gc.C) {
 	env := t.prepareAndBootstrapWithConfig(c, coretesting.Attrs{"vpc-id": "vpc-0", "vpc-id-force": true})
 	params := environs.StartInstanceParams{
 		ControllerUUID: t.ControllerUUID,
-		Placement:      "subnet=0.1.2.0/24",
+		Placement:      "subnet=10.1.2.0/24",
 		SubnetsToZones: []map[corenetwork.Id][]string{{
 			subIDs[0]: {"test-available"},
 			subIDs[1]: {"test-available"},
@@ -956,7 +956,7 @@ func (t *localServerSuite) TestDeriveAvailabilityZoneSubnetWrongVPC(c *gc.C) {
 	}
 	zonedEnviron := env.(common.ZonedEnviron)
 	_, err := zonedEnviron.DeriveAvailabilityZones(t.callCtx, params)
-	c.Assert(err, gc.ErrorMatches, `unknown placement directive: subnet=0.1.2.0/24`)
+	c.Assert(err, gc.ErrorMatches, `unknown placement directive: subnet=10.1.2.0/24`)
 }
 
 func (t *localServerSuite) TestGetAvailabilityZones(c *gc.C) {
@@ -1155,10 +1155,41 @@ func (t *localServerSuite) testStartInstanceAvailZoneAllConstrained(c *gc.C, run
 
 	_, err := testing.StartInstanceWithParams(env, t.callCtx, "1", params)
 	// All AZConstrained failures should return an error that does
-	// *not* satisfy environs.IsAvailabilityZoneIndependent,
+	// Is(err, environs.ErrAvailabilityZoneIndependent)
 	// so the caller knows to try a new zone, rather than fail.
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 	c.Assert(errors.Details(err), jc.Contains, runInstancesError.ErrorMessage())
+}
+
+// addTestingNetworkInterface adds one network interface with vpc id and
+// availability zone. It will also have a private IP with no
+func (t *localServerSuite) addTestingNetworkInterfaceToInstance(c *gc.C, instId instance.Id) ([]instance.Id, string) {
+	vpc := t.srv.ec2srv.AddVpc(types.Vpc{
+		CidrBlock: aws.String("10.1.0.0/16"),
+		IsDefault: aws.Bool(true),
+	})
+	sub, err := t.srv.ec2srv.AddSubnet(types.Subnet{
+		VpcId:            vpc.VpcId,
+		CidrBlock:        aws.String("10.1.2.0/24"),
+		AvailabilityZone: aws.String("test-available"),
+		State:            "available",
+		DefaultForAz:     aws.Bool(true),
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	results := make([]instance.Id, 1)
+	iface1, err := t.srv.ec2srv.AddNetworkInterface(types.NetworkInterface{
+		VpcId:              vpc.VpcId,
+		AvailabilityZone:   aws.String("test-available"),
+		PrivateIpAddresses: []types.NetworkInterfacePrivateIpAddress{{}},
+		Attachment: &types.NetworkInterfaceAttachment{
+			DeviceIndex: aws.Int32(-1),
+			InstanceId:  aws.String(string(instId)),
+		},
+		SubnetId: sub.SubnetId,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	results[0] = instance.Id(aws.ToString(iface1.NetworkInterfaceId))
+	return results, aws.ToString(vpc.VpcId)
 }
 
 // addTestingSubnets adds a testing default VPC with 3 subnets in the EC2 test
@@ -1167,13 +1198,13 @@ func (t *localServerSuite) testStartInstanceAvailZoneAllConstrained(c *gc.C, run
 // vpc id that those were added to
 func (t *localServerSuite) addTestingSubnets(c *gc.C) ([]corenetwork.Id, string) {
 	vpc := t.srv.ec2srv.AddVpc(types.Vpc{
-		CidrBlock: aws.String("0.1.0.0/16"),
+		CidrBlock: aws.String("10.1.0.0/16"),
 		IsDefault: aws.Bool(true),
 	})
 	results := make([]corenetwork.Id, 3)
 	sub1, err := t.srv.ec2srv.AddSubnet(types.Subnet{
 		VpcId:            vpc.VpcId,
-		CidrBlock:        aws.String("0.1.2.0/24"),
+		CidrBlock:        aws.String("10.1.2.0/24"),
 		AvailabilityZone: aws.String("test-available"),
 		State:            "available",
 		DefaultForAz:     aws.Bool(true),
@@ -1182,7 +1213,7 @@ func (t *localServerSuite) addTestingSubnets(c *gc.C) ([]corenetwork.Id, string)
 	results[0] = corenetwork.Id(aws.ToString(sub1.SubnetId))
 	sub2, err := t.srv.ec2srv.AddSubnet(types.Subnet{
 		VpcId:            vpc.VpcId,
-		CidrBlock:        aws.String("0.1.3.0/24"),
+		CidrBlock:        aws.String("10.1.3.0/24"),
 		AvailabilityZone: aws.String("test-available"),
 		State:            "unavailable",
 	})
@@ -1190,7 +1221,7 @@ func (t *localServerSuite) addTestingSubnets(c *gc.C) ([]corenetwork.Id, string)
 	results[1] = corenetwork.Id(aws.ToString(sub2.SubnetId))
 	sub3, err := t.srv.ec2srv.AddSubnet(types.Subnet{
 		VpcId:            vpc.VpcId,
-		CidrBlock:        aws.String("0.1.4.0/24"),
+		CidrBlock:        aws.String("10.1.4.0/24"),
 		AvailabilityZone: aws.String("test-unavailable"),
 		DefaultForAz:     aws.Bool(true),
 		State:            "unavailable",
@@ -1247,7 +1278,7 @@ func (t *localServerSuite) TestSpaceConstraintsSpaceNotInPlacementZone(c *gc.C) 
 		StatusCallback: fakeCallback,
 	}
 	_, err := testing.StartInstanceWithParams(env, t.callCtx, "1", params)
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 	c.Assert(errors.Details(err), gc.Matches, `.*subnets in AZ "test-available" not found.*`)
 }
 
@@ -1311,7 +1342,7 @@ func (t *localServerSuite) assertStartInstanceWithParamsFindAZ(
 		_, err = testing.StartInstanceWithParams(env, t.callCtx, "1", params)
 		if err == nil {
 			return
-		} else if !environs.IsAvailabilityZoneIndependent(err) {
+		} else if !errors.Is(err, environs.ErrAvailabilityZoneIndependent) {
 			continue
 		}
 		c.Assert(err, jc.ErrorIsNil)
@@ -1379,7 +1410,7 @@ func (t *localServerSuite) testStartInstanceAvailZoneOneConstrained(c *gc.C, run
 		_, err = testing.StartInstanceWithParams(env, t.callCtx, "1", params)
 		if err == nil {
 			break
-		} else if !environs.IsAvailabilityZoneIndependent(err) {
+		} else if !errors.Is(err, environs.ErrAvailabilityZoneIndependent) {
 			continue
 		}
 		c.Assert(err, jc.ErrorIsNil)
@@ -1717,14 +1748,22 @@ func (t *localServerSuite) TestPartialInterfacesForMultipleInstances(c *gc.C) {
 
 func (t *localServerSuite) TestNetworkInterfaces(c *gc.C) {
 	env, instId := t.setUpInstanceWithDefaultVpc(c)
+	_, _ = t.addTestingNetworkInterfaceToInstance(c, instId)
 	infoLists, err := env.NetworkInterfaces(t.callCtx, []instance.Id{instId})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(infoLists, gc.HasLen, 1)
 
 	list := infoLists[0]
-	c.Assert(list, gc.HasLen, 1)
+	c.Assert(list, gc.HasLen, 2)
 
-	t.assertInterfaceLooksValid(c, 0, 0, list[0])
+	// It's unpredictable which way around the interfaces are returned, so
+	// ensure the correct one is analysed. The misc interface is given the device
+	// index -1
+	if list[0].DeviceIndex == -1 {
+		t.assertInterfaceLooksValid(c, 0, 0, list[1])
+	} else {
+		t.assertInterfaceLooksValid(c, 0, 0, list[0])
+	}
 }
 
 func (t *localServerSuite) assertInterfaceLooksValid(c *gc.C, expIfaceID, expDevIndex int, iface corenetwork.InterfaceInfo) {
@@ -2279,7 +2318,7 @@ func (t *localServerSuite) TestInstanceGroups(c *gc.C) {
 	// that the unneeded permission that we added earlier
 	// has been deleted).
 	perms := info[0].IpPermissions
-	c.Assert(perms, gc.HasLen, 3)
+	c.Assert(perms, gc.HasLen, 5)
 	checkPortAllowed(c, perms, 22) // SSH
 	checkPortAllowed(c, perms, int32(coretesting.FakeControllerConfig().APIPort()))
 	checkSecurityGroupAllowed(c, perms, groups[0])
@@ -2762,7 +2801,8 @@ func (t *localServerSuite) TestBootstrapMultiple(c *gc.C) {
 func (t *localServerSuite) TestStartInstanceWithEmptyNonceFails(c *gc.C) {
 	machineId := "4"
 	apiInfo := testing.FakeAPIInfo(machineId)
-	instanceConfig, err := instancecfg.NewInstanceConfig(coretesting.ControllerTag, machineId, "", "released", "trusty", apiInfo)
+	base := coreseries.MakeDefaultBase("ubuntu", "14.04")
+	instanceConfig, err := instancecfg.NewInstanceConfig(coretesting.ControllerTag, machineId, "", "released", base, apiInfo)
 	c.Assert(err, jc.ErrorIsNil)
 
 	t.Prepare(c)

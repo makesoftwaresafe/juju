@@ -374,6 +374,7 @@ type RelationUnitPairs struct {
 
 // RelationUnitSettings holds a relation tag, a unit tag and local
 // unit and app-level settings.
+// TODO(juju3) - remove
 type RelationUnitSettings struct {
 	Relation            string   `json:"relation"`
 	Unit                string   `json:"unit"`
@@ -383,6 +384,7 @@ type RelationUnitSettings struct {
 
 // RelationUnitsSettings holds the arguments for making a EnterScope
 // or UpdateRelationSettings API calls.
+// TODO(juju3) - remove
 type RelationUnitsSettings struct {
 	RelationUnits []RelationUnitSettings `json:"relation-units"`
 }
@@ -468,12 +470,12 @@ type LifeResults struct {
 // be a container.
 //
 // The InstanceInfo struct contains three categories of information:
-//  - interal data, as the machine's tag and the tags of any attached
-//    storage volumes
-//  - naming and other provider-specific information, including the
-//    instance id and display name
-//  - configuration information, including its attached storage volumes,
-//    charm profiles and networking
+//   - interal data, as the machine's tag and the tags of any attached
+//     storage volumes
+//   - naming and other provider-specific information, including the
+//     instance id and display name
+//   - configuration information, including its attached storage volumes,
+//     charm profiles and networking
 type InstanceInfo struct {
 	Tag             string                            `json:"tag"`
 	InstanceId      instance.Id                       `json:"instance-id"`
@@ -782,11 +784,19 @@ type AgentVersionResult struct {
 	Version version.Number `json:"version"`
 }
 
+// RetryProvisioningArgs holds args for retrying machine provisioning.
+type RetryProvisioningArgs struct {
+	Machines []string `json:"machines,omitempty"`
+	All      bool     `json:"all"`
+}
+
 // ProvisioningInfoBase holds machine provisioning info common
 // across different versions of the provisioner API facade.
 type ProvisioningInfoBase struct {
-	Constraints       constraints.Value        `json:"constraints"`
+	Constraints constraints.Value `json:"constraints"`
+	// TODO(juju3) - remove series
 	Series            string                   `json:"series"`
+	Base              Base                     `json:"base"`
 	Placement         string                   `json:"placement"`
 	Jobs              []model.MachineJob       `json:"jobs"`
 	RootDisk          *VolumeParams            `json:"root-disk,omitempty"`

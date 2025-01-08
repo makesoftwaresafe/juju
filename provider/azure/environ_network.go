@@ -64,9 +64,13 @@ func (env *azureEnviron) allProviderSubnets(ctx context.ProviderCallContext) ([]
 		)
 	}
 
+	subnets, err := env.subnetsClient()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	vnetRG, vnetName := env.networkInfo()
 	var result []*azurenetwork.Subnet
-	pager := env.subnets.NewListPager(vnetRG, vnetName, nil)
+	pager := subnets.NewListPager(vnetRG, vnetName, nil)
 	for pager.More() {
 		next, err := pager.NextPage(ctx)
 		if err != nil {
@@ -107,7 +111,11 @@ func (env *azureEnviron) allSubnets(ctx context.ProviderCallContext) ([]network.
 func (env *azureEnviron) allPublicIPs(ctx context.ProviderCallContext) (map[string]network.ProviderAddress, error) {
 	idToIPMap := make(map[string]network.ProviderAddress)
 
-	pager := env.publicAddresses.NewListPager(env.resourceGroup, nil)
+	pipClient, err := env.publicAddressesClient()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	pager := pipClient.NewListPager(env.resourceGroup, nil)
 	for pager.More() {
 		next, err := pager.NextPage(ctx)
 		if err != nil {
@@ -160,12 +168,6 @@ func (*azureEnviron) AreSpacesRoutable(_ context.ProviderCallContext, _, _ *envi
 	return false, nil
 }
 
-// SSHAddresses implements environs.NetworkingEnviron.
-func (*azureEnviron) SSHAddresses(
-	_ context.ProviderCallContext, addresses network.SpaceAddresses) (network.SpaceAddresses, error) {
-	return addresses, nil
-}
-
 // NetworkInterfaces implements environs.NetworkingEnviron. It returns back
 // a slice where the i_th element contains the list of network interfaces
 // for the i_th provided instance ID.
@@ -186,7 +188,7 @@ func (env *azureEnviron) NetworkInterfaces(ctx context.ProviderCallContext, inst
 		subnetIDToCIDR[sub.ProviderId.String()] = sub.CIDR
 	}
 
-	instIfaceMap, err := instanceNetworkInterfaces(ctx, env.resourceGroup, env.interfaces)
+	instIfaceMap, err := env.instanceNetworkInterfaces(ctx, env.resourceGroup)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

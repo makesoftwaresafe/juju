@@ -25,7 +25,7 @@ import (
 	"github.com/juju/juju/storage"
 )
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/broker_mock.go github.com/juju/juju/caas Broker
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/broker_mock.go github.com/juju/juju/caas Broker
 
 // ContainerEnvironProvider represents a computing and storage provider
 // for a container runtime.
@@ -233,6 +233,9 @@ type Broker interface {
 
 	// EnsureImageRepoSecret ensures the image pull secret gets created.
 	EnsureImageRepoSecret(docker.ImageRepoDetails) error
+
+	// GetSecretToken returns the token content for the specified secret name.
+	GetSecretToken(name string) (string, error)
 
 	// ClusterMetadataChecker provides an API to query cluster metadata.
 	ClusterMetadataChecker

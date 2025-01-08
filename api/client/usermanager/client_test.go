@@ -49,7 +49,7 @@ func (s *usermanagerSuite) TestAddExistingUser(c *gc.C) {
 	s.Factory.MakeUser(c, &factory.UserParams{Name: "foobar"})
 
 	_, _, err := s.usermanager.AddUser("foobar", "Foo Bar", "password")
-	c.Assert(err, gc.ErrorMatches, "failed to create user: username unavailable")
+	c.Assert(err, gc.ErrorMatches, "failed to create user: user foobar already exists")
 }
 
 func (s *usermanagerSuite) TestAddUserResponseError(c *gc.C) {
@@ -74,6 +74,40 @@ func (s *usermanagerSuite) TestAddUserResultCount(c *gc.C) {
 	)
 	_, _, err := s.usermanager.AddUser("foobar", "Foo Bar", "password")
 	c.Assert(err, gc.ErrorMatches, "expected 1 result, got 2")
+}
+
+func (s *usermanagerSuite) TestAddRemovedUser(c *gc.C) {
+	tag, _, err := s.usermanager.AddUser("jjam", "Jimmy Jam", "password")
+	c.Assert(err, jc.ErrorIsNil)
+
+	// Ensure the user exists.
+	user, err := s.State.User(tag)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(user.Name(), gc.Equals, "jjam")
+	c.Assert(user.DisplayName(), gc.Equals, "Jimmy Jam")
+
+	// Delete the user.
+	err = s.usermanager.RemoveUser(tag.Name())
+	c.Assert(err, jc.ErrorIsNil)
+
+	// Assert that the user is gone.
+	_, err = s.State.User(tag)
+	c.Assert(err, gc.ErrorMatches, `user "jjam" is permanently deleted`)
+
+	err = user.Refresh()
+	c.Check(err, jc.ErrorIsNil)
+	c.Assert(user.IsDeleted(), jc.IsTrue)
+
+	// Add the user again
+	tag2, _, err := s.usermanager.AddUser("jjam", "Jimmy Again", "password2")
+	c.Assert(err, jc.ErrorIsNil)
+
+	// Ensure the user exists.
+	user2, err := s.State.User(tag2)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(user2.Name(), gc.Equals, "jjam")
+	c.Assert(user2.DisplayName(), gc.Equals, "Jimmy Again")
+
 }
 
 func (s *usermanagerSuite) TestRemoveUser(c *gc.C) {
@@ -192,6 +226,31 @@ func (s *usermanagerSuite) TestUserInfoMoreThanOneError(c *gc.C) {
 	)
 	_, err := s.usermanager.UserInfo([]string{"foo", "bar"}, usermanager.AllUsers)
 	c.Assert(err, gc.ErrorMatches, "foo: first error, bar: second error")
+}
+
+func (s *usermanagerSuite) TestModelUserInfo(c *gc.C) {
+	usermanager.PatchResponses(s, s.usermanager,
+		func(result interface{}) error {
+			if response, ok := result.(*params.ModelUserInfoResults); ok {
+				response.Results = []params.ModelUserInfoResult{
+					{Result: &params.ModelUserInfo{UserName: "one"}},
+					{Result: &params.ModelUserInfo{UserName: "two"}},
+					{Result: &params.ModelUserInfo{UserName: "three"}},
+				}
+				return nil
+			}
+			return errors.New("wrong result type")
+		},
+	)
+
+	obtained, err := s.usermanager.ModelUserInfo(s.State.ModelUUID())
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(obtained, jc.DeepEquals, []params.ModelUserInfo{
+		{UserName: "one"},
+		{UserName: "two"},
+		{UserName: "three"},
+	})
 }
 
 func (s *usermanagerSuite) TestSetUserPassword(c *gc.C) {

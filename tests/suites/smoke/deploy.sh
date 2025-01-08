@@ -1,36 +1,48 @@
+# run_local_deploy is responsible for deploying revision 1 of the refresher
+# charm to first check that deployment is successful. The second part of this
+# test refreshes the charm to revision 2 and verifies that the upgrade hook of
+# the charm has been run by checking the status message of the unit for the
+# string that the charm outputs during it's upgrade hook.
 run_local_deploy() {
 	echo
 
-	file="${2}"
+	model_name="test-local-deploy"
+	file="${TEST_DIR}/${model_name}.log"
 
-	ensure "test-local-deploy" "${file}"
+	ensure "${model_name}" "${file}"
 
-	juju deploy ./tests/suites/smoke/charms/ubuntu
-	wait_for "ubuntu" "$(idle_condition "ubuntu")"
+	juju deploy --revision=1 --channel=stable --series=focal juju-qa-refresher
+	wait_for "refresher" "$(idle_condition "refresher")"
 
-	juju refresh ubuntu --path=./tests/suites/smoke/charms/ubuntu
+	juju refresh refresher
 
 	# Wait for the refresh to happen and then wait again.
-	sleep 10
-	wait_for "ubuntu" "$(idle_condition "ubuntu")"
+	wait_for "upgrade hook ran v2" "$(workload_status "refresher" 0)"
 
-	destroy_model "test-local-deploy"
+	# On microk8s, there's a bug where the application blocks the model teardown
+	# TODO: remove the next line once this bug is fixed.
+	juju remove-application refresher
+	destroy_model "${model_name}"
 }
 
 run_charmstore_deploy() {
 	echo
 
-	file="${2}"
+	model_name="test-charmstore-deploy"
+	file="${TEST_DIR}/${model_name}.log"
 
-	ensure "test-charmstore-deploy" "${file}"
+	ensure "${model_name}" "${file}"
 
-	juju deploy cs:~jameinel/ubuntu-lite-6 ubuntu
-	wait_for "ubuntu" "$(idle_condition "ubuntu")"
+	juju deploy jameinel-ubuntu-lite --revision 9 --channel stable
+	wait_for "ubuntu-lite" "$(idle_condition "ubuntu-lite")"
 
-	juju refresh ubuntu
-	wait_for "ubuntu" "$(idle_condition_for_rev "ubuntu" "9")"
+	juju refresh ubuntu-lite
+	wait_for "ubuntu-lite" "$(idle_condition_for_rev "ubuntu-lite" "10")"
 
-	destroy_model "test-charmstore-deploy"
+	# On microk8s, there's a bug where the application blocks the model teardown
+	# TODO: remove the next line once this bug is fixed.
+	juju remove-application ubuntu-lite
+	destroy_model "${model_name}"
 }
 
 test_deploy() {
@@ -44,11 +56,8 @@ test_deploy() {
 
 		cd .. || exit
 
-		file="${1}"
-
-		# Check that deploy runs on LXD§
-		run "run_local_deploy" "${file}"
-		run "run_charmstore_deploy" "${file}"
+		run "run_local_deploy"
+		run "run_charmstore_deploy"
 	)
 }
 

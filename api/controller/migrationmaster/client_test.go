@@ -32,6 +32,7 @@ import (
 	"github.com/juju/juju/core/resources"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/rpc/params"
+	coretesting "github.com/juju/juju/testing"
 )
 
 type ClientSuite struct {
@@ -202,6 +203,34 @@ func (s *ClientSuite) TestModelInfo(c *gc.C) {
 	})
 }
 
+func (s *ClientSuite) TestSourceControllerInfo(c *gc.C) {
+	var stub jujutesting.Stub
+	apiCaller := apitesting.APICallerFunc(func(objType string, v int, id, request string, arg, result interface{}) error {
+		stub.AddCall(objType+"."+request, id, arg)
+		*(result.(*params.MigrationSourceInfo)) = params.MigrationSourceInfo{
+			LocalRelatedModels: []string{"related-model-uuid"},
+			ControllerTag:      coretesting.ControllerTag.String(),
+			ControllerAlias:    "mycontroller",
+			Addrs:              []string{"source-addr"},
+			CACert:             "cacert",
+		}
+		return nil
+	})
+	client := migrationmaster.NewClient(apiCaller, nil)
+	info, relatedModels, err := client.SourceControllerInfo()
+	stub.CheckCalls(c, []jujutesting.StubCall{
+		{"MigrationMaster.SourceControllerInfo", []interface{}{"", nil}},
+	})
+	c.Check(err, jc.ErrorIsNil)
+	c.Check(info, jc.DeepEquals, migration.SourceControllerInfo{
+		ControllerTag:   coretesting.ControllerTag,
+		ControllerAlias: "mycontroller",
+		Addrs:           []string{"source-addr"},
+		CACert:          "cacert",
+	})
+	c.Assert(relatedModels, jc.SameContents, []string{"related-model-uuid"})
+}
+
 func (s *ClientSuite) TestPrechecks(c *gc.C) {
 	var stub jujutesting.Stub
 	apiCaller := apitesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
@@ -209,10 +238,11 @@ func (s *ClientSuite) TestPrechecks(c *gc.C) {
 		return errors.New("blam")
 	})
 	client := migrationmaster.NewClient(apiCaller, nil)
-	err := client.Prechecks()
+	err := client.Prechecks(version.MustParse("1.2.4"))
 	c.Check(err, gc.ErrorMatches, "blam")
+	expectedArg := params.PrechecksArgs{TargetControllerVersion: version.MustParse("1.2.4")}
 	stub.CheckCalls(c, []jujutesting.StubCall{
-		{"MigrationMaster.Prechecks", []interface{}{"", nil}},
+		{"MigrationMaster.Prechecks", []interface{}{"", expectedArg}},
 	})
 }
 

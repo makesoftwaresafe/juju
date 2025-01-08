@@ -1,7 +1,6 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package uniter implements the API interface used by the uniter worker.
 package uniter
 
 import (
@@ -355,7 +354,7 @@ func (u *UniterAPI) PublicAddress(args params.Entities) (params.StringResults, e
 				if err == nil {
 					result.Results[i].Result = address.Value
 				} else if network.IsNoAddressError(err) {
-					err = apiservererrors.NoAddressSetError(tag, "public")
+					err = apiservererrors.NewNoAddressSetError(tag, "public")
 				}
 			}
 		}
@@ -389,7 +388,7 @@ func (u *UniterAPI) PrivateAddress(args params.Entities) (params.StringResults, 
 				if err == nil {
 					result.Results[i].Result = address.Value
 				} else if network.IsNoAddressError(err) {
-					err = apiservererrors.NoAddressSetError(tag, "private")
+					err = apiservererrors.NewNoAddressSetError(tag, "private")
 				}
 			}
 		}
@@ -692,19 +691,14 @@ func (u *UniterAPI) CharmURL(args params.Entities) (params.StringBoolResults, er
 			var unitOrApplication state.Entity
 			unitOrApplication, err = u.st.FindEntity(tag)
 			if err == nil {
-				// TODO (hmlanigan) 2022-06-08
-				// cURL can be a string pointer once unit.CharmURL()
-				// returns a string pointer as well.
-				var cURL *charm.URL
+				var cURL *string
 				var force bool
 
 				switch entity := unitOrApplication.(type) {
 				case *state.Application:
-					var cURLStr *string
-					cURLStr, force = entity.CharmURL()
-					cURL, err = charm.ParseURL(*cURLStr)
+					cURL, force = entity.CharmURL()
 				case *state.Unit:
-					cURL, err = entity.CharmURL()
+					cURL = entity.CharmURL()
 					// The force value is not actually used on the uniter's unit api.
 					if cURL != nil {
 						force = true
@@ -712,7 +706,7 @@ func (u *UniterAPI) CharmURL(args params.Entities) (params.StringBoolResults, er
 				}
 
 				if cURL != nil {
-					result.Results[i].Result = cURL.String()
+					result.Results[i].Result = *cURL
 					result.Results[i].Ok = force
 				}
 			}
@@ -826,6 +820,7 @@ func (u *UniterAPI) SetWorkloadVersion(args params.EntityWorkloadVersions) (para
 	return result, nil
 }
 
+// TODO(juju3) - remove
 func (u *UniterAPI) OpenPorts(args params.EntitiesPortRanges) (params.ErrorResults, error) {
 	result := params.ErrorResults{
 		Results: make([]params.ErrorResult, len(args.Entities)),
@@ -875,6 +870,7 @@ func (u *UniterAPI) OpenPorts(args params.EntitiesPortRanges) (params.ErrorResul
 
 // ClosePorts sets the policy of the port range with protocol to be
 // closed, for all given units.
+// TODO(juju3) - remove
 func (u *UniterAPI) ClosePorts(args params.EntitiesPortRanges) (params.ErrorResults, error) {
 	result := params.ErrorResults{
 		Results: make([]params.ErrorResult, len(args.Entities)),
@@ -1703,6 +1699,7 @@ func (u *UniterAPI) ReadRemoteSettings(args params.RelationUnitPairs) (params.Se
 // UpdateSettings persists all changes made to the local settings of
 // all given pairs of relation and unit. Keys with empty values are
 // considered a signal to delete these values.
+// TODO(juju3) - remove
 func (u *UniterAPI) UpdateSettings(args params.RelationUnitsSettings) (params.ErrorResults, error) {
 	result := params.ErrorResults{
 		Results: make([]params.ErrorResult, len(args.RelationUnits)),
@@ -1922,11 +1919,6 @@ func (u *UniterAPIV8) WatchUnitAddresses(args params.Entities) (params.NotifyWat
 
 func (u *UniterAPI) getUnit(tag names.UnitTag) (*state.Unit, error) {
 	return u.st.Unit(tag.Id())
-}
-
-func (u *UniterAPI) getCacheUnit(tag names.UnitTag) (cache.Unit, error) {
-	unit, err := u.cacheModel.Unit(tag.Id())
-	return unit, errors.Trace(err)
 }
 
 func (u *UniterAPI) getApplication(tag names.ApplicationTag) (*state.Application, error) {

@@ -7,12 +7,15 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"github.com/juju/worker/v3"
 	"github.com/juju/worker/v3/dependency"
 	"gopkg.in/tomb.v2"
+
+	"github.com/juju/juju/wrench"
 )
 
 var logger = loggo.GetLogger("juju.worker.hostkeyreporter")
@@ -68,6 +71,9 @@ func (w *hostkeyreporter) Wait() error {
 }
 
 func (w *hostkeyreporter) run() error {
+	if wrench.IsActive("hostkeyreporter", "delay") {
+		time.Sleep(time.Minute)
+	}
 	keys, err := w.readSSHKeys()
 	if err != nil {
 		return errors.Trace(err)

@@ -8,31 +8,28 @@ env:
   DOCKER_USERNAME: jujuqabot
   JUJU_BUILD_NUMBER: 888
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Test Kubeflow
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64, aws, large]
     if: github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
-        microk8s: [1.21/stable]
+        microk8s: [1.28/stable]
 
     steps:
     - name: Checking out repo
-      uses: actions/checkout@a12a3943b4bdde767164f792f33f40b04645d846 # v3
-
-    - name: Find required go version
-      id: go-version
-      run: |
-        set -euxo pipefail
-        echo "::set-output name=version::$(grep '^go ' go.mod | awk '{print $2}')"
+      uses: actions/checkout@v3
 
     - name: Set up Go
-      uses: actions/setup-go@f6164bd8c8acb4a71fb2791a8b6c4024ff038dab # v3
+      uses: actions/setup-go@v3
       with:
-        go-version: ${{ steps.go-version.outputs.version }}
-      id: go
+        go-version-file: 'go.mod'
+        cache: true
 
     - name: setup env
       shell: bash
@@ -40,11 +37,19 @@ jobs:
         echo "GOPATH=$(go env GOPATH)" >> $GITHUB_ENV
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-    - uses: balchua/microk8s-actions@98f481ca6bad1cdca5185008b9572a3102d46af3 # v0.2.2
+    - name: Setup Docker Mirror
+      shell: bash
+      run: |
+        (cat /etc/docker/daemon.json 2> /dev/null || echo "{}") | yq -o json '.registry-mirrors += ["https://docker-cache.us-west-2.aws.jujuqa.com:443"]' | sudo tee /etc/docker/daemon.json
+        sudo systemctl restart docker
+        docker system info
+
+    - uses: balchua/microk8s-actions@e99a1ffcd3bb2682d941104cf6c1a215c657903f
       with:
         channel: '${{ matrix.microk8s }}'
         # enable now to give microk8s more time to settle down.
         addons: '["dns", "storage", "dashboard", "ingress", "metallb:10.64.140.43-10.64.140.49"]'
+        launch-configuration: "$GITHUB_WORKSPACE/.github/microk8s-launch-config-aws.yaml"
 
     - name: Install Dependencies
       run: |
@@ -53,8 +58,8 @@ jobs:
             sudo snap install $snap --classic
         done
 
-        sudo apt update
-        sudo apt install -y libssl-dev python3-setuptools
+        sudo DEBIAN_FRONTEND=noninteractive apt update
+        sudo DEBIAN_FRONTEND=noninteractive apt install -y libssl-dev python3-setuptools
         sudo usermod -a -G microk8s $USER
 
     - name: Build juju and operator image

@@ -172,6 +172,9 @@ if [ -z "$JUJU_HOOK_NAME" ] ; then
 else
   window_name="$JUJU_HOOK_NAME"
 fi
+# Since we just use byobu tmux configs without byobu-tmux, we need
+# to export this to prevent the TERM being set to empty string.
+export BYOBU_TERM=$TERM
 tmux new-window -t $JUJU_UNIT_NAME -n $window_name "$JUJU_DEBUG/hook.sh"
 
 # If we exit for whatever reason, kill the hook shell.
@@ -206,7 +209,7 @@ tmux kill-session -t $JUJU_UNIT_NAME # or, equivalently, CTRL+a d
 4. CTRL+a is tmux prefix.
 
 More help and info is available in the online documentation:
-https://discourse.charmhub.io/t/debugging-charm-hooks
+https://juju.is/docs/olm/debug-charm-hooks
 
 `
 

@@ -8,11 +8,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	core "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,6 +26,8 @@ import (
 	jujucloud "github.com/juju/juju/cloud"
 	"github.com/juju/juju/cmd/juju/commands"
 	"github.com/juju/juju/cmd/juju/commands/mocks"
+	"github.com/juju/juju/controller"
+	"github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/testing"
 )
@@ -42,6 +44,8 @@ type sshContainerSuite struct {
 	execClient         *mocks.MockExecutor
 	mockPods           *k8smocks.MockPodInterface
 	mockNamespaces     *k8smocks.MockNamespaceInterface
+	mockSSHClient      *mocks.MockSSHClientAPI
+	controllerAPI      *mocks.MockSSHControllerAPI
 
 	sshC commands.SSHContainerInterfaceForTest
 }
@@ -86,6 +90,9 @@ func (s *sshContainerSuite) setUpController(c *gc.C, remote bool, containerName 
 	mockCoreV1.EXPECT().Pods(gomock.Any()).AnyTimes().Return(s.mockPods)
 	mockCoreV1.EXPECT().Namespaces().AnyTimes().Return(s.mockNamespaces)
 
+	s.mockSSHClient = mocks.NewMockSSHClientAPI(ctrl)
+	s.controllerAPI = mocks.NewMockSSHControllerAPI(ctrl)
+
 	s.sshC = commands.NewSSHContainer(
 		s.modelUUID,
 		s.modelName,
@@ -94,8 +101,10 @@ func (s *sshContainerSuite) setUpController(c *gc.C, remote bool, containerName 
 		s.applicationAPI,
 		s.charmAPI,
 		s.execClient,
+		s.mockSSHClient,
 		remote,
 		containerName,
+		s.controllerAPI,
 	)
 	return ctrl
 }
@@ -109,6 +118,7 @@ func (s *sshContainerSuite) TestCleanupRun(c *gc.C) {
 		s.modelAPI.EXPECT().Close(),
 		s.applicationAPI.EXPECT().Close(),
 		s.charmAPI.EXPECT().Close(),
+		s.mockSSHClient.EXPECT().Close(),
 	)
 	s.sshC.CleanupRun()
 }
@@ -343,7 +353,7 @@ func (s *sshContainerSuite) TestResolveTargetForWorkloadPodNoProviderID(c *gc.C)
 	c.Assert(err, gc.ErrorMatches, `container for unit "mariadb-k8s/0" is not ready yet`)
 }
 
-func (s *sshContainerSuite) TestGetExecClient(c *gc.C) {
+func (s *sshContainerSuite) TestGetExecClientLegacy(c *gc.C) {
 	ctrl := s.setUpController(c, true, "")
 	defer ctrl.Finish()
 
@@ -353,6 +363,8 @@ func (s *sshContainerSuite) TestGetExecClient(c *gc.C) {
 	gomock.InOrder(
 		s.cloudCredentialAPI.EXPECT().BestAPIVersion().
 			Return(2),
+		s.mockSSHClient.EXPECT().BestAPIVersion().
+			Return(3),
 		s.modelAPI.EXPECT().ModelInfo([]names.ModelTag{names.NewModelTag(s.modelUUID)}).
 			Return([]params.ModelInfoResult{
 				{Result: &params.ModelInfo{
@@ -375,6 +387,24 @@ func (s *sshContainerSuite) TestGetExecClient(c *gc.C) {
 				Type:      "kubernetes",
 				AuthTypes: jujucloud.AuthTypes{"certificate"},
 			}, nil),
+	)
+	execC, err := s.sshC.GetExecClient()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(s.sshC.ModelName(), gc.Equals, s.modelName)
+	c.Assert(execC, gc.DeepEquals, s.execClient)
+}
+
+func (s *sshContainerSuite) TestGetExecClient(c *gc.C) {
+	ctrl := s.setUpController(c, true, "")
+	defer ctrl.Finish()
+
+	gomock.InOrder(
+		s.cloudCredentialAPI.EXPECT().BestAPIVersion().
+			Return(2),
+		s.mockSSHClient.EXPECT().BestAPIVersion().
+			Return(4),
+		s.mockSSHClient.EXPECT().ModelCredentialForSSH().
+			Return(cloudspec.CloudSpec{}, nil),
 	)
 	execC, err := s.sshC.GetExecClient()
 	c.Assert(err, jc.ErrorIsNil)
@@ -405,6 +435,8 @@ func (s *sshContainerSuite) TestGetExecClientFailedInvalidCredential(c *gc.C) {
 	gomock.InOrder(
 		s.cloudCredentialAPI.EXPECT().BestAPIVersion().
 			Return(2),
+		s.mockSSHClient.EXPECT().BestAPIVersion().
+			Return(3),
 		s.modelAPI.EXPECT().ModelInfo([]names.ModelTag{names.NewModelTag(s.modelUUID)}).
 			Return([]params.ModelInfoResult{
 				{Result: &params.ModelInfo{CloudCredentialTag: "cloudcred-microk8s_admin_microk8s"}},
@@ -435,6 +467,8 @@ func (s *sshContainerSuite) TestGetExecClientFailedForNonCAASCloud(c *gc.C) {
 	gomock.InOrder(
 		s.cloudCredentialAPI.EXPECT().BestAPIVersion().
 			Return(2),
+		s.mockSSHClient.EXPECT().BestAPIVersion().
+			Return(3),
 		s.modelAPI.EXPECT().ModelInfo([]names.ModelTag{names.NewModelTag(s.modelUUID)}).
 			Return([]params.ModelInfoResult{
 				{Result: &params.ModelInfo{CloudCredentialTag: "cloudcred-microk8s_admin_microk8s"}},
@@ -474,15 +508,20 @@ func (s *sshContainerSuite) TestSSHNoContainerSpecified(c *gc.C) {
 		ctx.EXPECT().GetStdout().Return(buffer),
 		ctx.EXPECT().GetStderr().Return(buffer),
 		ctx.EXPECT().GetStdin().Return(buffer),
-		s.execClient.EXPECT().Exec(k8sexec.ExecParams{
-			PodName:  "mariadb-k8s-0",
-			Commands: []string{"bash"},
-			TTY:      true,
-			Stdout:   buffer,
-			Stderr:   buffer,
-			Stdin:    buffer,
-		}, gomock.Any()).
-			Return(nil),
+		s.execClient.EXPECT().Exec(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(arg k8sexec.ExecParams, cancel <-chan struct{}) error {
+				mc := jc.NewMultiChecker()
+				mc.AddExpr(`_.Env`, jc.Ignore)
+				c.Check(arg, mc, k8sexec.ExecParams{
+					PodName:  "mariadb-k8s-0",
+					Commands: []string{"bash"},
+					TTY:      true,
+					Stdout:   buffer,
+					Stderr:   buffer,
+					Stdin:    buffer,
+				})
+				return nil
+			}),
 		ctx.EXPECT().StopInterruptNotify(gomock.Any()),
 	)
 
@@ -506,16 +545,21 @@ func (s *sshContainerSuite) TestSSHWithContainerSpecified(c *gc.C) {
 		ctx.EXPECT().GetStdout().Return(buffer),
 		ctx.EXPECT().GetStderr().Return(buffer),
 		ctx.EXPECT().GetStdin().Return(buffer),
-		s.execClient.EXPECT().Exec(k8sexec.ExecParams{
-			PodName:       "mariadb-k8s-0",
-			ContainerName: "container1",
-			Commands:      []string{"bash"},
-			TTY:           true,
-			Stdout:        buffer,
-			Stderr:        buffer,
-			Stdin:         buffer,
-		}, gomock.Any()).
-			Return(nil),
+		s.execClient.EXPECT().Exec(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(arg k8sexec.ExecParams, cancel <-chan struct{}) error {
+				mc := jc.NewMultiChecker()
+				mc.AddExpr(`_.Env`, jc.Ignore)
+				c.Check(arg, mc, k8sexec.ExecParams{
+					PodName:       "mariadb-k8s-0",
+					ContainerName: "container1",
+					Commands:      []string{"bash"},
+					TTY:           true,
+					Stdout:        buffer,
+					Stderr:        buffer,
+					Stdin:         buffer,
+				})
+				return nil
+			}),
 		ctx.EXPECT().StopInterruptNotify(gomock.Any()),
 	)
 
@@ -543,15 +587,18 @@ func (s *sshContainerSuite) TestSSHCancelled(c *gc.C) {
 		ctx.EXPECT().GetStdout().Return(buffer),
 		ctx.EXPECT().GetStderr().Return(buffer),
 		ctx.EXPECT().GetStdin().Return(buffer),
-		s.execClient.EXPECT().Exec(k8sexec.ExecParams{
-			PodName:  "mariadb-k8s-0",
-			Commands: []string{"bash"},
-			TTY:      true,
-			Stdout:   buffer,
-			Stderr:   buffer,
-			Stdin:    buffer,
-		}, gomock.Any()).DoAndReturn(
+		s.execClient.EXPECT().Exec(gomock.Any(), gomock.Any()).DoAndReturn(
 			func(arg k8sexec.ExecParams, cancel <-chan struct{}) error {
+				mc := jc.NewMultiChecker()
+				mc.AddExpr(`_.Env`, jc.Ignore)
+				c.Check(arg, mc, k8sexec.ExecParams{
+					PodName:  "mariadb-k8s-0",
+					Commands: []string{"bash"},
+					TTY:      true,
+					Stdout:   buffer,
+					Stderr:   buffer,
+					Stdin:    buffer,
+				})
 				select {
 				case <-cancel:
 					return errors.New("cancelled")
@@ -792,5 +839,113 @@ func (s *sshContainerSuite) TestCopyToWorkloadPodWithContainerSpecified(c *gc.C)
 	)
 
 	err := s.sshC.Copy(ctx)
+	c.Assert(err, jc.ErrorIsNil)
+}
+
+func (s *sshContainerSuite) TestNamespaceControllerModel(c *gc.C) {
+	ctrl := s.setUpController(c, true, "")
+	defer ctrl.Finish()
+
+	mc := mocks.NewMockModelCommand(ctrl)
+	mc.EXPECT().ModelIdentifier().Return("admin/controller", nil)
+	mc.EXPECT().NewControllerAPIRoot().Return(nil, nil)
+	mc.EXPECT().NewAPIRoot().Return(nil, nil)
+	s.controllerAPI.EXPECT().ControllerConfig().Return(
+		controller.Config{"controller-name": "foobar"}, nil)
+
+	err := s.sshC.InitRun(mc)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(s.sshC.Namespace(), gc.Equals, "controller-foobar")
+}
+
+func (s *sshContainerSuite) TestSSHWithTerm(c *gc.C) {
+	ctrl := s.setUpController(c, false, "")
+	ctx := mocks.NewMockContext(ctrl)
+	defer ctrl.Finish()
+
+	prevTerm, prevTermSet := os.LookupEnv("TERM")
+	os.Setenv("TERM", "foobar-256color")
+	s.AddCleanup(func(c *gc.C) {
+		if prevTermSet {
+			os.Setenv("TERM", prevTerm)
+		} else {
+			os.Unsetenv("TERM")
+		}
+	})
+
+	s.sshC.SetArgs([]string{"bash"})
+
+	buffer := bytes.NewBuffer(nil)
+
+	gomock.InOrder(
+		ctx.EXPECT().InterruptNotify(gomock.Any()),
+		ctx.EXPECT().GetStdout().Return(buffer),
+		ctx.EXPECT().GetStderr().Return(buffer),
+		ctx.EXPECT().GetStdin().Return(buffer),
+		s.execClient.EXPECT().Exec(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(arg k8sexec.ExecParams, cancel <-chan struct{}) error {
+				c.Check(arg, jc.DeepEquals, k8sexec.ExecParams{
+					PodName:  "mariadb-k8s-0",
+					Env:      []string{"TERM=foobar-256color"},
+					Commands: []string{"bash"},
+					TTY:      true,
+					Stdout:   buffer,
+					Stderr:   buffer,
+					Stdin:    buffer,
+				})
+				return nil
+			}),
+		ctx.EXPECT().StopInterruptNotify(gomock.Any()),
+	)
+
+	target := &commands.ResolvedTarget{}
+	target.SetEntity("mariadb-k8s-0")
+	err := s.sshC.SSH(ctx, true, target)
+	c.Assert(err, jc.ErrorIsNil)
+}
+
+func (s *sshContainerSuite) TestSSHWithTermNoTTY(c *gc.C) {
+	ctrl := s.setUpController(c, false, "")
+	ctx := mocks.NewMockContext(ctrl)
+	defer ctrl.Finish()
+
+	prevTerm, prevTermSet := os.LookupEnv("TERM")
+	os.Setenv("TERM", "foobar-256color")
+	s.AddCleanup(func(c *gc.C) {
+		if prevTermSet {
+			os.Setenv("TERM", prevTerm)
+		} else {
+			os.Unsetenv("TERM")
+		}
+	})
+
+	s.sshC.SetArgs([]string{"bash"})
+
+	buffer := bytes.NewBuffer(nil)
+
+	gomock.InOrder(
+		ctx.EXPECT().InterruptNotify(gomock.Any()),
+		ctx.EXPECT().GetStdout().Return(buffer),
+		ctx.EXPECT().GetStderr().Return(buffer),
+		ctx.EXPECT().GetStdin().Return(buffer),
+		s.execClient.EXPECT().Exec(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(arg k8sexec.ExecParams, cancel <-chan struct{}) error {
+				c.Check(arg, jc.DeepEquals, k8sexec.ExecParams{
+					PodName:  "mariadb-k8s-0",
+					Env:      nil,
+					Commands: []string{"bash"},
+					TTY:      false,
+					Stdout:   buffer,
+					Stderr:   buffer,
+					Stdin:    buffer,
+				})
+				return nil
+			}),
+		ctx.EXPECT().StopInterruptNotify(gomock.Any()),
+	)
+
+	target := &commands.ResolvedTarget{}
+	target.SetEntity("mariadb-k8s-0")
+	err := s.sshC.SSH(ctx, false, target)
 	c.Assert(err, jc.ErrorIsNil)
 }

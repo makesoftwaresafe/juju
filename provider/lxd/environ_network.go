@@ -9,10 +9,10 @@ import (
 	"sort"
 	"strings"
 
+	lxdapi "github.com/canonical/lxd/shared/api"
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
-	lxdapi "github.com/lxc/lxd/shared/api"
 
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
@@ -281,7 +281,7 @@ func (e *environ) NetworkInterfaces(_ context.ProviderCallContext, ids []instanc
 	return res, nil
 }
 
-func makeInterfaceInfo(container *lxdapi.Container, guestNetworkName string, netInfo lxdapi.ContainerStateNetwork) (network.InterfaceInfo, error) {
+func makeInterfaceInfo(container *lxdapi.Instance, guestNetworkName string, netInfo lxdapi.InstanceStateNetwork) (network.InterfaceInfo, error) {
 	var ni = network.InterfaceInfo{
 		MACAddress:          netInfo.Hwaddr,
 		MTU:                 netInfo.Mtu,
@@ -351,7 +351,7 @@ func detectInterfaceType(lxdIfaceType string) network.LinkLayerDeviceType {
 	}
 }
 
-func hostNetworkForGuestNetwork(container *lxdapi.Container, guestNetwork string) string {
+func hostNetworkForGuestNetwork(container *lxdapi.Instance, guestNetwork string) string {
 	if container.ExpandedDevices == nil {
 		return ""
 	}
@@ -368,8 +368,8 @@ func hostNetworkForGuestNetwork(container *lxdapi.Container, guestNetwork string
 	return ""
 }
 
-func getContainerDetails(srv Server, containerID string) (*lxdapi.Container, *lxdapi.ContainerState, error) {
-	cont, _, err := srv.GetContainer(containerID)
+func getContainerDetails(srv Server, containerID string) (*lxdapi.Instance, *lxdapi.InstanceState, error) {
+	cont, _, err := srv.GetInstance(containerID)
 	if err != nil {
 		if isErrNotFound(err) {
 			return nil, nil, errors.NotFoundf("container %q", containerID)
@@ -377,7 +377,7 @@ func getContainerDetails(srv Server, containerID string) (*lxdapi.Container, *lx
 		return nil, nil, errors.Trace(err)
 	}
 
-	state, _, err := srv.GetContainerState(containerID)
+	state, _, err := srv.GetInstanceState(containerID)
 	if err != nil {
 		if isErrNotFound(err) {
 			return nil, nil, errors.NotFoundf("container %q", containerID)
@@ -441,9 +441,4 @@ func (*environ) AllocateContainerAddresses(context.ProviderCallContext, instance
 // addresses matching the interface details passed in.
 func (*environ) ReleaseContainerAddresses(context.ProviderCallContext, []network.ProviderInterfaceInfo) error {
 	return errors.NotSupportedf("container address allocation")
-}
-
-// SSHAddresses filters the input addresses to those suitable for SSH use.
-func (*environ) SSHAddresses(ctx context.ProviderCallContext, addresses network.SpaceAddresses) (network.SpaceAddresses, error) {
-	return addresses, nil
 }

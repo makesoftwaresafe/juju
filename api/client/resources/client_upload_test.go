@@ -11,17 +11,18 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	charmresource "github.com/juju/charm/v8/resource"
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
 	"github.com/kr/pretty"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/client/resources"
 	apicharm "github.com/juju/juju/api/common/charm"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -126,7 +127,9 @@ func (s *UploadSuite) TestAddPendingResources(c *gc.C) {
 			Source:       "charm-hub",
 			ID:           "id",
 			Risk:         "stable",
+			Base:         params.Base{Name: "ubuntu", Channel: "22.04/stable"},
 			OS:           "ubuntu",
+			Channel:      "22.04/stable",
 			Architecture: "arm64",
 		},
 		Resources: []params.CharmResource{apiResult.Resources[0].CharmResource},
@@ -148,7 +151,7 @@ func (s *UploadSuite) TestAddPendingResources(c *gc.C) {
 				Source:       apicharm.OriginCharmHub,
 				ID:           "id",
 				Risk:         "stable",
-				OS:           "ubuntu",
+				Base:         series.MakeDefaultBase("ubuntu", "22.04"),
 				Architecture: "arm64",
 			},
 		},

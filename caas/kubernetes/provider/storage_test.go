@@ -4,8 +4,8 @@
 package provider_test
 
 import (
-	"github.com/golang/mock/gomock"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -169,7 +169,7 @@ func (s *storageSuite) TestDescribeVolumes(c *gc.C) {
 	result, err := vs.DescribeVolumes(&context.CloudCallContext{}, []string{"vol-id"})
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(result, jc.DeepEquals, []storage.DescribeVolumesResult{{
-		VolumeInfo: &storage.VolumeInfo{VolumeId: "vol-id", Size: 68, Persistent: true},
+		VolumeInfo: &storage.VolumeInfo{VolumeId: "vol-id", Size: 66, Persistent: true},
 	}})
 }
 

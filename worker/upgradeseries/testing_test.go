@@ -1,17 +1,18 @@
 // Copyright 2018 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package upgradeseries_test
 
 import (
 	"github.com/juju/loggo"
+	"github.com/juju/names/v4"
 	"github.com/juju/worker/v3"
+	"go.uber.org/mock/gomock"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/juju/api/base"
 	workermocks "github.com/juju/juju/worker/mocks"
 	"github.com/juju/juju/worker/upgradeseries"
 	. "github.com/juju/juju/worker/upgradeseries/mocks"
-	"github.com/juju/names/v4"
 )
 
 // validManifoldConfig returns a valid manifold config created from mocks based

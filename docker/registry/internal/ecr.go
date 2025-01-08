@@ -36,7 +36,7 @@ func (l ecrLogger) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/ecr_mock.go github.com/juju/juju/docker/registry/internal ECRInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/ecr_mock.go github.com/juju/juju/docker/registry/internal ECRInterface
 type ECRInterface interface {
 	GetAuthorizationToken(context.Context, *ecr.GetAuthorizationTokenInput, ...func(*ecr.Options)) (*ecr.GetAuthorizationTokenOutput, error)
 }
@@ -86,6 +86,10 @@ func normalizeRepoDetailsElasticContainerRegistry(repoDetails *docker.ImageRepoD
 	}
 }
 
+func (c *elasticContainerRegistry) String() string {
+	return "*.dkr.ecr.*.amazonaws.com"
+}
+
 // Match checks if the repository details matches current provider format.
 func (c *elasticContainerRegistry) Match() bool {
 	return strings.Contains(c.repoDetails.ServerAddress, "amazonaws.com")
@@ -123,16 +127,15 @@ func (c *elasticContainerRegistry) refreshTokenForElasticContainerRegistry(image
 }
 
 // ShouldRefreshAuth checks if the repoDetails should be refreshed.
-func (c *elasticContainerRegistry) ShouldRefreshAuth() (bool, *time.Duration) {
+func (c *elasticContainerRegistry) ShouldRefreshAuth() (bool, time.Duration) {
 	if c.repoDetails.Auth.Empty() || c.repoDetails.Auth.ExpiresAt == nil {
-		return true, nil
+		return true, time.Duration(0)
 	}
 	d := time.Until(*c.repoDetails.Auth.ExpiresAt)
 	if d <= advanceExpiry {
-		return true, nil
+		return true, time.Duration(0)
 	}
-	nextCheckDuration := d - advanceExpiry
-	return false, &nextCheckDuration
+	return false, d - advanceExpiry
 }
 
 // RefreshAuth refreshes the repoDetails.
@@ -146,13 +149,23 @@ func (c *elasticContainerRegistry) elasticContainerRegistryTransport(
 	if repoDetails.BasicAuthConfig.Empty() {
 		return nil, errors.NewNotValid(nil, "empty credential for elastic container registry")
 	}
-	if err := c.refreshTokenForElasticContainerRegistry(repoDetails); err != nil {
-		return nil, errors.Trace(err)
+	if repoDetails.Region == "" {
+		return nil, errors.NewNotValid(nil, "region is required")
 	}
-	if repoDetails.Auth.Empty() {
-		return nil, errors.NewNotValid(nil, "empty identity token for elastic container registry")
+	if repoDetails.Username == "" || repoDetails.Password == "" {
+		return nil, errors.NewNotValid(nil,
+			fmt.Sprintf("username and password are required for registry %q", repoDetails.Repository),
+		)
 	}
-	return newBasicTransport(transport, "", "", repoDetails.Auth.Value), nil
+	return dynamicTransportFunc(func() (http.RoundTripper, error) {
+		if err := c.refreshTokenForElasticContainerRegistry(repoDetails); err != nil {
+			return nil, errors.Trace(err)
+		}
+		if repoDetails.Auth.Empty() {
+			return nil, errors.NewNotValid(nil, "empty identity token for elastic container registry")
+		}
+		return newBasicTransport(transport, "", "", repoDetails.Auth.Value), nil
+	}), nil
 }
 
 func (c *elasticContainerRegistry) WrapTransport(...TransportWrapper) (err error) {
@@ -204,13 +217,19 @@ func newElasticContainerRegistryPublic(repoDetails docker.ImageRepoDetails, tran
 	return &elasticContainerRegistryPublic{c}
 }
 
+func (c *elasticContainerRegistryPublic) String() string {
+	return "public.ecr.aws"
+}
+
 // Match checks if the repository details matches current provider format.
 func (c *elasticContainerRegistryPublic) Match() bool {
 	return strings.Contains(c.repoDetails.ServerAddress, "public.ecr.aws")
 }
 
-func (c *elasticContainerRegistryPublic) WrapTransport(...TransportWrapper) error {
-	// `/manifests` and `/blobs` API work.
-	// but `/tags/list` does not work. - https://github.com/aws/containers-roadmap/issues/1262
-	return errors.NotSupportedf("container registry %q", c.repoDetails.ServerAddress)
+func (c *elasticContainerRegistryPublic) WrapTransport(wrappers ...TransportWrapper) error {
+	return c.baseClient.WrapTransport(wrappers...)
+}
+
+func (c *elasticContainerRegistryPublic) Ping() error {
+	return nil
 }

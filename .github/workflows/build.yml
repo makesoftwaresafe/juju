@@ -1,22 +1,13 @@
 name: "Build"
 on:
   push:
-    paths-ignore:
-      - 'acceptancetests/**'
-      - 'doc/**'
-      - 'snap/**'
-      - 'testcharms/**'
-      - 'testing/**'
-      - 'tests/**'
+    branches: [2.9, 3.1, 3.2, 3.3, main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - 'acceptancetests/**'
-      - 'doc/**'
-      - 'snap/**'
-      - 'testcharms/**'
-      - 'testing/**'
-      - 'tests/**'
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
@@ -25,9 +16,10 @@ permissions:
 jobs:
   Build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64, aws, large]
     if: github.event.pull_request.draft == false
     strategy:
+      fail-fast: false
       matrix:
         platform:
            - { os: linux, arch: amd64 }
@@ -41,17 +33,11 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
 
-    - name: Find required go version
-      id: go-version
-      run: |
-        set -euxo pipefail
-        echo "::set-output name=version::$(grep '^go ' go.mod | awk '{print $2}')"
-
     - name: Set up Go
       uses: actions/setup-go@v3
       with:
-        go-version: ${{ steps.go-version.outputs.version }}
-      id: go
+        go-version-file: 'go.mod'
+        cache: true
 
     - name: Build
       run: |

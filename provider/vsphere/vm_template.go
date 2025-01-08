@@ -16,7 +16,6 @@ import (
 
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/imagemetadata"
-	"github.com/juju/juju/provider/common"
 	"github.com/juju/juju/provider/vsphere/internal/vsphereclient"
 )
 
@@ -129,7 +128,7 @@ func (v *vmTemplateManager) getVMArch(ctx context.Context, vmObj *object.Virtual
 }
 
 func (v *vmTemplateManager) getImportedTemplate(ctx context.Context, series string, agentArch string) (*object.VirtualMachine, string, error) {
-	logger.Tracef("getImportedTemplate for series %q, arch %q", agentArch)
+	logger.Tracef("getImportedTemplate for series %q, arch %q", series, agentArch)
 	seriesTemplatesFolder := v.seriesTemplateFolder(series)
 	seriesTemplates, err := v.client.ListVMTemplates(ctx, path.Join(seriesTemplatesFolder, "*"))
 	if err != nil {
@@ -184,7 +183,7 @@ func (v *vmTemplateManager) downloadAndImportTemplate(
 	}
 	img, err := findImageMetadata(v.env, arch, series)
 	if err != nil {
-		return nil, "", common.ZoneIndependentError(err)
+		return nil, "", environs.ZoneIndependentError(err)
 	}
 
 	readOVA := func() (string, io.ReadCloser, error) {

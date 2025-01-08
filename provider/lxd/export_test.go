@@ -5,6 +5,7 @@ package lxd
 
 import (
 	"errors"
+	"net/http"
 
 	"github.com/juju/clock"
 
@@ -35,14 +36,12 @@ func NewProviderWithMocks(
 func NewProviderCredentials(
 	certReadWriter CertificateReadWriter,
 	certGenerator CertificateGenerator,
-	lookup NetLookup,
 	serverFactory ServerFactory,
 	configReader LXCConfigReader,
 ) environs.ProviderCredentials {
 	return environProviderCredentials{
 		certReadWriter:  certReadWriter,
 		certGenerator:   certGenerator,
-		lookup:          lookup,
 		serverFactory:   serverFactory,
 		lxcConfigReader: configReader,
 	}
@@ -58,6 +57,9 @@ func NewServerFactoryWithMocks(localServerFunc func() (Server, error),
 		newRemoteServerFunc: remoteServerFunc,
 		interfaceAddress:    interfaceAddress,
 		clock:               clock,
+		newHTTPClientFunc: NewHTTPClientFunc(func() *http.Client {
+			return &http.Client{}
+		}),
 	}
 }
 

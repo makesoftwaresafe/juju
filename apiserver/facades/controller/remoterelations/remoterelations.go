@@ -18,7 +18,7 @@ import (
 	"github.com/juju/juju/state/watcher"
 )
 
-// API provides access to version 1 of the remote relations API facade.
+// APIv1 provides access to version 1 of the remote relations API facade.
 type APIv1 struct {
 	*API
 }
@@ -193,6 +193,7 @@ func (api *API) remoteRelation(entity params.Entity) (*params.RemoteRelation, er
 		Life:      life.Value(rel.Life().String()),
 		Suspended: rel.Suspended(),
 		Key:       tag.Id(),
+		UnitCount: rel.UnitCount(),
 	}
 	for _, ep := range rel.Endpoints() {
 		// Try looking up the info for the remote application.
@@ -378,10 +379,6 @@ func (api *API) WatchLocalRelationChanges(args params.Entities) (params.RemoteRe
 	return results, nil
 }
 
-// Mask out new methods from the old API versions. The API reflection
-// code in rpc/rpcreflect/type.go:newMethod skips 2-argument methods,
-// so this removes the method as far as the RPC machinery is concerned.
-//
 // WatchLocalRelationChanges doesn't exist before the v2 API.
 func (api *APIv1) WatchLocalRelationChanges(_, _ struct{}) {}
 
@@ -448,7 +445,12 @@ func (api *API) ConsumeRemoteRelationChanges(changes params.RemoteRelationsChang
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}
-		if err := commoncrossmodel.PublishRelationChange(api.st, relationTag, change); err != nil {
+		applicationTag, err := api.st.GetRemoteEntity(change.ApplicationToken)
+		if err != nil && !errors.IsNotFound(err) {
+			results.Results[i].Error = apiservererrors.ServerError(err)
+			continue
+		}
+		if err := commoncrossmodel.PublishRelationChange(api.st, relationTag, applicationTag, change); err != nil {
 			results.Results[i].Error = apiservererrors.ServerError(err)
 			continue
 		}

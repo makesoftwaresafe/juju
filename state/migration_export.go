@@ -16,7 +16,6 @@ import (
 	"github.com/juju/loggo"
 	"github.com/juju/mgo/v2/bson"
 	"github.com/juju/names/v4"
-	"github.com/juju/os/v2/series"
 
 	"github.com/juju/juju/core/arch"
 	corecharm "github.com/juju/juju/core/charm"
@@ -25,6 +24,7 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/payloads"
 	"github.com/juju/juju/core/resources"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/feature"
 	"github.com/juju/juju/state/migrations"
 	"github.com/juju/juju/storage/poolmanager"
@@ -129,10 +129,15 @@ func (st *State) exportImpl(cfg ExportConfig) (description.Model, error) {
 		return nil, errors.Trace(err)
 	}
 
+	region, err := deriveCloudRegion(dbModel)
+	if err != nil {
+		return nil, errors.Annotate(err, "deriving cloud region")
+	}
+
 	args := description.ModelArgs{
 		Type:               string(dbModel.Type()),
 		Cloud:              dbModel.CloudName(),
-		CloudRegion:        dbModel.CloudRegion(),
+		CloudRegion:        region,
 		Owner:              dbModel.Owner(),
 		Config:             modelConfig.Settings,
 		PasswordHash:       dbModel.doc.PasswordHash,
@@ -244,6 +249,30 @@ func (st *State) exportImpl(cfg ExportConfig) (description.Model, error) {
 	}
 
 	return export.model, nil
+}
+
+// deriveCloudRegion accommodates migration of the model's cloud region
+// for legacy Oracle models that derived region from credentials.
+// If this model is on OCI and its credential has a region attribute,
+// we'll use that. Otherwise, it's the model's region as usual.
+func deriveCloudRegion(m *Model) (string, error) {
+	cloud, err := m.Cloud()
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+
+	if cloud.Type == "oci" {
+		cred, _, err := m.CloudCredential()
+		if err != nil {
+			return "", errors.Trace(err)
+		}
+
+		if region := cred.Attributes["region"]; region != "" {
+			return region, nil
+		}
+	}
+
+	return m.CloudRegion(), nil
 }
 
 // ExportStateMigration defines a migration for exporting various entities into
@@ -454,12 +483,18 @@ func (e *exporter) loadMachineBlockDevices() (map[string][]BlockDeviceInfo, erro
 }
 
 func (e *exporter) newMachine(exParent description.Machine, machine *Machine, instances map[string]instanceData, portsData map[string]*machinePortRanges, blockDevices map[string][]BlockDeviceInfo) (description.Machine, error) {
+	base, err := series.GetBaseFromSeries(machine.doc.Series)
+	if err != nil {
+		return nil, fmt.Errorf("converting series %q to base: %w", machine.doc.Series, err)
+	}
+
 	args := description.MachineArgs{
 		Id:            machine.MachineTag(),
 		Nonce:         machine.doc.Nonce,
 		PasswordHash:  machine.doc.PasswordHash,
 		Placement:     machine.doc.Placement,
 		Series:        machine.doc.Series,
+		Base:          base.String(),
 		ContainerType: machine.doc.ContainerType,
 	}
 
@@ -865,6 +900,13 @@ func (e *exporter) addApplication(ctx addApplicationContext) error {
 		args.StorageConstraints = e.storageConstraints(constraints)
 	}
 
+	if ps := application.ProvisioningState(); ps != nil {
+		args.ProvisioningState = &description.ProvisioningStateArgs{
+			Scaling:     ps.Scaling,
+			ScaleTarget: ps.ScaleTarget,
+		}
+	}
+
 	// Include exposed endpoint details
 	if len(application.doc.ExposedEndpoints) > 0 {
 		args.ExposedEndpoints = make(map[string]description.ExposedEndpointArgs)
@@ -1209,60 +1251,106 @@ func (e *exporter) relations() error {
 		}
 
 		for _, ep := range relation.Endpoints() {
-			exEndPoint := exRelation.AddEndpoint(description.EndpointArgs{
-				ApplicationName: ep.ApplicationName,
-				Name:            ep.Name,
-				Role:            string(ep.Role),
-				Interface:       ep.Interface,
-				Optional:        ep.Optional,
-				Limit:           ep.Limit,
-				Scope:           string(ep.Scope),
-			})
-
-			key := relationApplicationSettingsKey(relation.Id(), ep.ApplicationName)
-			appSettingsDoc, found := e.modelSettings[key]
-			if !found && !e.cfg.SkipSettings && !e.cfg.SkipRelationData {
-				return errors.Errorf("missing application settings for %q application %q", relation, ep.ApplicationName)
-			}
-			delete(e.modelSettings, key)
-			exEndPoint.SetApplicationSettings(appSettingsDoc.Settings)
-
-			// We expect a relationScope and settings for each of the units of
-			// the specified application unless it is a remote application.
-			// Remote applications will have no units in the local model and
-			// are implicitly ignored.
-			units := e.units[ep.ApplicationName]
-			for _, unit := range units {
-				ru, err := relation.Unit(unit)
-				if err != nil {
-					return errors.Trace(err)
-				}
-				valid, err := ru.Valid()
-				if err != nil {
-					return errors.Trace(err)
-				}
-				if !valid {
-					// It doesn't make sense for this application to have a
-					// relations scope for this endpoint. For example the
-					// situation where we have a subordinate charm related to
-					// two different principals.
-					continue
-				}
-				key := ru.key()
-				if !e.cfg.SkipRelationData && !relationScopes.Contains(key) && !e.cfg.IgnoreIncompleteModel {
-					return errors.Errorf("missing relation scope for %s and %s", relation, unit.Name())
-				}
-				settingsDoc, found := e.modelSettings[key]
-				if !found && !e.cfg.SkipSettings && !e.cfg.SkipRelationData && !e.cfg.IgnoreIncompleteModel {
-					return errors.Errorf("missing relation settings for %s and %s", relation, unit.Name())
-				}
-				delete(e.modelSettings, key)
-				exEndPoint.SetUnitSettings(unit.Name(), settingsDoc.Settings)
+			if err := e.relationEndpoint(relation, exRelation, ep, relationScopes); err != nil {
+				return errors.Trace(err)
 			}
 		}
 	}
 	return nil
 }
+
+func (e *exporter) relationEndpoint(
+	relation *Relation,
+	exRelation description.Relation,
+	ep Endpoint,
+	relationScopes set.Strings,
+) error {
+	exEndPoint := exRelation.AddEndpoint(description.EndpointArgs{
+		ApplicationName: ep.ApplicationName,
+		Name:            ep.Name,
+		Role:            string(ep.Role),
+		Interface:       ep.Interface,
+		Optional:        ep.Optional,
+		Limit:           ep.Limit,
+		Scope:           string(ep.Scope),
+	})
+
+	key := relationApplicationSettingsKey(relation.Id(), ep.ApplicationName)
+	appSettingsDoc, found := e.modelSettings[key]
+	if !found && !e.cfg.SkipSettings && !e.cfg.SkipRelationData {
+		return errors.Errorf("missing application settings for %q application %q", relation, ep.ApplicationName)
+	}
+	delete(e.modelSettings, key)
+	exEndPoint.SetApplicationSettings(appSettingsDoc.Settings)
+
+	// We expect a relationScope and settings for each of
+	// the units of the specified application.
+	// We need to check both local and remote applications
+	// in case we are dealing with a CMR.
+	if units, ok := e.units[ep.ApplicationName]; ok {
+		for _, unit := range units {
+			ru, err := relation.Unit(unit)
+			if err != nil {
+				return errors.Trace(err)
+			}
+
+			if err := e.relationUnit(exEndPoint, ru, unit.Name(), relationScopes); err != nil {
+				return errors.Annotatef(err, "processing relation unit in %s", relation)
+			}
+		}
+	} else {
+		remotes, err := relation.AllRemoteUnits(ep.ApplicationName)
+		if err != nil {
+			if errors.Is(err, errors.NotFound) {
+				// If there are no local or remote units for this application,
+				// then there are none in scope. We are done.
+				return nil
+			}
+			return errors.Annotatef(err, "retrieving remote units for %s", relation)
+		}
+
+		for _, ru := range remotes {
+			if err := e.relationUnit(exEndPoint, ru, ru.unitName, relationScopes); err != nil {
+				return errors.Annotatef(err, "processing relation unit in %s", relation)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *exporter) relationUnit(
+	exEndPoint description.Endpoint,
+	ru *RelationUnit,
+	unitName string,
+	relationScopes set.Strings,
+) error {
+	valid, err := ru.Valid()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if !valid {
+		// It doesn't make sense for this application to have a
+		// relations scope for this endpoint. For example the
+		// situation where we have a subordinate charm related to
+		// two different principals.
+		return nil
+	}
+
+	key := ru.key()
+	if !e.cfg.SkipRelationData && !relationScopes.Contains(key) && !e.cfg.IgnoreIncompleteModel {
+		return errors.Errorf("missing relation scope for %s", unitName)
+	}
+	settingsDoc, found := e.modelSettings[key]
+	if !found && !e.cfg.SkipSettings && !e.cfg.SkipRelationData && !e.cfg.IgnoreIncompleteModel {
+		return errors.Errorf("missing relation settings for %s", unitName)
+	}
+	delete(e.modelSettings, key)
+	exEndPoint.SetUnitSettings(unitName, settingsDoc.Settings)
+
+	return nil
+}
+
 func (e *exporter) firewallRules() error {
 	e.logger.Debugf("reading firewall rules")
 	migration := &ExportStateMigration{
@@ -1625,7 +1713,6 @@ func (e *exporter) cloudimagemetadata() error {
 			Stream:          metadata.Stream,
 			Region:          metadata.Region,
 			Version:         metadata.Version,
-			Series:          metadata.Series,
 			Arch:            metadata.Arch,
 			VirtType:        metadata.VirtType,
 			RootStorageType: metadata.RootStorageType,
@@ -1719,7 +1806,7 @@ func (e *exporter) readAllRelationScopes() (set.Strings, error) {
 	relationScopes, closer := e.st.db().GetCollection(relationScopesC)
 	defer closer()
 
-	docs := []relationScopeDoc{}
+	var docs []relationScopeDoc
 	err := relationScopes.Find(nil).All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all relation scopes")
@@ -1737,7 +1824,7 @@ func (e *exporter) readAllUnits() (map[string][]*Unit, error) {
 	unitsCollection, closer := e.st.db().GetCollection(unitsC)
 	defer closer()
 
-	docs := []unitDoc{}
+	var docs []unitDoc
 	err := unitsCollection.Find(nil).Sort("name").All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all units")
@@ -1755,7 +1842,7 @@ func (e *exporter) readAllEndpointBindings() (map[string]bindingsMap, error) {
 	bindings, closer := e.st.db().GetCollection(endpointBindingsC)
 	defer closer()
 
-	docs := []endpointBindingsDoc{}
+	var docs []endpointBindingsDoc
 	err := bindings.Find(nil).All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all application endpoint bindings")
@@ -1772,14 +1859,15 @@ func (e *exporter) readAllMeterStatus() (map[string]*meterStatusDoc, error) {
 	meterStatuses, closer := e.st.db().GetCollection(meterStatusC)
 	defer closer()
 
-	docs := []meterStatusDoc{}
+	var docs []meterStatusDoc
 	err := meterStatuses.Find(nil).All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all meter status docs")
 	}
 	e.logger.Debugf("found %d meter status docs", len(docs))
 	result := make(map[string]*meterStatusDoc)
-	for _, doc := range docs {
+	for _, v := range docs {
+		doc := v
 		result[e.st.localID(doc.DocID)] = &doc
 	}
 	return result, nil
@@ -1789,7 +1877,7 @@ func (e *exporter) readAllPodSpecs() (map[string]string, error) {
 	specs, closer := e.st.db().GetCollection(podSpecsC)
 	defer closer()
 
-	docs := []containerSpecDoc{}
+	var docs []containerSpecDoc
 	err := specs.Find(nil).All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all pod spec docs")
@@ -1806,14 +1894,15 @@ func (e *exporter) readAllCloudServices() (map[string]*cloudServiceDoc, error) {
 	cloudServices, closer := e.st.db().GetCollection(cloudServicesC)
 	defer closer()
 
-	docs := []cloudServiceDoc{}
+	var docs []cloudServiceDoc
 	err := cloudServices.Find(nil).All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all cloud service docs")
 	}
 	e.logger.Debugf("found %d cloud service docs", len(docs))
 	result := make(map[string]*cloudServiceDoc)
-	for _, doc := range docs {
+	for _, v := range docs {
+		doc := v
 		result[e.st.localID(doc.DocID)] = &doc
 	}
 	return result, nil
@@ -1830,14 +1919,15 @@ func (e *exporter) readAllCloudContainers() (map[string]*cloudContainerDoc, erro
 	cloudContainers, closer := e.st.db().GetCollection(cloudContainersC)
 	defer closer()
 
-	docs := []cloudContainerDoc{}
+	var docs []cloudContainerDoc
 	err := cloudContainers.Find(nil).All(&docs)
 	if err != nil {
 		return nil, errors.Annotate(err, "cannot get all cloud container docs")
 	}
 	e.logger.Debugf("found %d cloud container docs", len(docs))
 	result := make(map[string]*cloudContainerDoc)
-	for _, doc := range docs {
+	for _, v := range docs {
+		doc := v
 		result[e.st.localID(doc.Id)] = &doc
 	}
 	return result, nil
@@ -1930,10 +2020,10 @@ func (e *exporter) getAnnotations(key string) map[string]string {
 }
 
 func (e *exporter) getCharmOrigin(doc applicationDoc, defaultArch string) (description.CharmOriginArgs, error) {
-	// Everything should be migrated, but in the case that it's not, handle
-	// that case.
+	// This should never happen. There is an upgrade step that makes sure we
+	// have charm origin. Getting in this state "should" be impossible.
 	if doc.CharmOrigin == nil {
-		return deduceOrigin(doc.CharmURL)
+		return description.CharmOriginArgs{}, errors.New("application is missing charm origin")
 	}
 	origin := doc.CharmOrigin
 
@@ -1966,10 +2056,17 @@ func (e *exporter) getCharmOrigin(doc applicationDoc, defaultArch string) (descr
 			}
 			os = strings.ToLower(sys.String())
 		}
+		// Legacy k8s charms - assume ubuntu focal.
+		if origin.Platform.Series == "kubernetes" {
+			origin.Platform.OS = "ubuntu"
+			origin.Platform.Series = "focal"
+		}
+		// TODO(wallyworld) - we need to update description to support channel
+		// For now, the serialised string is the same regardless.
 		platform = corecharm.Platform{
 			Architecture: pArch,
 			OS:           os,
-			Series:       origin.Platform.Series,
+			Channel:      origin.Platform.Series,
 		}
 	}
 
@@ -1981,28 +2078,6 @@ func (e *exporter) getCharmOrigin(doc applicationDoc, defaultArch string) (descr
 		Channel:  channel.String(),
 		Platform: platform.String(),
 	}, nil
-}
-
-func deduceOrigin(cURL *string) (description.CharmOriginArgs, error) {
-	url, err := charm.ParseURL(*cURL)
-	if err != nil {
-		return description.CharmOriginArgs{}, errors.NewNotValid(err, "charm url")
-	}
-
-	switch url.Schema {
-	case "cs":
-		return description.CharmOriginArgs{
-			Source: corecharm.CharmStore.String(),
-		}, nil
-	case "local":
-		return description.CharmOriginArgs{
-			Source: corecharm.Local.String(),
-		}, nil
-	default:
-		return description.CharmOriginArgs{
-			Source: corecharm.CharmHub.String(),
-		}, nil
-	}
 }
 
 func (e *exporter) readAllSettings() error {
@@ -2188,19 +2263,30 @@ func (e *exporter) constraintsArgs(globalKey string) (description.ConstraintsArg
 		}
 		return nil
 	}
+	optionalBool := func(name string) bool {
+		switch value := doc[name].(type) {
+		case nil:
+		case bool:
+			return value
+		default:
+			optionalErr = errors.Errorf("expected bool for %s, got %T", name, value)
+		}
+		return false
+	}
 	result := description.ConstraintsArgs{
-		Architecture:   optionalString("arch"),
-		Container:      optionalString("container"),
-		CpuCores:       optionalInt("cpucores"),
-		CpuPower:       optionalInt("cpupower"),
-		InstanceType:   optionalString("instancetype"),
-		Memory:         optionalInt("mem"),
-		RootDisk:       optionalInt("rootdisk"),
-		RootDiskSource: optionalString("rootdisksource"),
-		Spaces:         optionalStringSlice("spaces"),
-		Tags:           optionalStringSlice("tags"),
-		VirtType:       optionalString("virttype"),
-		Zones:          optionalStringSlice("zones"),
+		AllocatePublicIP: optionalBool("allocatepublicip"),
+		Architecture:     optionalString("arch"),
+		Container:        optionalString("container"),
+		CpuCores:         optionalInt("cpucores"),
+		CpuPower:         optionalInt("cpupower"),
+		InstanceType:     optionalString("instancetype"),
+		Memory:           optionalInt("mem"),
+		RootDisk:         optionalInt("rootdisk"),
+		RootDiskSource:   optionalString("rootdisksource"),
+		Spaces:           optionalStringSlice("spaces"),
+		Tags:             optionalStringSlice("tags"),
+		VirtType:         optionalString("virttype"),
+		Zones:            optionalStringSlice("zones"),
 	}
 	if optionalErr != nil {
 		return description.ConstraintsArgs{}, errors.Trace(optionalErr)

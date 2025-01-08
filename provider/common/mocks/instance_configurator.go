@@ -7,8 +7,8 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	firewall "github.com/juju/juju/core/network/firewall"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockInstanceConfigurator is a mock of InstanceConfigurator interface.
@@ -46,20 +46,6 @@ func (m *MockInstanceConfigurator) ChangeIngressRules(arg0 string, arg1 bool, ar
 func (mr *MockInstanceConfiguratorMockRecorder) ChangeIngressRules(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChangeIngressRules", reflect.TypeOf((*MockInstanceConfigurator)(nil).ChangeIngressRules), arg0, arg1, arg2)
-}
-
-// ConfigureExternalIpAddress mocks base method.
-func (m *MockInstanceConfigurator) ConfigureExternalIpAddress(arg0 int) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ConfigureExternalIpAddress", arg0)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// ConfigureExternalIpAddress indicates an expected call of ConfigureExternalIpAddress.
-func (mr *MockInstanceConfiguratorMockRecorder) ConfigureExternalIpAddress(arg0 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConfigureExternalIpAddress", reflect.TypeOf((*MockInstanceConfigurator)(nil).ConfigureExternalIpAddress), arg0)
 }
 
 // DropAllPorts mocks base method.

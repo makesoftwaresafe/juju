@@ -7,7 +7,6 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	charm "github.com/juju/charm/v8"
 	uniter "github.com/juju/juju/apiserver/facades/agent/uniter"
 	instance "github.com/juju/juju/core/instance"
@@ -15,6 +14,7 @@ import (
 	config "github.com/juju/juju/environs/config"
 	state "github.com/juju/juju/state"
 	names "github.com/juju/names/v4"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockLXDProfileBackendV2 is a mock of LXDProfileBackendV2 interface.
@@ -234,12 +234,11 @@ func (mr *MockLXDProfileUnitV2MockRecorder) AssignedMachineId() *gomock.Call {
 }
 
 // CharmURL mocks base method.
-func (m *MockLXDProfileUnitV2) CharmURL() (*charm.URL, error) {
+func (m *MockLXDProfileUnitV2) CharmURL() *string {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CharmURL")
-	ret0, _ := ret[0].(*charm.URL)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret0, _ := ret[0].(*string)
+	return ret0
 }
 
 // CharmURL indicates an expected call of CharmURL.

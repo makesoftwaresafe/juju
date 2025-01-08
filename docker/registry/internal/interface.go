@@ -10,16 +10,17 @@ import (
 	"github.com/juju/juju/tools"
 )
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/registry_mock.go github.com/juju/juju/docker/registry/internal Initializer
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/registry_mock.go github.com/juju/juju/docker/registry/internal Initializer
 
 // Registry provides APIs to interact with the OCI provider client.
 type Registry interface {
+	String() string
 	Tags(string) (tools.Versions, error)
 	GetArchitecture(imageName, tag string) (string, error)
 	Close() error
 	Ping() error
 	ImageRepoDetails() docker.ImageRepoDetails
-	ShouldRefreshAuth() (bool, *time.Duration)
+	ShouldRefreshAuth() (bool, time.Duration)
 	RefreshAuth() error
 }
 

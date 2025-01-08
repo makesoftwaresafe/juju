@@ -7,12 +7,12 @@ import (
 	"context"
 	stdcontext "context"
 
-	"github.com/golang/mock/gomock"
+	"github.com/canonical/lxd/shared/api"
 	"github.com/juju/cmd/v3/cmdtesting"
 	"github.com/juju/errors"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
-	"github.com/lxc/lxd/shared/api"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/cloudconfig/instancecfg"
@@ -104,7 +104,7 @@ func (s *environSuite) TestBootstrapOkay(c *gc.C) {
 	c.Check(result.CloudBootstrapFinalizer, gc.NotNil)
 
 	out := cmdtesting.Stderr(ctx)
-	c.Assert(out, gc.Equals, "To configure your system to better support LXD containers, please see: https://github.com/lxc/lxd/blob/master/doc/production-setup.md\n")
+	c.Assert(out, gc.Matches, "To configure your system to better support LXD containers, please see: .*\n")
 }
 
 func (s *environSuite) TestBootstrapAPI(c *gc.C) {
@@ -130,17 +130,13 @@ func (s *environSuite) TestDestroy(c *gc.C) {
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"juju": {{
 			Name: "not-ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-model-uuid": "other",
-				},
+			Config: map[string]string{
+				"user.juju-model-uuid": "other",
 			},
 		}, {
 			Name: "ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-model-uuid": s.Config.UUID(),
-				},
+			Config: map[string]string{
+				"user.juju-model-uuid": s.Config.UUID(),
 			},
 		}},
 	}
@@ -174,10 +170,8 @@ func (s *environSuite) TestDestroyInvalidCredentialsDestroyingFileSystems(c *gc.
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"juju": {{
 			Name: "ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-model-uuid": s.Config.UUID(),
-				},
+			Config: map[string]string{
+				"user.juju-model-uuid": s.Config.UUID(),
 			},
 		}},
 	}
@@ -202,17 +196,13 @@ func (s *environSuite) TestDestroyController(c *gc.C) {
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"juju": {{
 			Name: "not-ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-controller-uuid": "other",
-				},
+			Config: map[string]string{
+				"user.juju-controller-uuid": "other",
 			},
 		}, {
 			Name: "ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-controller-uuid": s.Config.UUID(),
-				},
+			Config: map[string]string{
+				"user.juju-controller-uuid": s.Config.UUID(),
 			},
 		}},
 	}
@@ -264,10 +254,8 @@ func (s *environSuite) TestDestroyControllerInvalidCredentialsHostedModels(c *gc
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"juju": {{
 			Name: "ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-controller-uuid": s.Config.UUID(),
-				},
+			Config: map[string]string{
+				"user.juju-controller-uuid": s.Config.UUID(),
 			},
 		}},
 	}
@@ -314,10 +302,8 @@ func (s *environSuite) TestDestroyControllerInvalidCredentialsDestroyFilesystem(
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"juju": {{
 			Name: "ours",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-controller-uuid": s.Config.UUID(),
-				},
+			Config: map[string]string{
+				"user.juju-controller-uuid": s.Config.UUID(),
 			},
 		}},
 	}
@@ -379,8 +365,6 @@ func (s *environSuite) TestInstanceAvailabilityZoneNamesInvalidCredentials(c *gc
 
 type environCloudProfileSuite struct {
 	lxd.EnvironSuite
-
-	callCtx envcontext.ProviderCallContext
 
 	svr          *lxd.MockServer
 	cloudSpecEnv environs.CloudSpecSetter
@@ -453,8 +437,6 @@ func (s *environCloudProfileSuite) expectCreateProfile(name string, err error) {
 
 type environProfileSuite struct {
 	lxd.EnvironSuite
-
-	callCtx envcontext.ProviderCallContext
 
 	svr    *lxd.MockServer
 	lxdEnv environs.LXDProfiler
@@ -582,7 +564,12 @@ func (s *environProfileSuite) expectMaybeWriteLXDProfile(hasProfile bool, name s
 			},
 		}
 		exp.CreateProfile(post).Return(nil)
-		expProfile := api.Profile{ProfilePut: post.ProfilePut}
+		expProfile := api.Profile{
+			Name:        post.Name,
+			Description: post.Description,
+			Config:      post.Config,
+			Devices:     post.Devices,
+		}
 		exp.GetProfile(name).Return(&expProfile, "etag", nil)
 	}
 }

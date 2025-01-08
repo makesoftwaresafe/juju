@@ -18,7 +18,6 @@ import (
 	"github.com/juju/mgo/v2/bson"
 	"github.com/juju/mgo/v2/txn"
 	"github.com/juju/names/v4"
-	"github.com/juju/os/v2/series"
 	"github.com/juju/replicaset/v2"
 	"github.com/kr/pretty"
 	core "k8s.io/api/core/v1"
@@ -34,6 +33,7 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/network/firewall"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
@@ -3896,28 +3896,32 @@ func EnsureCharmOriginRisk(pool *StatePool) error {
 
 func RemoveOrphanedCrossModelProxies(pool *StatePool) error {
 	return errors.Trace(runForAllModelStates(pool, func(st *State) error {
-		col, closer := st.db().GetCollection(applicationOffersC)
-		defer closer()
-
 		// Ideally we'd manipulate the collection data directly, but the
 		// operations to remove remotes apps are too complex to craft by hand.
 		allRemoteApps, err := st.AllRemoteApplications()
 		if err != nil {
 			return errors.Trace(err)
 		}
+		allRelations, err := st.AllRelations()
+		if err != nil {
+			return errors.Trace(err)
+		}
 
-		var appsToRemove []*RemoteApplication
+		appsToRemove := make(map[string]*RemoteApplication)
 		for _, app := range allRemoteApps {
 			// We only want this for the offering side.
 			if !app.IsConsumerProxy() {
 				continue
 			}
-			num, err := col.Find(bson.D{{"offer-uuid", app.OfferUUID()}}).Count()
+			appsToRemove[app.Name()] = app
+		}
+		for _, rel := range allRelations {
+			remoteApp, isCrossModel, err := rel.RemoteApplication()
 			if err != nil {
 				return errors.Trace(err)
 			}
-			if num == 0 {
-				appsToRemove = append(appsToRemove, app)
+			if isCrossModel {
+				delete(appsToRemove, remoteApp.Name())
 			}
 		}
 
@@ -4244,7 +4248,7 @@ func RemoveInvalidCharmPlaceholders(pool *StatePool) error {
 		iter := charms.Find(stillPlaceholder).Iter()
 		var cDoc charmDoc
 		for iter.Next(&cDoc) {
-			docs[cDoc.URL.String()] = cDoc.DocID
+			docs[*cDoc.URL] = cDoc.DocID
 		}
 
 		if err := iter.Close(); err != nil {
@@ -4454,7 +4458,7 @@ func RemoveLocalCharmOriginChannels(pool *StatePool) error {
 				return errors.Annotatef(err, "parsing charm url")
 			}
 
-			if charmURL.Schema != "local" {
+			if !charm.Local.Matches(charmURL.Schema) {
 				continue
 			}
 
@@ -4516,4 +4520,157 @@ func FixCharmhubLastPolltime(pool *StatePool) error {
 		}
 		return st.runRawTransaction(ops)
 	}))
+}
+
+// RemoveUseFloatingIPConfigFalse removes any model config key value pair:
+// use-floating-ip=false. It is deprecated, default by false and causing
+// much noise in logs.
+func RemoveUseFloatingIPConfigFalse(pool *StatePool) error {
+	st, err := pool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	return errors.Trace(applyToAllModelSettings(st, func(doc *settingsDoc) (bool, error) {
+		var changed bool
+		value, ok := doc.Settings["use-floating-ip"]
+		if ok && value != "" {
+			if v, ok := value.(bool); ok && !v {
+				changed = true
+				delete(doc.Settings, "use-floating-ip")
+			}
+		}
+		return changed, nil
+	}))
+}
+
+// CharmOriginChannelMustHaveTrack adds latest as a track for empty values
+// in channel for charmhub application's charm-origin.
+func CharmOriginChannelMustHaveTrack(pool *StatePool) error {
+	return errors.Trace(runForAllModelStates(pool, func(st *State) error {
+		col, closer := st.db().GetCollection(applicationsC)
+		defer closer()
+
+		var docs []applicationDoc
+		if err := col.Find(nil).All(&docs); err != nil {
+			return errors.Trace(err)
+		}
+
+		var ops []txn.Op
+		for _, doc := range docs {
+			// It is expected that every application should have a charm URL.
+			charmURL, err := charm.ParseURL(*doc.CharmURL)
+			if err != nil {
+				return errors.Annotatef(err, "parsing charm url")
+			}
+
+			if charm.Local.Matches(charmURL.Schema) || charm.CharmStore.Matches(charmURL.Schema) {
+				continue
+			}
+
+			origin := doc.CharmOrigin
+			if origin == nil || origin.Channel == nil || origin.Channel.Track != "" {
+				continue
+			}
+
+			ops = append(ops, txn.Op{
+				C:      applicationsC,
+				Id:     doc.DocID,
+				Assert: txn.DocExists,
+				Update: bson.D{{"$set", bson.D{{"charm-origin.channel.track", "latest"}}}},
+			})
+		}
+		if len(ops) > 0 {
+			return errors.Trace(st.db().RunTransaction(ops))
+		}
+		return nil
+	}))
+}
+
+// RemoveDefaultSeriesFromModelConfig removes the default series value from
+// each model's config. To allow users to set the value and be sure it's what
+// they want. Previously it was set by juju.
+func RemoveDefaultSeriesFromModelConfig(pool *StatePool) error {
+	st, err := pool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	var ops []txn.Op
+	coll, closer := st.db().GetRawCollection(settingsC)
+	defer closer()
+	pattern := fmt.Sprintf(":%s$", modelGlobalKey)
+	iter := coll.Find(bson.M{"_id": bson.M{"$regex": bson.RegEx{pattern, ""}}}).Iter()
+	defer func() { _ = iter.Close() }()
+	var doc settingsDoc
+	for iter.Next(&doc) {
+		_, ok := doc.Settings[config.DefaultSeriesKey]
+		if !ok {
+			continue
+		}
+		doc.Settings[config.DefaultSeriesKey] = ""
+		ops = append(ops, txn.Op{
+			C:      settingsC,
+			Id:     doc.DocID,
+			Assert: txn.DocExists,
+			Update: bson.M{"$set": bson.M{"settings": doc.Settings}},
+		})
+	}
+	if err := iter.Close(); err != nil {
+		return errors.Trace(err)
+	}
+	if len(ops) > 0 {
+		return errors.Trace(st.runRawTransaction(ops))
+	}
+	return nil
+}
+
+// CorrectControllerConfigDurations corrects durations stored in controller config
+// state as int durations (time.Duration nanosecond value), which was incorrectly
+// introduced in 2.9.38. This converts them back to string duration values.
+func CorrectControllerConfigDurations(pool *StatePool) error {
+	st, err := pool.SystemState()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	coll, closer := st.db().GetRawCollection(controllersC)
+	defer closer()
+
+	var doc settingsDoc
+	err = coll.Find(bson.M{"_id": ControllerSettingsGlobalKey}).One(&doc)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	needsUpdate := false
+	for _, k := range []string{controller.AgentRateLimitRate, controller.MaxDebugLogDuration} {
+		old, ok := doc.Settings[k]
+		if !ok {
+			continue
+		}
+		switch e := old.(type) {
+		case string:
+			_, err := time.ParseDuration(e)
+			if err != nil {
+				logger.Warningf("resetting controller config %s: %s", err.Error())
+				delete(doc.Settings, k)
+				needsUpdate = true
+			}
+		case int:
+			doc.Settings[k] = time.Duration(e).String()
+			needsUpdate = true
+		case int64:
+			doc.Settings[k] = time.Duration(e).String()
+			needsUpdate = true
+		}
+	}
+	if needsUpdate {
+		ops := []txn.Op{{
+			C:      controllersC,
+			Id:     doc.DocID,
+			Assert: txn.DocExists,
+			Update: bson.M{"$set": bson.M{"settings": doc.Settings}},
+		}}
+		return errors.Trace(st.runRawTransaction(ops))
+	}
+	return nil
 }

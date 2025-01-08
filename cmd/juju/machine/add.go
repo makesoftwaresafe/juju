@@ -25,6 +25,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/manual"
 	"github.com/juju/juju/environs/manual/sshprovisioner"
@@ -306,7 +307,7 @@ func (c *addCommand) Run(ctx *cmd.Context) error {
 		if err != nil {
 			return errors.Trace(err)
 		}
-		manualClientAPI = &manualAPIAdaptor{apiclient.NewClient(root)}
+		manualClientAPI = &manualAPIAdaptor{apiclient.NewClient(root, logger)}
 	}
 
 	if len(c.Disks) > 0 && machineManager.BestAPIVersion() < 1 {
@@ -354,9 +355,25 @@ func (c *addCommand) Run(ctx *cmd.Context) error {
 
 	jobs := []model.MachineJob{model.JobHostUnits}
 
+	var base *params.Base
+	if c.Series != "" && machineManager.BestAPIVersion() >= 8 {
+		info, err := series.GetBaseFromSeries(c.Series)
+		if err != nil {
+			return errors.NotValidf("machine series %q", c.Series)
+		}
+		c.Series = ""
+		base = &params.Base{
+			Name:    info.Name,
+			Channel: info.Channel.String(),
+		}
+		if machineManager.BestAPIVersion() >= 9 {
+			base.Channel = series.FromLegacyCentosChannel(base.Channel)
+		}
+	}
 	machineParams := params.AddMachineParams{
 		Placement:   c.Placement,
 		Series:      c.Series,
+		Base:        base,
 		Constraints: c.Constraints,
 		Jobs:        jobs,
 		Disks:       c.Disks,

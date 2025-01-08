@@ -31,7 +31,7 @@ run_basic_backup_restore() {
 	ensure "test-basic-backup-restore" "${file}"
 
 	echo "Deploy a workload (1 machine)"
-	juju deploy cs:~jameinel/ubuntu-lite-7
+	juju deploy jameinel-ubuntu-lite
 	wait_for "ubuntu-lite" "$(idle_condition "ubuntu-lite")"
 	juju status --format json | jq '.machines | length' | check 1
 	id0=$(juju status --format json | jq -r '.machines["0"]["instance-id"]')
@@ -61,8 +61,8 @@ run_basic_backup_restore() {
 	# Only do this check if provider is LXD (too hard to do for all providers)
 	if [ "${BOOTSTRAP_PROVIDER}" == "lxd" ] || [ "${BOOTSTRAP_PROVIDER}" == "localhost" ]; then
 		echo "Ensure that both instances are running (restore shouldn't terminate machines)"
-		lxc info "${id0}" | grep Status | check Running
-		lxc info "${id1}" | grep Status | check Running
+		lxc list --format json | jq --arg name "${id0}" -r '.[] | select(.name==$name) | .state.status' | check Running
+		lxc list --format json | jq --arg name "${id1}" -r '.[] | select(.name==$name) | .state.status' | check Running
 	fi
 
 	destroy_model "test-basic-backup-restore"

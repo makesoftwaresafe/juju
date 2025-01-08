@@ -33,7 +33,7 @@ import (
 
 	"github.com/juju/juju/api"
 	apiuniter "github.com/juju/juju/api/agent/uniter"
-	apiclient "github.com/juju/juju/api/client/client"
+	"github.com/juju/juju/api/client/charms"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/leadership"
 	corelease "github.com/juju/juju/core/lease"
@@ -136,7 +136,6 @@ type testContext struct {
 	pebbleClients          map[string]*fakePebbleClient
 	err                    string
 
-	wg             sync.WaitGroup
 	mu             sync.Mutex
 	hooksCompleted []string
 	runner         *mockRunner
@@ -531,7 +530,7 @@ func (s startUniter) step(c *gc.C, ctx *testContext) {
 	if err != nil {
 		panic(err.Error())
 	}
-	downloader := apiclient.NewCharmDownloader(ctx.apiConn)
+	downloader := charms.NewCharmDownloader(ctx.apiConn)
 	operationExecutor := operation.NewExecutor
 	if s.newExecutorFunc != nil {
 		operationExecutor = s.newExecutorFunc
@@ -552,7 +551,7 @@ func (s startUniter) step(c *gc.C, ctx *testContext) {
 		MachineLock:          processLock,
 		UpdateStatusSignal:   ctx.updateStatusHookTicker.ReturnTimer(),
 		NewOperationExecutor: operationExecutor,
-		NewProcessRunner: func(context runnercontext.Context, paths runnercontext.Paths, remoteExecutor runner.ExecFunc) runner.Runner {
+		NewProcessRunner: func(context runnercontext.Context, paths runnercontext.Paths, remoteExecutor runner.ExecFunc, options ...runner.Option) runner.Runner {
 			ctx.runner.ctx = context
 			return ctx.runner
 		},
@@ -706,7 +705,7 @@ func (s startupError) step(c *gc.C, ctx *testContext) {
 type verifyDeployed struct{}
 
 func (s verifyDeployed) step(c *gc.C, ctx *testContext) {
-	c.Assert(ctx.deployer.curl, jc.DeepEquals, curl(0))
+	c.Assert(ctx.deployer.staged, jc.DeepEquals, curl(0).String())
 	c.Assert(ctx.deployer.deployed, jc.IsTrue)
 }
 
@@ -798,13 +797,14 @@ func (s waitUnitAgent) step(c *gc.C, ctx *testContext) {
 				c.Logf("want resolved mode %q, got %q; still waiting", s.resolved, resolved)
 				continue
 			}
-			url, err := ctx.unit.CharmURL()
-			if err != nil {
-				c.Fatalf("cannot refresh unit: %v", err)
-			}
-			if url == nil {
+			urlStr := ctx.unit.CharmURL()
+			if urlStr == nil {
 				c.Logf("want unit charm %q, got nil; still waiting", curl(s.charm))
 				continue
+			}
+			url, err := corecharm.ParseURL(*urlStr)
+			if err != nil {
+				c.Fatalf("cannot refresh unit: %v", err)
 			}
 			if *url != *curl(s.charm) {
 				c.Logf("want unit charm %q, got %q; still waiting", curl(s.charm), url.String())
@@ -1033,7 +1033,9 @@ func (s verifyCharm) step(c *gc.C, ctx *testContext) {
 	err = ctx.unit.Refresh()
 	c.Assert(err, jc.ErrorIsNil)
 
-	url, err := ctx.unit.CharmURL()
+	urlStr := ctx.unit.CharmURL()
+	c.Assert(urlStr, gc.NotNil)
+	url, err := corecharm.ParseURL(*urlStr)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(url, gc.DeepEquals, curl(checkRevision))
 }

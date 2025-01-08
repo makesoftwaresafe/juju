@@ -7,12 +7,11 @@ run_charmstore_charmrevisionupdater() {
 
 	ensure "${model_name}" "${file}"
 
-	# Deploy an old revision of mysql
-	juju deploy cs:mysql-55
+	# Deploy an old revision of postgresql
+	juju deploy cs:jameinel-ubuntu-lite-9
 
 	# Wait for revision update worker to update the available revision.
-	# eg can-upgrade-to: cs:mysql-58
-	wait_for "cs:mysql-" '.applications["mysql"] | ."can-upgrade-to"'
+	wait_for "cs:jameinel-ubuntu-lite-" '.applications["ubuntu-lite"] | ."can-upgrade-to"'
 
 	destroy_model "${model_name}"
 }
@@ -27,7 +26,7 @@ run_charmhub_charmrevisionupdater() {
 	ensure "${model_name}" "${file}"
 
 	# Deploy an old revision of ubuntu
-	juju deploy ubuntu --channel=stable --revision=18
+	juju deploy ubuntu --channel=stable --revision=18 --series focal
 
 	# Wait for revision update worker to update the available revision.
 	# eg can-upgrade-to: ch:ubuntu-18

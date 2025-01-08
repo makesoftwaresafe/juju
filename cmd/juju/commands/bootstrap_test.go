@@ -23,6 +23,7 @@ import (
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/os/v2/series"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -36,7 +37,6 @@ import (
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/model"
-	"github.com/juju/juju/core/network"
 	jujuos "github.com/juju/juju/core/os"
 	jujuseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/environs"
@@ -46,7 +46,6 @@ import (
 	"github.com/juju/juju/environs/filestorage"
 	"github.com/juju/juju/environs/gui"
 	"github.com/juju/juju/environs/imagemetadata"
-	"github.com/juju/juju/environs/instances"
 	"github.com/juju/juju/environs/simplestreams"
 	sstesting "github.com/juju/juju/environs/simplestreams/testing"
 	"github.com/juju/juju/environs/sync"
@@ -69,7 +68,7 @@ import (
 
 type BootstrapSuite struct {
 	coretesting.FakeJujuXDGDataHomeSuite
-	testing.MgoSuite
+	mgotesting.MgoSuite
 	envtesting.ToolsFixture
 	store *jujuclient.MemStore
 	tw    loggo.TestWriter
@@ -119,7 +118,7 @@ func (s *BootstrapSuite) SetUpTest(c *gc.C) {
 
 	// NOTE(axw) we cannot patch BundleTools here, as the "gc.C" argument
 	// is invalidated once this method returns.
-	s.PatchValue(&envtools.BundleTools, func(bool, io.Writer, *version.Number) (version.Binary, bool, string, error) {
+	s.PatchValue(&envtools.BundleTools, func(bool, io.Writer, func(version.Number) version.Number) (version.Binary, version.Number, bool, string, error) {
 		panic("tests must call setupAutoUploadTest or otherwise patch envtools.BundleTools")
 	})
 
@@ -201,7 +200,6 @@ type bootstrapTest struct {
 	info string
 	// binary version string used to set jujuversion.Current
 	version   string
-	sync      bool
 	args      []string
 	err       string
 	silentErr bool
@@ -255,7 +253,7 @@ func (s *BootstrapSuite) run(c *gc.C, test bootstrapTest) testing.Restorer {
 			uploadVers := version.MustParseBinary(test.upload)
 			bootstrapVersion.Number = uploadVers.Number
 		}
-		restore = restore.Add(testing.PatchValue(&envtools.BundleTools, toolstesting.GetMockBundleTools(c, &bootstrapVersion.Number)))
+		restore = restore.Add(testing.PatchValue(&envtools.BundleTools, toolstesting.GetMockBundleTools(bootstrapVersion.Number)))
 	}
 
 	if test.hostArch != "" {
@@ -1021,14 +1019,6 @@ func (s *BootstrapSuite) TestBootstrapWithoutGUI(c *gc.C) {
 	c.Assert(bootstrapFuncs.args.GUIDataSourceBaseURL, gc.Equals, "")
 }
 
-type mockBootstrapInstance struct {
-	instances.Instance
-}
-
-func (*mockBootstrapInstance) Addresses() ([]network.SpaceAddress, error) {
-	return []network.SpaceAddress{{MachineAddress: network.MachineAddress{Value: "localhost"}}}, nil
-}
-
 // In the case where we cannot examine the client store, we want the
 // error to propagate back up to the user.
 func (s *BootstrapSuite) TestBootstrapPropagatesStoreErrors(c *gc.C) {
@@ -1209,9 +1199,11 @@ func (s *BootstrapSuite) TestBootstrapAlreadyExists(c *gc.C) {
 
 func (s *BootstrapSuite) TestInvalidLocalSource(c *gc.C) {
 	s.PatchValue(&jujuversion.Current, version.MustParse("1.2.0"))
-	s.PatchValue(&envtools.BundleTools, func(bool, io.Writer, *version.Number) (version.Binary, bool, string, error) {
-		return version.Binary{}, false, "", errors.New("no agent binaries for you")
-	})
+	s.PatchValue(&envtools.BundleTools,
+		func(bool, io.Writer, func(localBinaryVersion version.Number) version.Number) (version.Binary, version.Number, bool, string, error) {
+			return version.Binary{}, version.Number{}, false, "", errors.New("no agent binaries for you")
+		},
+	)
 	s.PatchValue(&envtools.DefaultBaseURL, c.MkDir())
 	resetJujuXDGDataHome(c)
 
@@ -1390,7 +1382,7 @@ my-dummy-cloud
 func (s *BootstrapSuite) setupAutoUploadTest(c *gc.C, vers, ser string) {
 	patchedVersion := version.MustParse(vers)
 	patchedVersion.Build = 1
-	s.PatchValue(&envtools.BundleTools, toolstesting.GetMockBundleTools(c, &patchedVersion))
+	s.PatchValue(&envtools.BundleTools, toolstesting.GetMockBundleTools(patchedVersion))
 	sourceDir := createToolsSource(c, vAll)
 	s.PatchValue(&envtools.DefaultBaseURL, sourceDir)
 
@@ -1446,7 +1438,9 @@ func (s *BootstrapSuite) TestMissingToolsError(c *gc.C) {
 }
 
 func (s *BootstrapSuite) TestMissingToolsUploadFailedError(c *gc.C) {
-	BuildAgentTarballAlwaysFails := func(build bool, forceVersion *version.Number, stream string) (*sync.BuiltAgent, error) {
+	BuildAgentTarballAlwaysFails := func(
+		bool, string, func(version.Number) version.Number,
+	) (*sync.BuiltAgent, error) {
 		return nil, errors.New("an error")
 	}
 
@@ -2093,18 +2087,23 @@ eu-west-1
 eu-west-2
 eu-west-3
 eu-central-1
+eu-central-2
 eu-north-1
 eu-south-1
+eu-south-2
 af-south-1
 ap-east-1
 ap-south-1
+ap-south-2
 ap-southeast-1
 ap-southeast-2
 ap-southeast-3
+ap-southeast-4
 ap-northeast-1
 ap-northeast-2
 ap-northeast-3
 me-south-1
+me-central-1
 sa-east-1
 `[1:])
 }
@@ -2113,7 +2112,7 @@ func (s *BootstrapSuite) TestBootstrapInvalidRegion(c *gc.C) {
 	resetJujuXDGDataHome(c)
 	ctx, err := cmdtesting.RunCommand(c, s.newBootstrapCommand(), "aws/eu-west")
 	c.Assert(err, gc.ErrorMatches, `region "eu-west" for cloud "aws" not valid`)
-	c.Assert(cmdtesting.Stderr(ctx), gc.Equals, "Available cloud regions are af-south-1, ap-east-1, ap-northeast-1, ap-northeast-2, ap-northeast-3, ap-south-1, ap-southeast-1, ap-southeast-2, ap-southeast-3, ca-central-1, eu-central-1, eu-north-1, eu-south-1, eu-west-1, eu-west-2, eu-west-3, me-south-1, sa-east-1, us-east-1, us-east-2, us-west-1, us-west-2\n")
+	c.Assert(cmdtesting.Stderr(ctx), gc.Equals, "Available cloud regions are af-south-1, ap-east-1, ap-northeast-1, ap-northeast-2, ap-northeast-3, ap-south-1, ap-south-2, ap-southeast-1, ap-southeast-2, ap-southeast-3, ap-southeast-4, ca-central-1, eu-central-1, eu-central-2, eu-north-1, eu-south-1, eu-south-2, eu-west-1, eu-west-2, eu-west-3, me-central-1, me-south-1, sa-east-1, us-east-1, us-east-2, us-west-1, us-west-2\n")
 	c.Assert(cmdtesting.Stdout(ctx), gc.Equals, ``)
 }
 

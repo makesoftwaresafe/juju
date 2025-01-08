@@ -35,8 +35,7 @@ func newWorkers(st *State, hub *pubsub.SimpleHub) (*workers, error) {
 		state: st,
 		hub:   hub,
 		Runner: worker.NewRunner(worker.RunnerParams{
-			// TODO add a Logger parameter to RunnerParams:
-			// Logger: loggo.GetLogger(logger.Name() + ".workers"),
+			Logger:       loggo.GetLogger("juju.state.watcher"),
 			IsFatal:      func(err error) bool { return err == jworker.ErrRestartAgent },
 			RestartDelay: time.Second,
 			Clock:        st.clock(),
@@ -46,7 +45,7 @@ func newWorkers(st *State, hub *pubsub.SimpleHub) (*workers, error) {
 		return watcher.NewHubWatcher(watcher.HubWatcherConfig{
 			Hub:       hub,
 			Clock:     st.clock(),
-			ModelUUID: st.modelUUID(),
+			ModelUUID: st.ModelUUID(),
 			Logger:    loggo.GetLogger("juju.state.watcher"),
 		})
 	})

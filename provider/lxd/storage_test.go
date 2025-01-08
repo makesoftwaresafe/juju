@@ -4,11 +4,11 @@
 package lxd_test
 
 import (
+	"github.com/canonical/lxd/shared/api"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
-	"github.com/lxc/lxd/shared/api"
 	gc "gopkg.in/check.v1"
 
 	containerlxd "github.com/juju/juju/container/lxd"
@@ -239,19 +239,15 @@ func (s *storageSuite) TestReleaseFilesystems(c *gc.C) {
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"foo": {{
 			Name: "filesystem-0",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"foo":                  "bar",
-					"user.juju-model-uuid": "baz",
-				},
+			Config: map[string]string{
+				"foo":                  "bar",
+				"user.juju-model-uuid": "baz",
 			},
 		}, {
 			Name: "filesystem-1",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"user.juju-controller-uuid": "qux",
-					"user.juju-model-uuid":      "quux",
-				},
+			Config: map[string]string{
+				"user.juju-controller-uuid": "qux",
+				"user.juju-model-uuid":      "quux",
 			},
 		}},
 	}
@@ -563,10 +559,8 @@ func (s *storageSuite) TestImportFilesystem(c *gc.C) {
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"foo": {{
 			Name: "bar",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"size": "10GiB",
-				},
+			Config: map[string]string{
+				"size": "10GiB",
 			},
 		}},
 	}
@@ -621,10 +615,8 @@ func (s *storageSuite) TestImportFilesystemInvalidCredentialsUpdatePool(c *gc.C)
 	s.Client.Volumes = map[string][]api.StorageVolume{
 		"foo": {{
 			Name: "bar",
-			StorageVolumePut: api.StorageVolumePut{
-				Config: map[string]string{
-					"size": "10GiB",
-				},
+			Config: map[string]string{
+				"size": "10GiB",
 			},
 		}},
 	}

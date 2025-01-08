@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	jujuclock "github.com/juju/clock"
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
@@ -17,6 +16,7 @@ import (
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version/v2"
 	"github.com/juju/worker/v3/workertest"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -995,7 +995,7 @@ func (s *K8sBrokerSuite) TestEnsureNamespaceAnnotationForControllerUUIDNameSpace
 				},
 			}, nil),
 	)
-	s.setupBroker(c, ctrl, testing.ControllerTag.Id(), newK8sClientFunc, newK8sRestFunc, randomPrefixFunc, `namespace "test" may already be in use`).Finish()
+	s.setupBroker(c, ctrl, testing.ControllerTag.Id(), newK8sClientFunc, newK8sRestFunc, randomPrefixFunc, "").Finish()
 }
 
 func (s *K8sBrokerSuite) TestFileSetToVolumeFiles(c *gc.C) {
@@ -3908,8 +3908,8 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountNewRoleCreate(c *gc.
 			Return(nil, s.k8sNotFoundError()),
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount, v1.CreateOptions{}).Return(svcAccount, nil),
 		s.mockRoles.EXPECT().Create(gomock.Any(), role, v1.CreateOptions{}).Return(role, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{}}, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
+			Return(nil, s.k8sNotFoundError()),
 		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb, v1.CreateOptions{}).Return(rb, nil),
 		s.mockSecrets.EXPECT().Create(gomock.Any(), secretArg, v1.CreateOptions{}).Return(secretArg, nil),
 		s.mockStatefulSets.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
@@ -4063,7 +4063,6 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountNewRoleUpdate(c *gc.
 			},
 		},
 	}
-	rbUID := rb.GetUID()
 
 	secretArg := s.getOCIImageSecret(c, map[string]string{"fred": "mary"})
 	gomock.InOrder(
@@ -4077,12 +4076,8 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountNewRoleUpdate(c *gc.
 		s.mockRoles.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
 			Return(&rbacv1.RoleList{Items: []rbacv1.Role{*role}}, nil),
 		s.mockRoles.EXPECT().Update(gomock.Any(), role, v1.UpdateOptions{}).Return(role, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{*rb}}, nil),
-		s.mockRoleBindings.EXPECT().Delete(gomock.Any(), "app-name", s.deleteOptions(v1.DeletePropagationForeground, rbUID)).Return(nil),
-		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).Return(rb, nil),
-		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).Return(nil, s.k8sNotFoundError()),
-		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb, v1.CreateOptions{}).Return(rb, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
+			Return(rb, nil),
 		s.mockSecrets.EXPECT().Create(gomock.Any(), secretArg, v1.CreateOptions{}).Return(secretArg, nil),
 		s.mockStatefulSets.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
 			Return(nil, s.k8sNotFoundError()),
@@ -4109,24 +4104,13 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountNewRoleUpdate(c *gc.
 		ImageDetails: coreresources.DockerImageDetails{RegistryPath: "operator/image-path"},
 	}
 
-	errChan := make(chan error)
-	go func() {
-		errChan <- s.broker.EnsureService("app-name", func(_ string, _ status.Status, _ string, _ map[string]interface{}) error { return nil }, params, 2, config.ConfigAttributes{
-			"kubernetes-service-type":            "loadbalancer",
-			"kubernetes-service-loadbalancer-ip": "10.0.0.1",
-			"kubernetes-service-externalname":    "ext-name",
-			"kubernetes-service-annotations":     map[string]interface{}{"a": "b"},
-		})
-	}()
-	err = s.clock.WaitAdvance(2*time.Second, testing.LongWait, 1)
+	s.broker.EnsureService("app-name", func(_ string, _ status.Status, _ string, _ map[string]interface{}) error { return nil }, params, 2, config.ConfigAttributes{
+		"kubernetes-service-type":            "loadbalancer",
+		"kubernetes-service-loadbalancer-ip": "10.0.0.1",
+		"kubernetes-service-externalname":    "ext-name",
+		"kubernetes-service-annotations":     map[string]interface{}{"a": "b"},
+	})
 	c.Assert(err, jc.ErrorIsNil)
-
-	select {
-	case err := <-errChan:
-		c.Assert(err, jc.ErrorIsNil)
-	case <-time.After(testing.LongWait):
-		c.Fatalf("timed out waiting for EnsureService return")
-	}
 }
 
 func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountNewClusterRoleCreate(c *gc.C) {
@@ -4714,14 +4698,14 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountAndK8sServiceAccount
 
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount1, v1.CreateOptions{}).Return(svcAccount1, nil),
 		s.mockRoles.EXPECT().Create(gomock.Any(), role1, v1.CreateOptions{}).Return(role1, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{}}, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
+			Return(nil, s.k8sNotFoundError()),
 		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb1, v1.CreateOptions{}).Return(rb1, nil),
 
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount2, v1.CreateOptions{}).Return(svcAccount2, nil),
 		s.mockRoles.EXPECT().Create(gomock.Any(), role2, v1.CreateOptions{}).Return(role2, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{}}, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "sa2-role2", v1.GetOptions{}).
+			Return(nil, s.k8sNotFoundError()),
 		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb2, v1.CreateOptions{}).Return(rb2, nil),
 
 		s.mockSecrets.EXPECT().Create(gomock.Any(), secretArg, v1.CreateOptions{}).Return(secretArg, nil),
@@ -4986,8 +4970,8 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountAndK8sServiceAccount
 
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount1, v1.CreateOptions{}).Return(svcAccount1, nil),
 		s.mockRoles.EXPECT().Create(gomock.Any(), role1, v1.CreateOptions{}).Return(role1, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{}}, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
+			Return(nil, s.k8sNotFoundError()),
 		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb1, v1.CreateOptions{}).Return(rb1, nil),
 
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount2, v1.CreateOptions{}).Return(svcAccount2, nil),
@@ -5309,14 +5293,14 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithServiceAccountAndK8sServiceAccount
 
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount1, v1.CreateOptions{}).Return(svcAccount1, nil),
 		s.mockRoles.EXPECT().Create(gomock.Any(), role1, v1.CreateOptions{}).Return(role1, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{}}, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "app-name", v1.GetOptions{}).
+			Return(nil, s.k8sNotFoundError()),
 		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb1, v1.CreateOptions{}).Return(rb1, nil),
 
 		s.mockServiceAccounts.EXPECT().Create(gomock.Any(), svcAccount2, v1.CreateOptions{}).Return(svcAccount2, nil),
 		s.mockRoles.EXPECT().Create(gomock.Any(), role2, v1.CreateOptions{}).Return(role2, nil),
-		s.mockRoleBindings.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=juju,app.kubernetes.io/name=app-name"}).
-			Return(&rbacv1.RoleBindingList{Items: []rbacv1.RoleBinding{}}, nil),
+		s.mockRoleBindings.EXPECT().Get(gomock.Any(), "sa-foo-sa-foo1", v1.GetOptions{}).
+			Return(nil, s.k8sNotFoundError()),
 		s.mockRoleBindings.EXPECT().Create(gomock.Any(), rb2, v1.CreateOptions{}).Return(rb2, nil),
 		s.mockClusterRoles.EXPECT().Get(gomock.Any(), clusterrole2.Name, gomock.Any()).Return(clusterrole2, nil),
 		s.mockClusterRoles.EXPECT().Update(gomock.Any(), clusterrole2, gomock.Any()).Return(clusterrole2, nil),
@@ -7023,6 +7007,9 @@ func (s *K8sBrokerSuite) TestEnsureServiceWithConstraints(c *gc.C) {
 				"cpu":    resource.MustParse("500m"),
 			},
 		}
+		if i == 0 {
+			podSpec.Containers[i].Resources.Requests = podSpec.Containers[i].Resources.Limits
+		}
 	}
 	statefulSetArg := unitStatefulSetArg(2, "workload-storage", podSpec)
 	ociImageSecret := s.getOCIImageSecret(c, nil)
@@ -7379,6 +7366,7 @@ func (s *K8sBrokerSuite) TestUnits(c *gc.C) {
 					Message: "vol-mounted",
 					Since:   &now,
 				},
+				Persistent: true,
 			},
 		}},
 	}})
@@ -7456,9 +7444,11 @@ func (s *K8sBrokerSuite) TestAnnotateUnit(c *gc.C) {
 		},
 	}
 
+	patch := []byte(`{"metadata":{"annotations":{"unit.juju.is/id":"appname/0"}}}`)
+
 	gomock.InOrder(
 		s.mockPods.EXPECT().Get(gomock.Any(), "pod-name", v1.GetOptions{}).Return(pod, nil),
-		s.mockPods.EXPECT().Update(gomock.Any(), updatePod, v1.UpdateOptions{}).Return(updatePod, nil),
+		s.mockPods.EXPECT().Patch(gomock.Any(), "pod-name", types.MergePatchType, patch, v1.PatchOptions{}).Return(updatePod, nil),
 	)
 
 	err := s.broker.AnnotateUnit("appname", caas.ModeWorkload, "pod-name", names.NewUnitTag("appname/0"))
@@ -7490,6 +7480,8 @@ func (s *K8sBrokerSuite) assertAnnotateUnitByUID(c *gc.C, mode caas.DeploymentMo
 		},
 	}
 
+	patch := []byte(`{"metadata":{"annotations":{"unit.juju.is/id":"appname/0"}}}`)
+
 	labelSelector := "app.kubernetes.io/name=appname"
 	if mode == caas.ModeOperator {
 		labelSelector = "operator.juju.is/name=appname,operator.juju.is/target=application"
@@ -7497,7 +7489,7 @@ func (s *K8sBrokerSuite) assertAnnotateUnitByUID(c *gc.C, mode caas.DeploymentMo
 	gomock.InOrder(
 		s.mockPods.EXPECT().Get(gomock.Any(), "uuid", v1.GetOptions{}).Return(nil, s.k8sNotFoundError()),
 		s.mockPods.EXPECT().List(gomock.Any(), v1.ListOptions{LabelSelector: labelSelector}).Return(podList, nil),
-		s.mockPods.EXPECT().Update(gomock.Any(), updatePod, v1.UpdateOptions{}).Return(updatePod, nil),
+		s.mockPods.EXPECT().Patch(gomock.Any(), "pod-name", types.MergePatchType, patch, v1.PatchOptions{}).Return(updatePod, nil),
 	)
 
 	err := s.broker.AnnotateUnit("appname", mode, "uuid", names.NewUnitTag("appname/0"))

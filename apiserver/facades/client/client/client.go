@@ -45,7 +45,7 @@ import (
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/stateenvirons"
 	"github.com/juju/juju/tools"
-	"github.com/juju/juju/upgrades"
+	"github.com/juju/juju/upgrades/upgradevalidation"
 	jujuversion "github.com/juju/juju/version"
 )
 
@@ -75,8 +75,7 @@ func (api *API) state() *state.State {
 
 // Client serves client-specific API methods.
 type Client struct {
-	// TODO(wallyworld) - we'll retain model config facade methods
-	// on the client facade until GUI and Python client library are updated.
+	// TODO(juju3) - remove
 	*modelconfig.ModelConfigAPIV1
 
 	api             *API
@@ -104,6 +103,11 @@ type ClientV3 struct {
 
 // ClientV4 serves the (v4) client-specific API methods.
 type ClientV4 struct {
+	*ClientV5
+}
+
+// ClientV5 serves the (v5) client-specific API methods.
+type ClientV5 struct {
 	*Client
 }
 
@@ -201,7 +205,9 @@ func NewFacade(ctx facade.Context) (*Client, error) {
 	return NewClient(
 		&stateShim{st, model, nil},
 		&poolShim{ctx.StatePool()},
-		&modelconfig.ModelConfigAPIV1{modelConfigAPI},
+		&modelconfig.ModelConfigAPIV1{
+			&modelconfig.ModelConfigAPIV2{modelConfigAPI},
+		},
 		resources,
 		authorizer,
 		presence,
@@ -388,6 +394,7 @@ func (c *Client) PrivateAddress(p params.PrivateAddress) (results params.Private
 }
 
 // GetModelConstraints returns the constraints for the model.
+// TODO(juju3) - remove
 func (c *Client) GetModelConstraints() (params.GetConstraintsResults, error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.GetConstraintsResults{}, err
@@ -401,6 +408,7 @@ func (c *Client) GetModelConstraints() (params.GetConstraintsResults, error) {
 }
 
 // SetModelConstraints sets the constraints for the model.
+// TODO(juju3) - remove
 func (c *Client) SetModelConstraints(args params.SetConstraints) error {
 	if err := c.checkCanWrite(); err != nil {
 		return err
@@ -597,6 +605,7 @@ func (c *Client) DestroyMachines(args params.DestroyMachines) error {
 }
 
 // ModelInfo returns information about the current model.
+// TODO(juju3) - remove
 func (c *Client) ModelInfo() (params.ModelInfo, error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.ModelInfo{}, err
@@ -646,6 +655,7 @@ func modelInfo(st *state.State, user permission.UserAccess) (params.ModelUserInf
 }
 
 // ModelUserInfo returns information on all users in the model.
+// TODO(juju3) - remove
 func (c *Client) ModelUserInfo() (params.ModelUserInfoResults, error) {
 	var results params.ModelUserInfoResults
 	if err := c.checkCanRead(); err != nil {
@@ -675,6 +685,7 @@ func (c *Client) ModelUserInfo() (params.ModelUserInfoResults, error) {
 }
 
 // AgentVersion returns the current version that the API server is running.
+// TODO(juju3) - remove
 func (c *Client) AgentVersion() (params.AgentVersionResult, error) {
 	if err := c.checkCanRead(); err != nil {
 		return params.AgentVersionResult{}, err
@@ -685,6 +696,7 @@ func (c *Client) AgentVersion() (params.AgentVersionResult, error) {
 
 // SetModelAgentVersion sets the model agent version.
 func (c *Client) SetModelAgentVersion(args params.SetModelAgentVersion) error {
+	// TODO: remove in juju3.
 	if err := c.checkCanWrite(); err != nil {
 		return err
 	}
@@ -728,7 +740,7 @@ func (c *Client) SetModelAgentVersion(args params.SetModelAgentVersion) error {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			allowed, minVer, err := upgrades.UpgradeAllowed(vers, args.Version)
+			allowed, minVer, err := upgradevalidation.UpgradeToAllowed(vers, args.Version)
 			if err != nil {
 				return errors.Trace(err)
 			}
@@ -788,6 +800,7 @@ func (c *Client) CheckMongoStatusForUpgrade(session MongoSession) error {
 // AbortCurrentUpgrade aborts and archives the current upgrade
 // synchronisation record, if any.
 func (c *Client) AbortCurrentUpgrade() error {
+	// TODO: remove in juju3.
 	if err := c.checkCanWrite(); err != nil {
 		return err
 	}
@@ -1031,6 +1044,7 @@ func (c *Client) updateInstanceStatus(tag names.Tag, data map[string]interface{}
 }
 
 // APIHostPorts returns the API host/port addresses stored in state.
+// TODO(juju3) - remove
 func (c *Client) APIHostPorts() (result params.APIHostPortsResult, err error) {
 	if err := c.checkCanWrite(); err != nil {
 		return result, err

@@ -6,6 +6,7 @@ package lxd
 import (
 	stdcontext "context"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,15 +117,16 @@ var cloudSchema = &jsonschema.Schema{
 
 // NewProvider returns a new LXD EnvironProvider.
 func NewProvider() environs.CloudEnvironProvider {
-	httpClient := jujuhttp.NewClient(
-		jujuhttp.WithLogger(logger.ChildWithLabels("http", corelogger.HTTP)),
-	)
 	configReader := lxcConfigReader{}
-	factory := NewServerFactory(httpClient.Client())
+	factory := NewServerFactory(NewHTTPClientFunc(func() *http.Client {
+		return jujuhttp.NewClient(
+			jujuhttp.WithLogger(logger.ChildWithLabels("http", corelogger.HTTP)),
+		).Client()
+	}))
+
 	credentials := environProviderCredentials{
 		certReadWriter:  certificateReadWriter{},
 		certGenerator:   certificateGenerator{},
-		lookup:          netLookup{},
 		serverFactory:   factory,
 		lxcConfigReader: configReader,
 	}
@@ -175,17 +177,12 @@ func (p *environProvider) Ping(ctx context.ProviderCallContext, endpoint string)
 		return errors.Trace(err)
 	}
 
-	// Make sure we have an https url
-	if lxdEndpoint != endpoint {
-		return errors.Errorf("invalid URL %q: only HTTPS is supported", endpoint)
-	}
-
 	// Connect to the remote server anonymously so we can just verify it exists
 	// as we're not sure that the certificates are loaded in time for when the
 	// ping occurs i.e. interactive add-cloud
 	_, err = lxd.ConnectRemote(lxd.NewInsecureServerSpec(lxdEndpoint))
 	if err != nil {
-		return errors.Errorf("no lxd server running at %s", lxdEndpoint)
+		return errors.Annotatef(err, "no lxd server running at %s", lxdEndpoint)
 	}
 	return nil
 }
@@ -272,31 +269,6 @@ func (p *environProvider) DetectCloud(name string) (cloud.Cloud, error) {
 	return cloud.Cloud{}, errors.NotFoundf("cloud %s", name)
 }
 
-func (p *environProvider) detectCloud(name, path string) (cloud.Cloud, error) {
-	config, err := p.lxcConfigReader.ReadConfig(path)
-	if err != nil {
-		return cloud.Cloud{}, err
-	}
-
-	if remote, ok := config.Remotes[name]; ok {
-		return cloud.Cloud{
-			Name:        name,
-			Type:        lxdnames.ProviderType,
-			Endpoint:    remote.Addr,
-			Description: cloud.DefaultCloudDescription(lxdnames.ProviderType),
-			AuthTypes: []cloud.AuthType{
-				cloud.CertificateAuthType,
-			},
-			Regions: []cloud.Region{{
-				Name:     lxdnames.DefaultRemoteRegion,
-				Endpoint: remote.Addr,
-			}},
-		}, nil
-	}
-
-	return cloud.Cloud{}, errors.NotFoundf("cloud %s", name)
-}
-
 // FinalizeCloud is part of the environs.CloudFinalizer interface.
 func (p *environProvider) FinalizeCloud(
 	ctx environs.FinalizeCloudContext,
@@ -306,13 +278,13 @@ func (p *environProvider) FinalizeCloud(
 	resolveEndpoint := func(name string, ep *string) error {
 		// If the name doesn't equal "localhost" then we shouldn't resolve
 		// the end point, instead we should just accept what we already have.
-		if name != lxdnames.DefaultCloud || *ep != "" {
+		if !lxdnames.IsDefaultCloud(name) || *ep != "" {
 			return nil
 		}
 		if endpoint == "" {
 			// The cloud endpoint is empty, which means
 			// that we should connect to the local LXD.
-			hostAddress, err := p.getLocalHostAddress(ctx)
+			hostAddress, err := getLocalHostAddress(ctx, p.serverFactory)
 			if err != nil {
 				return errors.Trace(err)
 			}
@@ -334,7 +306,7 @@ func (p *environProvider) FinalizeCloud(
 	}
 	// If the provider type is not named localhost and there is no region, set the
 	// region to be a default region
-	if in.Name != lxdnames.DefaultCloud && len(in.Regions) == 0 {
+	if !lxdnames.IsDefaultCloud(in.Name) && len(in.Regions) == 0 {
 		in.Regions = append(in.Regions, cloud.Region{
 			Name:     lxdnames.DefaultRemoteRegion,
 			Endpoint: in.Endpoint,
@@ -343,14 +315,14 @@ func (p *environProvider) FinalizeCloud(
 	return in, nil
 }
 
-func (p *environProvider) getLocalHostAddress(ctx environs.FinalizeCloudContext) (string, error) {
-	svr, err := p.serverFactory.LocalServer()
+func getLocalHostAddress(ctx environs.FinalizeCloudContext, serverFactory ServerFactory) (string, error) {
+	svr, err := serverFactory.LocalServer()
 	if err != nil {
 		return "", errors.Trace(err)
 	}
 
 	bridgeName := svr.LocalBridgeName()
-	hostAddress, err := p.serverFactory.LocalServerAddress()
+	hostAddress, err := serverFactory.LocalServerAddress()
 	if err != nil {
 		return "", errors.Trace(err)
 	}

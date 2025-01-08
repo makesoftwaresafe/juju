@@ -1,3 +1,6 @@
+# NOTE: when making changes, remember that all the tests here need to be able
+# to run on amd64 AND arm64.
+
 run_deploy_charm() {
 	echo
 
@@ -5,10 +8,27 @@ run_deploy_charm() {
 
 	ensure "test-deploy-charm" "${file}"
 
-	juju deploy cs:~jameinel/ubuntu-lite-7
+	juju deploy jameinel-ubuntu-lite
 	wait_for "ubuntu-lite" "$(idle_condition "ubuntu-lite")"
 
 	destroy_model "test-deploy-charm"
+}
+
+run_deploy_charm_unsupported_series() {
+	# Test trying to deploy a charmhub charm to an operating system
+	# never supported in the specified channel. It should fail.
+	echo
+
+	testname="test-deploy-charm-unsupported-series"
+	file="${TEST_DIR}/${testname}.log"
+
+	ensure "${testname}" "${file}"
+
+	# The charm in 3.0/stable only supports jammy and only
+	# one charm has been released to that channel.
+	juju deploy juju-qa-test --channel 3.0/stable --series focal | grep -q 'charm or bundle not found for channel' || true
+
+	destroy_model "${testname}"
 }
 
 run_deploy_specific_series() {
@@ -18,12 +38,21 @@ run_deploy_specific_series() {
 
 	ensure "test-deploy-specific-series" "${file}"
 
-	juju deploy cs:postgresql --series bionic
-	series=$(juju status --format=json | jq ".applications.postgresql.series")
+	charm_name="juju-qa-refresher"
+	# Have to check against default series, to avoid false positives.
+	# These two series should be different.
+	default_series="jammy"
+	specific_series="focal"
+
+	juju deploy "$charm_name" app1
+	juju deploy "$charm_name" app2 --series "$specific_series"
+	series1=$(juju status --format=json | jq ".applications.app1.series")
+	series2=$(juju status --format=json | jq ".applications.app2.series")
 
 	destroy_model "test-deploy-specific-series"
 
-	echo "$series" | check "bionic"
+	echo "$series1" | check "$default_series"
+	echo "$series2" | check "$specific_series"
 }
 
 run_deploy_lxd_profile_charm() {
@@ -33,8 +62,11 @@ run_deploy_lxd_profile_charm() {
 
 	ensure "test-deploy-lxd-profile" "${file}"
 
-	juju deploy cs:~juju-qa/bionic/lxd-profile-without-devices-5
-	wait_for "lxd-profile" "$(idle_condition "lxd-profile")"
+	# This charm deploys to Xenial by default, which doesn't
+	# always result in a machine which becomes fully deployed
+	# with the lxd provider.
+	juju deploy juju-qa-lxd-profile-without-devices --series jammy
+	wait_for "lxd-profile-without-devices" "$(idle_condition "lxd-profile-without-devices")"
 
 	juju status --format=json | jq '.machines | .["0"] | .["lxd-profiles"] | keys[0]' | check "juju-test-deploy-lxd-profile-lxd-profile"
 
@@ -48,8 +80,11 @@ run_deploy_lxd_profile_charm_container() {
 
 	ensure "test-deploy-lxd-profile-container" "${file}"
 
-	juju deploy cs:~juju-qa/bionic/lxd-profile-without-devices-5 --to lxd --series=bionic
-	wait_for "lxd-profile" "$(idle_condition "lxd-profile")"
+	# This charm deploys to Xenial by default, which doesn't
+	# always result in a machine which becomes fully deployed
+	# with the lxd provider.
+	juju deploy juju-qa-lxd-profile-without-devices --to lxd --series jammy
+	wait_for "lxd-profile-without-devices" "$(idle_condition "lxd-profile-without-devices")"
 
 	juju status --format=json | jq '.machines | .["0"] | .containers | .["0/lxd/0"] | .["lxd-profiles"] | keys[0]' |
 		check "juju-test-deploy-lxd-profile-container-lxd-profile"
@@ -64,8 +99,8 @@ run_deploy_local_lxd_profile_charm() {
 
 	ensure "test-deploy-local-lxd-profile" "${file}"
 
-	juju deploy ./tests/suites/deploy/charms/lxd-profile --series=bionic
-	juju deploy ./tests/suites/deploy/charms/lxd-profile-subordinate
+	juju deploy ./testcharms/charms/lxd-profile
+	juju deploy ./testcharms/charms/lxd-profile-subordinate
 	juju add-relation lxd-profile-subordinate lxd-profile
 
 	wait_for "lxd-profile" "$(idle_condition "lxd-profile")"
@@ -89,14 +124,6 @@ run_deploy_local_lxd_profile_charm() {
 	juju status --format=json | jq "${machine_1}" | check "${lxd_profile_name}"
 	juju status --format=json | jq "${machine_1}" | check "${lxd_profile_sub_name}"
 
-	juju add-unit "lxd-profile" --to lxd
-
-	machine_2="$(machine_container_path 2 2/lxd/0)"
-	wait_for "${lxd_profile_sub_name}" "${machine_2}"
-
-	juju status --format=json | jq "${machine_2}" | check "${lxd_profile_name}"
-	juju status --format=json | jq "${machine_2}" | check "${lxd_profile_sub_name}"
-
 	destroy_model "test-deploy-local-lxd-profile"
 }
 
@@ -108,10 +135,15 @@ run_deploy_lxd_to_machine() {
 
 	ensure "${model_name}" "${file}"
 
-	juju add-machine -n 1 --series=bionic
+	juju add-machine -n 2 --series=jammy
 
 	charm=./tests/suites/deploy/charms/lxd-profile-alt
-	juju deploy "${charm}" --to 0 --series=bionic
+	juju deploy "${charm}" --to 0 --series=jammy
+
+	# Test the case where we wait for the machine to start
+	# before deploying the unit.
+	wait_for_machine_agent_status "1" "started"
+	juju add-unit lxd-profile-alt --to 1
 
 	wait_for "lxd-profile-alt" "$(idle_condition "lxd-profile-alt")"
 
@@ -161,6 +193,8 @@ run_deploy_lxd_to_machine() {
 }
 
 run_deploy_lxd_to_container() {
+	# Ensure profiles get applied correctly to containers
+	# and 1 gets added if a subordinate is added.
 	echo
 
 	model_name="test-deploy-lxd-container"
@@ -171,9 +205,22 @@ run_deploy_lxd_to_container() {
 	charm=./tests/suites/deploy/charms/lxd-profile-alt
 	juju deploy "${charm}" --to lxd --series=bionic
 
-	wait_for "lxd-profile-alt" "$(idle_condition "lxd-profile-alt")"
+	juju deploy ./testcharms/charms/lxd-profile-subordinate
+	juju add-relation lxd-profile-subordinate lxd-profile-alt
 
-	OUT=$(juju run --machine 0 -- sh -c 'sudo lxc profile show "juju-test-deploy-lxd-container-lxd-profile-alt-0"')
+	wait_for "lxd-profile-alt" "$(idle_condition "lxd-profile-alt")"
+	wait_for "lxd-profile-subordinate" ".applications | keys[1]"
+
+	machine_0="$(machine_container_path 0 0/lxd/0)"
+	wait_for "lxd-profile-subordinate" "${machine_0}"
+
+	lxd_profile_name="juju-test-deploy-lxd-container-lxd-profile-alt"
+	lxd_profile_sub_name="juju-test-deploy-lxd-container-lxd-profile-subordinate"
+
+	juju status --format=json | jq "${machine_0}" | check "${lxd_profile_name}"
+	juju status --format=json | jq "${machine_0}" | check "${lxd_profile_sub_name}"
+
+	OUT=$(juju exec --machine 0 -- sh -c 'sudo lxc profile show "juju-test-deploy-lxd-container-lxd-profile-alt-0"')
 	echo "${OUT}" | grep -E "linux.kernel_modules: ([a-zA-Z0-9\_,]+)?ip_tables,ip6_tables([a-zA-Z0-9\_,]+)?"
 
 	juju upgrade-charm "lxd-profile-alt" --path "${charm}"
@@ -185,7 +232,7 @@ run_deploy_lxd_to_container() {
 
 	attempt=0
 	while true; do
-		OUT=$(juju run --machine 0 -- sh -c 'sudo lxc profile show "juju-test-deploy-lxd-container-lxd-profile-alt-1"' || echo 'NOT FOUND')
+		OUT=$(juju exec --machine 0 -- sh -c 'sudo lxc profile show "juju-test-deploy-lxd-container-lxd-profile-alt-1"' || echo 'NOT FOUND')
 		if echo "${OUT}" | grep -E -q "linux.kernel_modules: ([a-zA-Z0-9\_,]+)?ip_tables,ip6_tables([a-zA-Z0-9\_,]+)?"; then
 			break
 		fi
@@ -201,18 +248,40 @@ run_deploy_lxd_to_container() {
 	# Ensure that the old one is removed
 	attempt=0
 	while true; do
-		OUT=$(juju run --machine 0 -- sh -c "sudo lxc profile list" || echo 'NOT FOUND')
+		OUT=$(juju exec --machine 0 -- sh -c "sudo lxc profile list" || echo 'NOT FOUND')
 		if echo "${OUT}" | grep -v "juju-test-deploy-lxd-container-lxd-profile-alt-0"; then
 			break
 		fi
 		attempt=$((attempt + 1))
 		if [ $attempt -eq 10 ]; then
 			# shellcheck disable=SC2046
-			echo $(red "timeout: waiting for lxc profile to show 50sec")
+			echo $(red "timeout: waiting for removal of lxc profile 50sec")
 			exit 5
 		fi
 		sleep 5
 	done
+
+	destroy_model "${model_name}"
+}
+
+# Checks the install hook resolving with --no-retry flag
+run_resolve_charm() {
+	echo
+
+	model_name="test-resolve-charm"
+	file="${TEST_DIR}/${model_name}.log"
+
+	ensure "${model_name}" "${file}"
+
+	charm=./testcharms/charms/simple-resolve
+	juju deploy "${charm}"
+
+	wait_for "error" '.applications["simple-resolve"] | ."application-status".current'
+
+	juju resolve --no-retry simple-resolve/0
+
+	wait_for "No install hook" '.applications["simple-resolve"] | ."application-status".message'
+	wait_for "active" '.applications["simple-resolve"] | ."application-status".current'
 
 	destroy_model "${model_name}"
 }
@@ -230,19 +299,23 @@ test_deploy_charms() {
 
 		run "run_deploy_charm"
 		run "run_deploy_specific_series"
-		run "run_deploy_lxd_to_container"
-		run "run_deploy_lxd_profile_charm_container"
+		run "run_resolve_charm"
+		run "run_deploy_charm_unsupported_series"
 
 		case "${BOOTSTRAP_PROVIDER:-}" in
 		"lxd" | "localhost")
 			run "run_deploy_lxd_to_machine"
 			run "run_deploy_lxd_profile_charm"
 			run "run_deploy_local_lxd_profile_charm"
+			echo "==> TEST SKIPPED: deploy_lxd_to_container - tests for non LXD only"
+			echo "==> TEST SKIPPED: deploy_lxd_profile_charm_container - tests for non LXD only"
 			;;
 		*)
 			echo "==> TEST SKIPPED: deploy_lxd_to_machine - tests for LXD only"
 			echo "==> TEST SKIPPED: deploy_lxd_profile_charm - tests for LXD only"
 			echo "==> TEST SKIPPED: deploy_local_lxd_profile_charm - tests for LXD only"
+			run "run_deploy_lxd_to_container"
+			run "run_deploy_lxd_profile_charm_container"
 			;;
 		esac
 	)

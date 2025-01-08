@@ -94,6 +94,7 @@ func VerifyCredentials(ctx *cmd.Context, aCloud *cloud.Cloud, credential *cloud.
 	credential, err = provider.FinalizeCredential(
 		ctx, environs.FinalizeCredentialParams{
 			Credential:            *credential,
+			CloudName:             aCloud.Name,
 			CloudEndpoint:         cloudEndpoint,
 			CloudStorageEndpoint:  cloudStorageEndpoint,
 			CloudIdentityEndpoint: cloudIdentityEndpoint,
@@ -220,7 +221,7 @@ func RegisterCredentials(provider environs.EnvironProvider, args RegisterCredent
 	return nil, nil
 }
 
-//go:generate go run github.com/golang/mock/mockgen -package modelcmd -destination cloudprovider_mock_test.go github.com/juju/juju/cmd/modelcmd TestCloudProvider
+//go:generate go run go.uber.org/mock/mockgen -package modelcmd -destination cloudprovider_mock_test.go github.com/juju/juju/cmd/modelcmd TestCloudProvider
 
 // TestCloudProvider is used for testing.
 type TestCloudProvider interface {

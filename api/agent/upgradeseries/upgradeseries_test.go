@@ -4,17 +4,17 @@
 package upgradeseries_test
 
 import (
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
-	"github.com/juju/juju/core/status"
 	"github.com/juju/names/v4"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/upgradeseries"
 	"github.com/juju/juju/api/base/mocks"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -208,9 +208,9 @@ func (s *upgradeSeriesSuite) TestFinishUpgradeSeries(c *gc.C) {
 
 	fCaller := mocks.NewMockFacadeCaller(ctrl)
 
-	args := params.UpdateSeriesArgs{
-		Args: []params.UpdateSeriesArg{
-			{Series: "xenial", Entity: s.args.Entities[0]},
+	args := params.UpdateChannelArgs{
+		Args: []params.UpdateChannelArg{
+			{Series: "xenial", Channel: "16.04", Entity: s.args.Entities[0]},
 		},
 	}
 	resultSource := params.ErrorResults{Results: []params.ErrorResult{{}}}

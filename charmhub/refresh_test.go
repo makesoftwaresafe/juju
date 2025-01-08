@@ -9,12 +9,12 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/charmhub/path"
@@ -82,7 +82,7 @@ func (s *RefreshSuite) TestRefresh(c *gc.C) {
 	c.Assert(responses[0].Name, gc.Equals, id)
 }
 
-//	c.Assert(results.Results[0].Error, gc.ErrorMatches, `.* pool "foo" not found`)
+// c.Assert(results.Results[0].Error, gc.ErrorMatches, `.* pool "foo" not found`)
 func (s *RefreshSuite) TestRefeshConfigValidateArch(c *gc.C) {
 	err := s.testRefeshConfigValidate(c, RefreshBase{
 		Name:         "ubuntu",

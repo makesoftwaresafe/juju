@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/juju/juju/core/network"
-
 	"github.com/juju/loggo"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3/arch"
@@ -21,6 +19,8 @@ import (
 	"github.com/juju/juju/container"
 	"github.com/juju/juju/container/kvm"
 	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/network"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/imagemetadata"
@@ -95,7 +95,8 @@ func shutdownMachines(manager container.Manager) func(*gc.C) {
 func createContainer(c *gc.C, manager container.Manager, machineId string) instances.Instance {
 	machineNonce := "fake-nonce"
 	apiInfo := jujutesting.FakeAPIInfo(machineId)
-	instanceConfig, err := instancecfg.NewInstanceConfig(coretesting.ControllerTag, machineId, machineNonce, imagemetadata.ReleasedStream, "quantal", apiInfo)
+	instanceConfig, err := instancecfg.NewInstanceConfig(coretesting.ControllerTag, machineId, machineNonce,
+		imagemetadata.ReleasedStream, series.MakeDefaultBase("ubuntu", "12.10"), apiInfo)
 	c.Assert(err, jc.ErrorIsNil)
 
 	nics := network.InterfaceInfos{{

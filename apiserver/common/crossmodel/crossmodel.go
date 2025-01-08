@@ -15,17 +15,21 @@ import (
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/life"
 	corelogger "github.com/juju/juju/core/logger"
+	"github.com/juju/juju/core/migration"
 	"github.com/juju/juju/core/network/firewall"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/network"
 	"github.com/juju/juju/rpc/params"
 )
 
-var logger = loggo.GetLoggerWithLabels("juju.apiserver.common.crossmodel", corelogger.CMR)
+var (
+	logger     = loggo.GetLoggerWithLabels("juju.apiserver.common.crossmodel", corelogger.CMR)
+	authlogger = loggo.GetLoggerWithLabels("juju.apiserver.common.crossmodelauth", corelogger.CMR_AUTH)
+)
 
 // PublishRelationChange applies the relation change event to the specified backend.
-func PublishRelationChange(backend Backend, relationTag names.Tag, change params.RemoteRelationChangeEvent) error {
-	logger.Debugf("publish into model %v change for %v: %+v", backend.ModelUUID(), relationTag, change)
+func PublishRelationChange(backend Backend, relationTag, applicationTag names.Tag, change params.RemoteRelationChangeEvent) error {
+	logger.Debugf("publish into model %v change for %v on %v: %#v", backend.ModelUUID(), relationTag, applicationTag, &change)
 
 	dyingOrDead := change.Life != "" && change.Life != life.Alive
 	// Ensure the relation exists.
@@ -42,14 +46,6 @@ func PublishRelationChange(backend Backend, relationTag names.Tag, change params
 	if err := handleSuspendedRelation(change, rel, dyingOrDead); err != nil {
 		return errors.Trace(err)
 	}
-
-	// Look up the application on the remote side of this relation
-	// ie from the model which published this change.
-	applicationTag, err := backend.GetRemoteEntity(change.ApplicationToken)
-	if err != nil && !errors.IsNotFound(err) {
-		return errors.Trace(err)
-	}
-	logger.Debugf("application tag for token %+v is %v in model %v", change.ApplicationToken, applicationTag, backend.ModelUUID())
 
 	// If the remote model has destroyed the relation, do it here also.
 	forceCleanUp := change.ForceCleanup != nil && *change.ForceCleanup
@@ -196,9 +192,9 @@ func GetOfferingRelationTokens(backend Backend, tag names.RelationTag) (string, 
 	if err != nil {
 		return "", "", errors.Annotatef(err, "getting token for relation %q", tag.Id())
 	}
-	appToken, err := backend.GetToken(names.NewApplicationTag(offerName))
+	appToken, err := backend.GetToken(names.NewApplicationOfferTag(offerName))
 	if err != nil {
-		return "", "", errors.Annotatef(err, "getting token for application %q", offerName)
+		return "", "", errors.Annotatef(err, "getting token for application offer %q", offerName)
 	}
 	return relationToken, appToken, nil
 }
@@ -395,7 +391,7 @@ func RelationUnitSettings(backend Backend, ru params.RelationUnit) (params.Setti
 
 // PublishIngressNetworkChange saves the specified ingress networks for a relation.
 func PublishIngressNetworkChange(backend Backend, relationTag names.Tag, change params.IngressNetworksChangeEvent) error {
-	logger.Debugf("publish into model %v network change for %v: %+v", backend.ModelUUID(), relationTag, change)
+	logger.Debugf("publish into model %v network change for %v: %#v", backend.ModelUUID(), relationTag, &change)
 
 	// Ensure the relation exists.
 	rel, err := backend.KeyRelation(relationTag.Id())
@@ -502,13 +498,28 @@ func GetRelationLifeSuspendedStatusChange(
 type offerGetter interface {
 	ApplicationOfferForUUID(string) (*crossmodel.ApplicationOffer, error)
 	Application(string) (Application, error)
+
+	// IsMigrationActive returns true if the current model is
+	// in the process of being migrated to another controller.
+	IsMigrationActive() (bool, error)
 }
 
-// GetOfferStatusChange returns a status change
-// struct for a specified offer name.
+// GetOfferStatusChange returns a status change struct for the input offer name.
+// If the offer or application are not found during a migration, a specific
+// error to indicate the migration-in-progress is returned.
+// This is interpreted upstream as a watcher error and propagated to the
+// remote CMR consumer.
 func GetOfferStatusChange(st offerGetter, offerUUID, offerName string) (*params.OfferStatusChange, error) {
+	migrating, err := st.IsMigrationActive()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	offer, err := st.ApplicationOfferForUUID(offerUUID)
 	if errors.IsNotFound(err) {
+		if migrating {
+			return nil, migration.ErrMigrating
+		}
 		return &params.OfferStatusChange{
 			OfferName: offerName,
 			Status: params.EntityStatus{
@@ -519,9 +530,12 @@ func GetOfferStatusChange(st offerGetter, offerUUID, offerName string) (*params.
 	} else if err != nil {
 		return nil, errors.Trace(err)
 	}
-	// TODO(wallyworld) - for now, offer status is just the application status
+
 	app, err := st.Application(offer.ApplicationName)
 	if errors.IsNotFound(err) {
+		if migrating {
+			return nil, migration.ErrMigrating
+		}
 		return &params.OfferStatusChange{
 			OfferName: offerName,
 			Status: params.EntityStatus{
@@ -533,8 +547,6 @@ func GetOfferStatusChange(st offerGetter, offerUUID, offerName string) (*params.
 		return nil, errors.Trace(err)
 	}
 
-	// We use the status from the cached application as that is where
-	// the derived status from the units are handled if this is necessary.
 	sts := status.StatusInfo{
 		Status: status.Unknown,
 	}

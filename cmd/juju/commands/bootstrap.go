@@ -30,6 +30,7 @@ import (
 	k8sconstants "github.com/juju/juju/caas/kubernetes/provider/constants"
 	jujucloud "github.com/juju/juju/cloud"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/constants"
 	"github.com/juju/juju/cmd/juju/common"
 	cmdcontroller "github.com/juju/juju/cmd/juju/controller"
 	cmdmodel "github.com/juju/juju/cmd/juju/model"
@@ -40,6 +41,7 @@ import (
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/series"
+	"github.com/juju/juju/docker"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/bootstrap"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
@@ -895,6 +897,11 @@ See `[1:] + "`juju kill-controller`" + `.`)
 		}
 	}()
 
+	if envMetadataSrc := os.Getenv(constants.EnvJujuMetadataSource); c.MetadataSource == "" && envMetadataSrc != "" {
+		c.MetadataSource = envMetadataSrc
+		ctx.Infof("Using metadata source directory %q", c.MetadataSource)
+	}
+
 	// If --metadata-source is specified, override the default tools metadata source so
 	// SyncTools can use it, and also upload any image metadata.
 	if c.MetadataSource != "" {
@@ -1489,6 +1496,21 @@ func (c *bootstrapCommand) bootstrapConfigs(
 	bootstrapConfig, err := bootstrap.NewConfig(bootstrapConfigAttrs)
 	if err != nil {
 		return bootstrapConfigs{}, errors.Annotate(err, "constructing bootstrap config")
+	}
+
+	// Pre-process controller attributes.
+	if _, ok := controllerConfigAttrs[controller.CAASOperatorImagePath]; ok {
+		return bootstrapConfigs{}, fmt.Errorf("%q is no longer supported controller configuration",
+			controller.CAASOperatorImagePath)
+	}
+	if v, ok := controllerConfigAttrs[controller.CAASImageRepo]; ok {
+		if v, ok := v.(string); ok {
+			repoDetails, err := docker.LoadImageRepoDetails(v)
+			if err != nil {
+				return bootstrapConfigs{}, errors.Annotatef(err, "processing %s", controller.CAASImageRepo)
+			}
+			controllerConfigAttrs[controller.CAASImageRepo] = repoDetails.Content()
+		}
 	}
 
 	controllerConfig, err := controller.NewConfig(

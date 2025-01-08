@@ -62,6 +62,7 @@ func (c *unregisterCommand) Info() *cmd.Info {
 func (c *unregisterCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.BoolVar(&c.assumeYes, "y", false, "Do not prompt for confirmation")
 	f.BoolVar(&c.assumeYes, "yes", false, "")
+	f.BoolVar(&c.assumeYes, "no-prompt", false, "")
 }
 
 // SetClientStore implements Command.SetClientStore.

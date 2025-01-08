@@ -7,16 +7,17 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	jujucloud "github.com/juju/juju/cloud"
@@ -485,6 +486,56 @@ Credential "bobscreds" added locally for cloud "somecloud".
 					"username":             "bob",
 					"password":             "cloud-endpoint",
 					"application-password": "cloud-identity-endpoint",
+				}),
+			},
+		},
+	})
+}
+
+func (s *addCredentialSuite) TestAddCredentialInteractiveHiddenFile(c *gc.C) {
+	s.authTypes = []jujucloud.AuthType{"interactive"}
+	s.schema = map[jujucloud.AuthType]jujucloud.CredentialSchema{
+		"interactive": {
+			{
+				Name: "username",
+				CredentialAttr: jujucloud.CredentialAttr{
+					Description:    "the path to the username file",
+					ExpandFilePath: true,
+					Hidden:         true,
+				},
+			},
+		},
+	}
+
+	file, err := os.CreateTemp("", "username-file")
+	c.Assert(err, jc.ErrorIsNil)
+	defer file.Close()
+	_, err = file.WriteString("test")
+	c.Assert(err, jc.ErrorIsNil)
+
+	stdin := strings.NewReader(fmt.Sprintf("wallyworld\n%s\n", file.Name()))
+	ctx, err := s.run(c, stdin, "somecloud", "--client")
+	c.Assert(err, jc.ErrorIsNil)
+
+	// there's an extra line return after Using auth-type because the rest get a
+	// second line return from the user hitting return when they enter a value
+	// (which is not shown here), but that one does not.
+	c.Assert(cmdtesting.Stdout(ctx), gc.Equals, `
+Enter credential name: 
+Using auth-type "interactive".
+
+Enter the path to the username file: 
+Credential "wallyworld" added locally for cloud "somecloud".
+
+`[1:])
+
+	c.Assert(s.store.Credentials, jc.DeepEquals, map[string]jujucloud.CloudCredential{
+		"somecloud": {
+			AuthCredentials: map[string]jujucloud.Credential{
+				"wallyworld": jujucloud.NewCredential("userpass", map[string]string{
+					"application-password": "cloud-identity-endpoint",
+					"password":             "cloud-endpoint",
+					"username":             "test",
 				}),
 			},
 		},

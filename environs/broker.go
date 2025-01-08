@@ -144,6 +144,7 @@ type StartInstanceResult struct {
 	VolumeAttachments []storage.VolumeAttachment
 }
 
+// InstanceBroker defines methods for managing vm or container instances.
 // TODO(wallyworld) - we want this in the environs/instance package but import loops
 // stop that from being possible right now.
 type InstanceBroker interface {
@@ -158,8 +159,7 @@ type InstanceBroker interface {
 	// availability zones. If one zone fails, then the caller is expected
 	// to attempt in another zone. If the provider can determine that
 	// the StartInstanceParams can never be fulfilled in any zone, then
-	// it may return an error satisfying the IsAvailabilityZoneIndependent
-	// function in this package.
+	// it may return an error satisfying Is(err, ErrAvailabilityZoneIndependent).
 	StartInstance(ctx context.ProviderCallContext, args StartInstanceParams) (*StartInstanceResult, error)
 
 	// StopInstances shuts down the instances with the specified IDs.
@@ -181,7 +181,7 @@ type LXDProfiler interface {
 	// and removing profiles from the lxd server.
 	AssignLXDProfiles(instID string, profilesNames []string, profilePosts []lxdprofile.ProfilePost) ([]string, error)
 
-	// MaybeWriteLXDProfile, write given LXDProfile to if not already there.
+	// MaybeWriteLXDProfile writes the given LXDProfile to if not already there.
 	MaybeWriteLXDProfile(pName string, put lxdprofile.Profile) error
 
 	// LXDProfileNames returns all the profiles associated to a container name

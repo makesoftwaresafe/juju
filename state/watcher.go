@@ -411,7 +411,7 @@ func (st *State) WatchApplicationCharms() StringsWatcher {
 
 // WatchUnits notifies when units change.
 func (st *State) WatchUnits() StringsWatcher {
-	return newLifecycleWatcher(st, unitsC, nil, isLocalID(st), nil)
+	return newCollectionWatcher(st, colWCfg{col: unitsC})
 }
 
 // WatchMachines notifies when machines change.
@@ -494,8 +494,8 @@ func (a *Application) WatchRelations() StringsWatcher {
 
 // WatchRelations returns a StringsWatcher that notifies of changes to the
 // lifecycles of relations involving a.
-func (s *RemoteApplication) WatchRelations() StringsWatcher {
-	return watchApplicationRelations(s.st, s.doc.Name)
+func (a *RemoteApplication) WatchRelations() StringsWatcher {
+	return watchApplicationRelations(a.st, a.doc.Name)
 }
 
 func watchApplicationRelations(backend modelBackend, applicationName string) StringsWatcher {

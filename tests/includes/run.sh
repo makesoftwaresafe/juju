@@ -6,13 +6,13 @@ run() {
 		# shellcheck disable=SC2143
 		if [[ ! "$(echo "${RUN_SUBTEST}" | grep -E "^${CMD}$")" ]]; then
 			echo "SKIPPING: ${RUN_SUBTEST} ${CMD}"
-			exit 0
+			return 0
 		fi
 	fi
 
 	DESC=$(echo "${1}" | sed -E "s/^run_//g" | sed -E "s/_/ /g")
 
-	echo -n "===> [   ] Running: ${DESC}"
+	echo "===> [   ] Running: ${DESC}"
 
 	START_TIME=$(date +%s)
 
@@ -53,7 +53,7 @@ run_linter() {
 
 	DESC=$(echo "${1}" | sed -E "s/^run_//g" | sed -E "s/_/ /g")
 
-	echo -n "===> [   ] Running: ${DESC}"
+	echo "===> [   ] Running: ${DESC}"
 
 	START_TIME=$(date +%s)
 

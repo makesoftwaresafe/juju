@@ -15,19 +15,19 @@ import (
 	"syscall"
 	"time"
 
+	lxdclient "github.com/canonical/lxd/client"
+	lxdapi "github.com/canonical/lxd/shared/api"
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/retry"
 	"github.com/juju/utils/v3"
+	"github.com/juju/version/v2"
 
 	"github.com/juju/juju/container/lxd"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/environs"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/utils/proxy"
-
-	lxdclient "github.com/lxc/lxd/client"
-	lxdapi "github.com/lxc/lxd/shared/api"
 )
 
 // Server defines an interface of all localized methods that the environment
@@ -82,11 +82,11 @@ type Server interface {
 	HasExtension(extension string) (exists bool)
 	GetNetworks() ([]lxdapi.Network, error)
 	GetNetworkState(name string) (*lxdapi.NetworkState, error)
-	GetContainer(name string) (*lxdapi.Container, string, error)
-	GetContainerState(name string) (*lxdapi.ContainerState, string, error)
+	GetInstance(name string) (*lxdapi.Instance, string, error)
+	GetInstanceState(name string) (*lxdapi.InstanceState, string, error)
 
 	// UseProject ensures that this server will use the input project.
-	// See: https://linuxcontainers.org/lxd/docs/master/projects.
+	// See: https://documentation.ubuntu.com/lxd/en/latest/projects.
 	UseProject(string)
 }
 
@@ -129,6 +129,10 @@ func (interfaceAddress) InterfaceAddress(interfaceName string) (string, error) {
 	return utils.GetAddressForInterface(interfaceName)
 }
 
+// NewHTTPClientFunc is responsible for generating a new http client every time
+// it is called.
+type NewHTTPClientFunc func() *http.Client
+
 type serverFactory struct {
 	newLocalServerFunc  func() (Server, error)
 	newRemoteServerFunc func(lxd.ServerSpec) (Server, error)
@@ -137,11 +141,14 @@ type serverFactory struct {
 	interfaceAddress    InterfaceAddress
 	clock               clock.Clock
 	mutex               sync.Mutex
-	httpClient          *http.Client
+	newHTTPClientFunc   NewHTTPClientFunc
 }
 
 // NewServerFactory creates a new ServerFactory with sane defaults.
-func NewServerFactory(httpClient *http.Client) ServerFactory {
+// A NewHTTPClientFunc is taken as an argument to address LP2003135. Previously
+// we reused the same http client for all LXD connections. This can't happen
+// as the LXD client code modifies the HTTP server.
+func NewServerFactory(newHttpFn NewHTTPClientFunc) ServerFactory {
 	return &serverFactory{
 		newLocalServerFunc: func() (Server, error) {
 			return lxd.NewLocalServer()
@@ -149,8 +156,8 @@ func NewServerFactory(httpClient *http.Client) ServerFactory {
 		newRemoteServerFunc: func(spec lxd.ServerSpec) (Server, error) {
 			return lxd.NewRemoteServer(spec)
 		},
-		interfaceAddress: interfaceAddress{},
-		httpClient:       httpClient,
+		interfaceAddress:  interfaceAddress{},
+		newHTTPClientFunc: newHttpFn,
 	}
 }
 
@@ -208,7 +215,7 @@ func (s *serverFactory) RemoteServer(spec environscloudspec.CloudSpec) (Server, 
 
 	serverSpec := lxd.NewServerSpec(spec.Endpoint, serverCert, clientCert).
 		WithProxy(proxy.DefaultConfig.GetProxy).
-		WithHTTPClient(s.httpClient)
+		WithHTTPClient(s.newHTTPClientFunc())
 
 	svr, err := s.newRemoteServerFunc(serverSpec)
 	if err == nil {
@@ -235,7 +242,7 @@ func (s *serverFactory) InsecureRemoteServer(spec environscloudspec.CloudSpec) (
 	serverSpec := lxd.NewInsecureServerSpec(spec.Endpoint).
 		WithClientCertificate(clientCert).
 		WithSkipGetServer(true).
-		WithHTTPClient(s.httpClient)
+		WithHTTPClient(s.newHTTPClientFunc())
 
 	svr, err := s.newRemoteServerFunc(serverSpec)
 	return svr, errors.Trace(err)
@@ -374,22 +381,32 @@ func (s *serverFactory) Clock() clock.Clock {
 	return s.clock
 }
 
-// isSupportedAPIVersion defines what API versions we support.
-func isSupportedAPIVersion(version string) (msg string, ok bool) {
-	versionParts := strings.Split(version, ".")
+// ParseAPIVersion parses the LXD API version string.
+func ParseAPIVersion(s string) (version.Number, error) {
+	versionParts := strings.Split(s, ".")
 	if len(versionParts) < 2 {
-		return fmt.Sprintf("LXD API version %q: expected format <major>.<minor>", version), false
+		return version.Zero, errors.NewNotValid(nil, fmt.Sprintf("LXD API version %q: expected format <major>.<minor>", s))
 	}
-
 	major, err := strconv.Atoi(versionParts[0])
 	if err != nil {
-		return fmt.Sprintf("LXD API version %q: unexpected major number: %v", version, err), false
+		return version.Zero, errors.NotValidf("major version number  %v", versionParts[0])
 	}
+	minor, err := strconv.Atoi(versionParts[1])
+	if err != nil {
+		return version.Zero, errors.NotValidf("minor version number  %v", versionParts[1])
+	}
+	return version.Number{Major: major, Minor: minor}, nil
+}
 
-	if major < 1 {
+// isSupportedAPIVersion defines what API versions we support.
+func isSupportedAPIVersion(version string) (msg string, ok bool) {
+	ver, err := ParseAPIVersion(version)
+	if err != nil {
+		return err.Error(), false
+	}
+	if ver.Major < 1 {
 		return fmt.Sprintf("LXD API version %q: expected major version 1 or later", version), false
 	}
-
 	return "", true
 }
 

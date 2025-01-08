@@ -15,9 +15,9 @@ import (
 	"strings"
 
 	"github.com/juju/mgo/v2/bson"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
 	"github.com/juju/replicaset/v2"
-	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3/ssh"
 	gc "gopkg.in/check.v1"
@@ -32,8 +32,7 @@ var _ = gc.Suite(&RestoreSuite{})
 
 type RestoreSuite struct {
 	coretesting.BaseSuite
-	cwd       string
-	testFiles []string
+	cwd string
 }
 
 func (r *RestoreSuite) SetUpSuite(c *gc.C) {
@@ -46,7 +45,7 @@ func (r *RestoreSuite) SetUpTest(c *gc.C) {
 }
 
 func (r *RestoreSuite) TestReplicasetIsReset(c *gc.C) {
-	server := &gitjujutesting.MgoInstance{Params: []string{"--replSet", "juju"}}
+	server := &mgotesting.MgoInstance{Params: []string{"--replSet", "juju"}}
 	err := server.Start(coretesting.Certs)
 	c.Assert(err, jc.ErrorIsNil)
 	defer server.DestroyWithLog()
@@ -168,7 +167,7 @@ func (r *RestoreSuite) TestNewDialInfo(c *gc.C) {
 // TestUpdateMongoEntries has all the testing for this function to avoid creating multiple
 // mongo instances.
 func (r *RestoreSuite) TestUpdateMongoEntries(c *gc.C) {
-	server := &gitjujutesting.MgoInstance{}
+	server := &mgotesting.MgoInstance{}
 	err := server.Start(coretesting.Certs)
 	c.Assert(err, jc.ErrorIsNil)
 	defer server.DestroyWithLog()

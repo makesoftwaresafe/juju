@@ -39,7 +39,7 @@ import (
 const (
 	// OperatorAppTarget is the constant used to describe the operator's target
 	// in kubernetes. This allows us to differentiate between different
-	// operators that would possible have the same labels otherwise
+	// operators that would possibly have the same labels otherwise.
 	OperatorAppTarget = "application"
 )
 
@@ -636,6 +636,7 @@ func (k *kubernetesClient) DeleteOperator(appName string) (err error) {
 		// Just in case the volume reclaim policy is retain, we force deletion
 		// for operators as the volume is an inseparable part of the operator.
 		for _, volName := range volumeNames {
+			logger.Infof("deleting operator PV %s for application %s due to call to kubernetesClient.DeleteOperator", volName, appName)
 			err = pvs.Delete(context.TODO(), volName, v1.DeleteOptions{
 				PropagationPolicy: k8sconstants.DefaultPropagationPolicy(),
 			})

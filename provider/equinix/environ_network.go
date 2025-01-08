@@ -10,12 +10,13 @@ import (
 
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
+	"github.com/juju/names/v4"
+	"github.com/packethost/packngo"
+
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/context"
-	"github.com/juju/names/v4"
-	"github.com/packethost/packngo"
 )
 
 var _ environs.Networking = (*environ)(nil)
@@ -69,7 +70,7 @@ func (e *environ) Subnets(ctx context.ProviderCallContext, inst instance.Id, sub
 	}
 
 	var instanceSubnets []network.SubnetInfo
-nextSubnet: //API client limitation since we can't get the actual blocks for individual instance we have to do this
+nextSubnet: // API client limitation since we can't get the actual blocks for individual instance we have to do this
 	for _, psub := range projectSubnets {
 		_, ipnet, err := net.ParseCIDR(psub.CIDR)
 		if err != nil {
@@ -121,7 +122,7 @@ func (e *environ) NetworkInterfaces(ctx context.ProviderCallContext, ids []insta
 			return nil, err
 		}
 
-		dev := &equinixDevice{e, device}
+		dev := newInstance(device, e)
 
 		subnets, err := e.Subnets(ctx, id, nil)
 		if err != nil {
@@ -184,7 +185,6 @@ func (e *environ) SuperSubnets(context.ProviderCallContext) ([]string, error) {
 	attrs := e.cloud.Credential.Attributes()
 	if attrs == nil {
 		return nil, errors.Trace(fmt.Errorf("empty attribute credentials"))
-
 	}
 	// We checked the presence of project-id when we were verifying the credentials.
 	projectID := attrs["project-id"]
@@ -209,11 +209,6 @@ func (e *environ) SuperSubnets(context.ProviderCallContext) ([]string, error) {
 // able to allocate addaddresses for containers.
 func (*environ) SupportsContainerAddresses(context.ProviderCallContext) (bool, error) {
 	return false, nil
-}
-
-// SSHAddresses filters the input addaddresses to those suitable for SSH use.
-func (*environ) SSHAddresses(ctx context.ProviderCallContext, addresses network.SpaceAddresses) (network.SpaceAddresses, error) {
-	return addresses, nil
 }
 
 // SupportsSpaceDiscovery returns whether the current environment

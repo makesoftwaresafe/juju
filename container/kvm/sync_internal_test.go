@@ -16,11 +16,11 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
-	"github.com/juju/juju/core/paths"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 
+	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/environs/imagedownloads"
 )
 
@@ -305,7 +305,7 @@ func (s *progressWriterSuite) TestOnlyPercentChanges(c *gc.C) {
 	for i := 1; i <= 100; i++ {
 		// We tick every 1ms and add 50kiB each time, which is
 		// 50*1024 *1000/ 1000/1000  = 51MB/s
-		expectedCB = append(expectedCB, fmt.Sprintf("copying http://host/path %d%% (51MB/s)", i))
+		expectedCB = append(expectedCB, fmt.Sprintf("copying http://host/path %d%% (51 MB/s)", i))
 	}
 	// There are 2048 calls to Write, but there should only be 100 calls to progress update
 	c.Check(len(cbLog), gc.Equals, 100)

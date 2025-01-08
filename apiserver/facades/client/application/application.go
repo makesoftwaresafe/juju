@@ -1,9 +1,6 @@
 // Copyright 2014 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package application contains api calls for functionality
-// related to deploying and managing applications and their
-// related charms.
 package application
 
 import (
@@ -28,6 +25,7 @@ import (
 	"github.com/juju/juju/apiserver/common/storagecommon"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
+	"github.com/juju/juju/apiserver/facades/client/charms"
 	"github.com/juju/juju/apiserver/facades/controller/caasoperatorprovisioner"
 	"github.com/juju/juju/caas"
 	k8s "github.com/juju/juju/caas/kubernetes/provider"
@@ -57,6 +55,8 @@ import (
 	"github.com/juju/juju/tools"
 	jujuversion "github.com/juju/juju/version"
 )
+
+var ClassifyDetachedStorage = storagecommon.ClassifyDetachedStorage
 
 var logger = loggo.GetLogger("juju.apiserver.application")
 
@@ -113,6 +113,17 @@ type APIv12 struct {
 // It adds CharmOrigin. The ApplicationsInfo call populates the exposed
 // endpoints field in its response entries.
 type APIv13 struct {
+	*APIv14
+}
+
+// APIv14 provides the Application API facade for version 14.
+// It adds Leader.
+type APIv14 struct {
+	*APIv15
+}
+
+// APIv15 provides the Application API facade for version 15.
+type APIv15 struct {
 	*APIBase
 }
 
@@ -122,7 +133,7 @@ type APIv13 struct {
 // API provides the Application API facade for version 5.
 type APIBase struct {
 	backend       Backend
-	storageAccess storageInterface
+	storageAccess StorageInterface
 
 	authorizer   facade.Authorizer
 	check        BlockChecker
@@ -142,11 +153,11 @@ type APIBase struct {
 
 	storagePoolManager    poolmanager.PoolManager
 	registry              storage.ProviderRegistry
-	caasBroker            caasBrokerInterface
+	caasBroker            CaasBrokerInterface
 	deployApplicationFunc func(ApplicationDeployer, Model, DeployApplicationParams) (Application, error)
 }
 
-type caasBrokerInterface interface {
+type CaasBrokerInterface interface {
 	ValidateStorageClass(config map[string]interface{}) error
 	Version() (*version.Number, error)
 }
@@ -233,7 +244,7 @@ func newFacadeBase(ctx facade.Context) (*APIBase, error) {
 // NewAPIBase returns a new application API facade.
 func NewAPIBase(
 	backend Backend,
-	storageAccess storageInterface,
+	storageAccess StorageInterface,
 	authorizer facade.Authorizer,
 	updateSeries UpdateSeries,
 	blockChecker BlockChecker,
@@ -244,7 +255,7 @@ func NewAPIBase(
 	storagePoolManager poolmanager.PoolManager,
 	registry storage.ProviderRegistry,
 	resources facade.Resources,
-	caasBroker caasBrokerInterface,
+	caasBroker CaasBrokerInterface,
 ) (*APIBase, error) {
 	if !authorizer.AuthClient() {
 		return nil, apiservererrors.ErrPerm
@@ -406,16 +417,19 @@ func (api *APIBase) Deploy(args params.ApplicationsDeploy) (params.ErrorResults,
 	}
 
 	for i, arg := range args.Applications {
-		err := deployApplication(
-			api.backend,
-			api.model,
-			api.stateCharm,
-			arg,
-			api.deployApplicationFunc,
-			api.storagePoolManager,
-			api.registry,
-			api.caasBroker,
-		)
+		var err error
+		if arg, err = compatibilityApplicationDeployArgs(arg); err == nil {
+			err = deployApplication(
+				api.backend,
+				api.model,
+				api.stateCharm,
+				arg,
+				api.deployApplicationFunc,
+				api.storagePoolManager,
+				api.registry,
+				api.caasBroker,
+			)
+		}
 		result.Results[i].Error = apiservererrors.ServerError(err)
 
 		if err != nil && len(arg.Resources) != 0 {
@@ -434,6 +448,89 @@ func (api *APIBase) Deploy(args params.ApplicationsDeploy) (params.ErrorResults,
 		}
 	}
 	return result, nil
+}
+
+// compatibilityApplicationDeployArgs ensures that Deploy calls from
+// clients such as juju 3.x, python-libjuju 3.x, etc. work against a 2.9.x
+// controller. To support these clients, we make no assumptions about
+// which of the 3 potential places the OS is specified. We check all 3,
+// assert any provided match, and fill in the remain series.
+//
+// In juju 3.x, params.ApplicationsDeploy was changed to remove series
+// however, the facade version was not changed, nor was the name of
+// the params.ApplicationsDeploy changed. Thus it appears you can use
+// a juju 3.x client to deploy from a juju 2.9 controller, however it
+// fails because the series was not found.
+//
+// NOTE: We do not mess with charm url because this is dangerous. Mutating
+// charm url can lead to unexpected results.
+func compatibilityApplicationDeployArgs(arg params.ApplicationDeploy) (params.ApplicationDeploy, error) {
+	unifiedSeries, err := getUnifiedSeries(arg)
+	if err != nil {
+		return arg, errors.Annotatef(err, "cannot deploy application")
+	}
+	unifiedBase, err := series.GetBaseFromSeries(unifiedSeries)
+	if err != nil {
+		return arg, errors.Trace(err)
+	}
+
+	arg.Series = unifiedSeries
+	arg.CharmOrigin.Series = unifiedSeries
+	arg.CharmOrigin.Base.Name = unifiedBase.Name
+	arg.CharmOrigin.Base.Channel = unifiedBase.Channel.String()
+
+	return arg, nil
+}
+
+// getUnifiedSeries checks the multiple places a series can be provided in a params.ApplicationDeploy,
+// checks they match if they're provided, and returns the matching series
+func getUnifiedSeries(arg params.ApplicationDeploy) (string, error) {
+	argSeries := arg.Series
+
+	var originSeries string
+	var originBaseSeries string
+	if arg.CharmOrigin != nil {
+		originSeries = arg.CharmOrigin.Series
+
+		if arg.CharmOrigin.Base.Name != "" && arg.CharmOrigin.Base.Channel != "" {
+			var err error
+			originBaseSeries, err = series.GetSeriesFromChannel(arg.CharmOrigin.Base.Name, arg.CharmOrigin.Base.Channel)
+			if err != nil {
+				return "", errors.Trace(err)
+			}
+		}
+	}
+
+	curl, err := charm.ParseURL(arg.CharmURL)
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	curlSeries := curl.Series
+
+	// Ensure existence of a series, setting 'unified' to a present value
+	series := []string{argSeries, originSeries, originBaseSeries, curlSeries}
+	var unified string
+	for _, s := range series {
+		if unified == "" {
+			unified = s
+		}
+	}
+	if unified == "" {
+		return "", errors.Errorf("unable to determine series for %q", arg.ApplicationName)
+	}
+	// Ensure uniqueness, assert all provided series are equal
+	for _, s := range series {
+		if s != "" && s != unified {
+			var originBase string
+			if arg.CharmOrigin.Base.Name != "" && arg.CharmOrigin.Base.Channel != "" {
+				originBase = fmt.Sprintf("%s@%s", arg.CharmOrigin.Base.Name, arg.CharmOrigin.Base.Channel)
+			}
+			return "", errors.Errorf(
+				"inconsistent values for series detected. argument: %q, charm origin series: %q, charm origin base: %q, charm url: %q",
+				argSeries, originSeries, originBase, curlSeries)
+		}
+	}
+	return unified, nil
 }
 
 func applicationConfigSchema(modelType state.ModelType) (environschema.Fields, schema.Defaults, error) {
@@ -526,7 +623,7 @@ func caasPrecheck(
 	args params.ApplicationDeploy,
 	storagePoolManager poolmanager.PoolManager,
 	registry storage.ProviderRegistry,
-	caasBroker caasBrokerInterface,
+	caasBroker CaasBrokerInterface,
 ) error {
 	if len(args.AttachStorage) > 0 {
 		return errors.Errorf(
@@ -611,7 +708,7 @@ func deployApplication(
 	deployApplicationFunc func(ApplicationDeployer, Model, DeployApplicationParams) (Application, error),
 	storagePoolManager poolmanager.PoolManager,
 	registry storage.ProviderRegistry,
-	caasBroker caasBrokerInterface,
+	caasBroker CaasBrokerInterface,
 ) error {
 	curl, err := charm.ParseURL(args.CharmURL)
 	if err != nil {
@@ -671,7 +768,7 @@ func deployApplication(
 	if err != nil {
 		return errors.Trace(err)
 	}
-	origin, err := convertCharmOrigin(args.CharmOrigin, curl, args.Channel)
+	origin, err := convertCharmOrigin(args.CharmOrigin, curl, args.Channel, args.Series)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -696,46 +793,25 @@ func deployApplication(
 	return errors.Trace(err)
 }
 
-func convertCharmOrigin(origin *params.CharmOrigin, curl *charm.URL, charmStoreChannel string) (corecharm.Origin, error) {
-	var (
-		originType string
-		platform   corecharm.Platform
-	)
-	if origin != nil {
-		originType = origin.Type
-		platform = corecharm.Platform{
-			Architecture: origin.Architecture,
-			OS:           origin.OS,
-			Series:       origin.Series,
-		}
+// convertCharmOrigin converts a params CharmOrigin to a core charm
+// Origin. If the input origin is nil, a core charm Origin is deduced
+// from the provided data. It is used in both deploying and refreshing
+// charms, including from old clients which aren't charm origin aware.
+// MaybeSeries is a fallback if the origin is not provided.
+func convertCharmOrigin(origin *params.CharmOrigin, curl *charm.URL, charmStoreChannel, maybeSeries string) (corecharm.Origin, error) {
+	if origin == nil {
+		return createCharmOrigin(curl, charmStoreChannel, maybeSeries)
 	}
 
-	switch {
-	case origin == nil || origin.Source == "" || origin.Source == "charm-store":
-		var rev *int
-		if curl.Revision != -1 {
-			rev = &curl.Revision
-		}
-		var ch *charm.Channel
-		if charmStoreChannel != "" {
-			ch = &charm.Channel{
-				Risk: charm.Risk(charmStoreChannel),
-			}
-		}
-		return corecharm.Origin{
-			Type:     originType,
-			Source:   corecharm.CharmStore,
-			Revision: rev,
-			Channel:  ch,
-			Platform: platform,
-		}, nil
-	case origin.Source == "local":
-		return corecharm.Origin{
-			Type:     originType,
-			Source:   corecharm.Local,
-			Revision: &curl.Revision,
-			Platform: platform,
-		}, nil
+	originType := origin.Type
+	base, err := charms.ConvertParamsBase(*origin)
+	if err != nil {
+		return corecharm.Origin{}, errors.Trace(err)
+	}
+	platform := corecharm.Platform{
+		Architecture: origin.Architecture,
+		OS:           base.Name,
+		Channel:      base.Channel.Track,
 	}
 
 	var track string
@@ -761,6 +837,44 @@ func convertCharmOrigin(origin *params.CharmOrigin, curl *charm.URL, charmStoreC
 		Hash:     origin.Hash,
 		Revision: origin.Revision,
 		Channel:  channel,
+		Platform: platform,
+	}, nil
+}
+
+func createCharmOrigin(curl *charm.URL, charmStoreChannel, maybeSeries string) (corecharm.Origin, error) {
+	base, err := series.GetBaseFromSeries(maybeSeries)
+	if err != nil {
+		return corecharm.Origin{}, errors.Trace(err)
+	}
+	platform := corecharm.Platform{
+		OS:      base.Name,
+		Channel: base.Channel.Track,
+	}
+
+	if corecharm.Local.Matches(curl.Schema) {
+		return corecharm.Origin{
+			Type:     "charm",
+			Source:   corecharm.Local,
+			Revision: &curl.Revision,
+			Platform: platform,
+		}, nil
+	}
+
+	var rev *int
+	if curl.Revision != -1 {
+		rev = &curl.Revision
+	}
+	var ch *charm.Channel
+	if charmStoreChannel != "" {
+		ch = &charm.Channel{
+			Risk: charm.Risk(charmStoreChannel),
+		}
+	}
+	return corecharm.Origin{
+		Type:     "charm",
+		Source:   corecharm.CharmStore,
+		Revision: rev,
+		Channel:  ch,
 		Platform: platform,
 	}, nil
 }
@@ -1040,9 +1154,18 @@ func (api *APIBase) setConfig(app Application, generation, settingsYAML string, 
 	return nil
 }
 
-// UpdateApplicationSeries updates the application series. Series for
+// UpdateApplicationBase isn't on the V14 API.
+func (api *APIv14) UpdateApplicationBase(_ struct{}) {}
+
+// UpdateApplicationSeries updates the application base. Series for
 // subordinates updated too.
-func (api *APIBase) UpdateApplicationSeries(args params.UpdateSeriesArgs) (params.ErrorResults, error) {
+func (api *APIv14) UpdateApplicationSeries(args params.UpdateChannelArgs) (params.ErrorResults, error) {
+	return api.APIBase.UpdateApplicationBase(args)
+}
+
+// UpdateApplicationBase updates the application series. Bases for
+// subordinates updated too.
+func (api *APIBase) UpdateApplicationBase(args params.UpdateChannelArgs) (params.ErrorResults, error) {
 	if err := api.checkCanWrite(); err != nil {
 		return params.ErrorResults{}, err
 	}
@@ -1059,7 +1182,22 @@ func (api *APIBase) UpdateApplicationSeries(args params.UpdateSeriesArgs) (param
 	return results, nil
 }
 
-func (api *APIBase) updateOneApplicationSeries(arg params.UpdateSeriesArg) error {
+func (api *APIBase) updateOneApplicationSeries(arg params.UpdateChannelArg) error {
+	if arg.Series == "" {
+		channel, err := series.ParseChannel(arg.Channel)
+		if err != nil {
+			return errors.NotValidf("channel %q", arg.Channel)
+		}
+		var mseries string
+		mseries, err = series.VersionSeries(channel.Track)
+		if err != nil {
+			mseries, err = series.VersionSeries("centos" + channel.Track)
+		}
+		if err != nil {
+			return errors.NotValidf("channel %q", arg.Channel)
+		}
+		arg.Series = mseries
+	}
 	return api.updateSeries.UpdateSeries(arg.Entity.Tag, arg.Series, arg.Force)
 }
 
@@ -1161,7 +1299,7 @@ func (api *APIBase) setCharmWithAgentValidation(
 	if err != nil {
 		logger.Debugf("Unable to locate current charm: %v", err)
 	}
-	newOrigin, err := convertCharmOrigin(params.CharmOrigin, curl, string(params.Channel))
+	newOrigin, err := convertCharmOrigin(params.CharmOrigin, curl, string(params.Channel), oneApplication.Series())
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -1180,7 +1318,11 @@ func (api *APIBase) setCharmWithAgentValidation(
 		if unsupportedReason != "" {
 			return errors.NotSupportedf(unsupportedReason)
 		}
-		return api.applicationSetCharm(params, newCharm, stateCharmOrigin(newOrigin))
+		origin, err := stateCharmOrigin(newOrigin)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		return api.applicationSetCharm(params, newCharm, origin)
 	}
 
 	// Check if the controller agent tools version is greater than the
@@ -1207,7 +1349,11 @@ func (api *APIBase) setCharmWithAgentValidation(
 		}
 	}
 
-	return api.applicationSetCharm(params, newCharm, stateCharmOrigin(newOrigin))
+	origin, err := stateCharmOrigin(newOrigin)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	return api.applicationSetCharm(params, newCharm, origin)
 }
 
 // applicationSetCharm sets the charm for the given for the application.
@@ -1264,7 +1410,7 @@ func (api *APIBase) applicationSetCharm(
 		ForceSeries:        force.ForceSeries,
 		ForceUnits:         force.ForceUnits,
 		Force:              force.Force,
-		ResourceIDs:        params.ResourceIDs,
+		PendingResourceIDs: params.ResourceIDs,
 		StorageConstraints: stateStorageConstraints,
 		EndpointBindings:   params.EndpointBindings,
 	}
@@ -1280,8 +1426,8 @@ func (api *APIBase) applicationSetCharm(
 
 	// If upgrading from a pod-spec (v1) charm to sidecar (v2), override the
 	// application's series to what it would be for a fresh sidecar deploy.
-	oldSeries := params.Application.Series()
-	if oldSeries == series.Kubernetes.String() && charm.MetaFormat(newCharm) >= charm.FormatV2 && corecharm.IsKubernetes(newCharm) {
+	if charm.MetaFormat(oldCharm) == charm.FormatV1 && corecharm.IsKubernetes(oldCharm) &&
+		charm.MetaFormat(newCharm) >= charm.FormatV2 && corecharm.IsKubernetes(newCharm) {
 		// Disallow upgrading from a v1 DaemonSet or Deployment type charm
 		// (only StatefulSet is supported in v2 right now).
 		deployment := oldCharm.Meta().Deployment
@@ -1307,8 +1453,9 @@ func (api *APIBase) applicationSetCharm(
 		if err != nil {
 			return errors.Trace(err)
 		}
-		logger.Debugf("upgrading pod-spec to sidecar charm, setting series to %q", newSeries)
+		logger.Infof("upgrading pod-spec to sidecar charm, setting series to %q", newSeries)
 		cfg.Series = newSeries
+		cfg.RequireNoUnits = true
 	}
 
 	return params.Application.SetCharm(cfg)
@@ -1426,12 +1573,15 @@ func (api *APIBase) GetCharmURLOrigin(args params.ApplicationGet) (params.CharmU
 		result.Error = apiservererrors.ServerError(errors.NotFoundf("charm origin for %q", args.ApplicationName))
 		return result, nil
 	}
-	result.Origin = makeParamsCharmOrigin(chOrigin)
+	result.Origin, err = makeParamsCharmOrigin(chOrigin)
+	if err != nil {
+		return params.CharmURLOriginResult{Error: apiservererrors.ServerError(err)}, nil
+	}
 	result.Origin.InstanceKey = charmhub.CreateInstanceKey(oneApplication.ApplicationTag(), api.model.ModelTag())
 	return result, nil
 }
 
-func makeParamsCharmOrigin(origin *state.CharmOrigin) params.CharmOrigin {
+func makeParamsCharmOrigin(origin *state.CharmOrigin) (params.CharmOrigin, error) {
 	retOrigin := params.CharmOrigin{
 		Source: origin.Source,
 		ID:     origin.ID,
@@ -1451,10 +1601,28 @@ func makeParamsCharmOrigin(origin *state.CharmOrigin) params.CharmOrigin {
 	}
 	if origin.Platform != nil {
 		retOrigin.Architecture = origin.Platform.Architecture
-		retOrigin.OS = origin.Platform.OS
+		var base series.Base
+		if origin.Platform.Series != "" {
+			var err error
+			if origin.Platform.OS == "" {
+				base, err = series.GetBaseFromSeries(origin.Platform.Series)
+			} else {
+				var channel string
+				channel, err = series.SeriesVersion(origin.Platform.Series)
+				if err == nil {
+					base, err = series.ParseBase(origin.Platform.OS, channel)
+				}
+			}
+			if err != nil {
+				return params.CharmOrigin{}, errors.Trace(err)
+			}
+		}
+		retOrigin.Base = params.Base{Name: base.Name, Channel: base.Channel.String()}
+		retOrigin.OS = base.Name
+		retOrigin.Channel = base.Channel.String()
 		retOrigin.Series = origin.Platform.Series
 	}
-	return retOrigin
+	return retOrigin, nil
 }
 
 // Set implements the server side of Application.Set.
@@ -1819,7 +1987,7 @@ func (api *APIBase) DestroyUnit(args params.DestroyUnitsParams) (params.DestroyU
 				)
 			}
 		} else {
-			info.DestroyedStorage, info.DetachedStorage, err = storagecommon.ClassifyDetachedStorage(
+			info.DestroyedStorage, info.DetachedStorage, err = ClassifyDetachedStorage(
 				api.storageAccess.VolumeAccess(), api.storageAccess.FilesystemAccess(), unitStorage,
 			)
 			if err != nil {
@@ -1950,7 +2118,7 @@ func (api *APIBase) DestroyApplication(args params.DestroyApplicationsParams) (p
 					)
 				}
 			} else {
-				destroyed, detached, err := storagecommon.ClassifyDetachedStorage(
+				destroyed, detached, err := ClassifyDetachedStorage(
 					api.storageAccess.VolumeAccess(), api.storageAccess.FilesystemAccess(), unitStorage,
 				)
 				if err != nil {
@@ -2218,16 +2386,9 @@ func (api *APIBase) DestroyRelation(args params.DestroyRelation) (err error) {
 	if err := api.check.RemoveAllowed(); err != nil {
 		return errors.Trace(err)
 	}
-	var (
-		rel Relation
-		eps []state.Endpoint
-	)
+	var rel Relation
 	if len(args.Endpoints) > 0 {
-		eps, err = api.backend.InferEndpoints(args.Endpoints...)
-		if err != nil {
-			return err
-		}
-		rel, err = api.backend.EndpointsRelation(eps...)
+		rel, err = api.backend.InferActiveRelation(args.Endpoints...)
 	} else {
 		rel, err = api.backend.Relation(args.RelationId)
 	}
@@ -2432,7 +2593,7 @@ func providerSpaceInfoFromParams(space params.RemoteSpace) *environs.ProviderSpa
 // maybeUpdateExistingApplicationEndpoints looks for a remote application with the
 // specified name and source model tag and tries to update its endpoints with the
 // new ones specified. If the endpoints are compatible, the newly updated remote
-// application is returned.s.backend.remoteApplications["hosted-mysql"]
+// application is returned.
 // If the application status is Terminated, no updates are done.
 func (api *APIBase) maybeUpdateExistingApplicationEndpoints(
 	applicationName string, sourceModelTag names.ModelTag, remoteEps []charm.Relation,
@@ -2826,6 +2987,7 @@ func (api *APIBase) ApplicationsInfo(in params.Entities) (params.ApplicationInfo
 			Tag:              tag.String(),
 			Charm:            details.Charm,
 			Series:           details.Series,
+			Base:             details.Base,
 			Channel:          channel,
 			Constraints:      details.Constraints,
 			Principal:        app.IsPrincipal(),
@@ -3256,4 +3418,26 @@ func (api *APIBase) crossModelRelationData(rel Relation, appName string, erd *pa
 		erd.UnitRelationData[ru.UnitName()] = urd
 	}
 	return nil
+}
+
+// Leader is not available via the V13 Facade.
+func (*APIv13) Leader(_ struct{}) {}
+
+// Leader returns the unit name of the leader for the given application.
+func (api *APIBase) Leader(entity params.Entity) (params.StringResult, error) {
+	result := params.StringResult{}
+	application, err := names.ParseApplicationTag(entity.Tag)
+	if err != nil {
+		return result, err
+	}
+	leaders, err := api.leadershipReader.Leaders()
+	if err != nil {
+		return result, errors.Annotate(err, "could not fetch leaders")
+	}
+	var ok bool
+	result.Result, ok = leaders[application.Name]
+	if !ok || result.Result == "" {
+		result.Error = apiservererrors.ServerError(errors.NotFoundf("leader for %s", entity.Tag))
+	}
+	return result, nil
 }

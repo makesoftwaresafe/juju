@@ -6,10 +6,10 @@ package instancemutater_test
 import (
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/instancemutater"
@@ -227,18 +227,6 @@ func (s *instanceMutaterMachineSuite) setUpSetCharmProfilesArgs() params.SetProf
 			{
 				Entity:   params.Entity{Tag: s.tag.String()},
 				Profiles: s.profiles,
-			},
-		},
-	}
-}
-
-func (s *instanceMutaterMachineSuite) setUpSetProfileUpgradeCompleteArgs() params.SetProfileUpgradeCompleteArgs {
-	return params.SetProfileUpgradeCompleteArgs{
-		Args: []params.SetProfileUpgradeCompleteArg{
-			{
-				Entity:   params.Entity{Tag: s.tag.String()},
-				UnitName: s.unitName,
-				Message:  s.message,
 			},
 		},
 	}

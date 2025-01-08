@@ -4,11 +4,13 @@
 package unit
 
 import (
-	"io/ioutil"
+	"fmt"
 	"os"
+	"os/signal"
 	"path"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/juju/clock"
@@ -30,6 +32,7 @@ import (
 	"github.com/juju/juju/api/base"
 	k8sconstants "github.com/juju/juju/caas/kubernetes/provider/constants"
 	jujucmd "github.com/juju/juju/cmd"
+	"github.com/juju/juju/cmd/constants"
 	"github.com/juju/juju/cmd/containeragent/utils"
 	"github.com/juju/juju/cmd/jujud/agent/agentconf"
 	"github.com/juju/juju/cmd/jujud/agent/engine"
@@ -114,34 +117,6 @@ func (c *containerUnitAgent) CharmModifiedVersion() int {
 	return c.charmModifiedVersion
 }
 
-func (c *containerUnitAgent) ensureAgentConf(dataDir string) error {
-	templateConfigPath := path.Join(dataDir, k8sconstants.TemplateFileNameAgentConf)
-	logger.Debugf("template config path %s", templateConfigPath)
-	config, err := agent.ReadConfig(templateConfigPath)
-	if err != nil {
-		return errors.Annotate(err, "reading template agent config file")
-	}
-	unitTag := config.Tag()
-	configPath := agent.ConfigPath(dataDir, unitTag)
-	logger.Debugf("config path %s", configPath)
-	configDir := path.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return errors.Annotatef(err, "making agent directory %q", configDir)
-	}
-	configBytes, err := config.Render()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	if err := ioutil.WriteFile(configPath, configBytes, 0644); err != nil {
-		return errors.Annotate(err, "writing agent config file")
-	}
-
-	if err := c.ReadConfig(unitTag.String()); err != nil {
-		return errors.Annotate(err, "reading agent config file")
-	}
-	return nil
-}
-
 // Init initializes the command for running.
 func (c *containerUnitAgent) Init(args []string) error {
 	if err := c.AgentConf.CheckArgs(args); err != nil {
@@ -181,9 +156,7 @@ func (c *containerUnitAgent) Init(args []string) error {
 		Logger:        logger,
 	})
 
-	dataDir := c.DataDir()
-
-	if err := c.ensureAgentConf(dataDir); err != nil {
+	if err := ensureAgentConf(c.AgentConf); err != nil {
 		return errors.Annotate(err, "ensuring agent conf file")
 	}
 
@@ -193,7 +166,7 @@ func (c *containerUnitAgent) Init(args []string) error {
 	}
 
 	srcDir := path.Dir(os.Args[0])
-	if err := c.ensureToolSymlinks(srcDir, dataDir, unitTag); err != nil {
+	if err := c.ensureToolSymlinks(srcDir, c.DataDir(), unitTag); err != nil {
 		return errors.Annotate(err, "ensuring agent tool symlinks")
 	}
 	containerNames := c.environment.Getenv("JUJU_CONTAINER_NAMES")
@@ -267,10 +240,10 @@ func (c *containerUnitAgent) ChangeConfig(mutate agent.ConfigMutator) error {
 }
 
 // Workers returns a dependency.Engine running the k8s unit agent's responsibilities.
-func (c *containerUnitAgent) workers() (worker.Worker, error) {
-	probePort := os.Getenv(k8sconstants.EnvAgentHTTPProbePort)
+func (c *containerUnitAgent) workers(sigTermCh chan os.Signal) (worker.Worker, error) {
+	probePort := os.Getenv(constants.EnvHTTPProbePort)
 	if probePort == "" {
-		return nil, errors.NotValidf("env %s missing", k8sconstants.EnvAgentHTTPProbePort)
+		probePort = constants.DefaultHTTPProbePort
 	}
 
 	updateAgentConfLogging := func(loggingConfig string) error {
@@ -279,7 +252,6 @@ func (c *containerUnitAgent) workers() (worker.Worker, error) {
 			return nil
 		})
 	}
-
 	localHub := pubsub.NewSimpleHub(&pubsub.SimpleHubConfig{
 		Logger: loggo.GetLogger("juju.localhub"),
 	})
@@ -295,12 +267,14 @@ func (c *containerUnitAgent) workers() (worker.Worker, error) {
 		PrometheusRegisterer: c.prometheusRegistry,
 		UpdateLoggerConfig:   updateAgentConfLogging,
 		PreviousAgentVersion: agentConfig.UpgradedToVersion(),
+		ProbeAddress:         "localhost",
 		ProbePort:            probePort,
 		MachineLock:          c.machineLock,
 		Clock:                c.clk,
 		CharmModifiedVersion: c.CharmModifiedVersion(),
 		ContainerNames:       c.containerNames,
 		LocalHub:             localHub,
+		SignalCh:             sigTermCh,
 	}
 	manifolds := Manifolds(cfg)
 
@@ -317,10 +291,9 @@ func (c *containerUnitAgent) workers() (worker.Worker, error) {
 		return nil, err
 	}
 	if err := addons.StartIntrospection(addons.IntrospectionConfig{
-		AgentTag:           c.CurrentConfig().Tag(),
+		AgentDir:           agentConfig.Dir(),
 		Engine:             eng,
 		MachineLock:        c.machineLock,
-		NewSocketName:      addons.DefaultIntrospectionSocketName,
 		PrometheusGatherer: c.prometheusRegistry,
 		WorkerFunc:         introspection.NewWorker,
 		Clock:              c.clk,
@@ -365,7 +338,13 @@ func (c *containerUnitAgent) Run(ctx *cmd.Context) (err error) {
 		ctx.Warningf("developer feature flags enabled: %s", flags)
 	}
 
-	if err := c.runner.StartWorker("unit", c.workers); err != nil {
+	sigTermCh := make(chan os.Signal, 1)
+	signal.Notify(sigTermCh, syscall.SIGTERM)
+
+	err = c.runner.StartWorker("unit", func() (worker.Worker, error) {
+		return c.workers(sigTermCh)
+	})
+	if err != nil {
 		return errors.Annotate(err, "starting worker")
 	}
 
@@ -415,4 +394,42 @@ func AgentDone(logger loggo.Logger, err error) error {
 		logger.Infof("agent restarting")
 	}
 	return err
+}
+
+func ensureAgentConf(ac agentconf.AgentConf) error {
+	templateConfigPath := path.Join(ac.DataDir(), k8sconstants.TemplateFileNameAgentConf)
+	logger.Debugf("template config path %s", templateConfigPath)
+	config, err := agent.ReadConfig(templateConfigPath)
+	if err != nil {
+		return errors.Annotate(err, "reading template agent config file")
+	}
+
+	unitTag := config.Tag()
+	configPath := agent.ConfigPath(ac.DataDir(), unitTag)
+	logger.Debugf("config path %s", configPath)
+	// if the rendered configuration already exists, use that copy
+	// as it likely has updated api addresses or could have a newer password,
+	// otherwise we need to copy the template.
+	if _, err := os.Stat(configPath); err == nil {
+		return ac.ReadConfig(unitTag.String())
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cannot stat current config %s: %w", configPath, err)
+	}
+
+	configDir := path.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return errors.Annotatef(err, "making agent directory %q", configDir)
+	}
+	configBytes, err := config.Render()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if err := os.WriteFile(configPath, configBytes, 0644); err != nil {
+		return errors.Annotate(err, "writing agent config file")
+	}
+
+	if err := ac.ReadConfig(unitTag.String()); err != nil {
+		return errors.Annotate(err, "reading agent config file")
+	}
+	return nil
 }

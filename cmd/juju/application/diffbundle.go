@@ -21,6 +21,7 @@ import (
 	"github.com/juju/juju/api/client/annotations"
 	"github.com/juju/juju/api/client/application"
 	apicharms "github.com/juju/juju/api/client/charms"
+	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/modelconfig"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	"github.com/juju/juju/charmhub"
@@ -105,7 +106,15 @@ func NewDiffBundleCommand() cmd.Command {
 		return modelconfig.NewClient(api)
 	}
 	cmd.modelConstraintsClientFunc = func() (ModelConstraintsClient, error) {
-		return cmd.NewAPIClient()
+		root, err := cmd.NewAPIRoot()
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		client := modelconfig.NewClient(root)
+		if client.BestAPIVersion() > 2 {
+			return client, nil
+		}
+		return apiclient.NewClient(root, logger), nil
 	}
 	return modelcmd.Wrap(cmd)
 }
@@ -130,7 +139,6 @@ type diffBundleCommand struct {
 	newControllerAPIRootFn     func() (base.APICallCloser, error)
 	modelConfigClientFunc      func(base.APICallCloser) ModelConfigClient
 	modelConstraintsClientFunc func() (ModelConstraintsClient, error)
-	newCharmHubClient          func(string) (store.DownloadBundleClient, error)
 }
 
 // IsSuperCommand is part of cmd.Command.
@@ -200,7 +208,7 @@ func (c *diffBundleCommand) Run(ctx *cmd.Context) error {
 		return errors.Trace(err)
 	}
 
-	bundle, err := appbundle.ComposeAndVerifyBundle(baseSrc, c.bundleOverlays)
+	bundle, _, err := appbundle.ComposeAndVerifyBundle(baseSrc, c.bundleOverlays)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -271,9 +279,9 @@ func missingRelationEndpoint(rel string) bool {
 func (c *diffBundleCommand) bundleDataSource(ctx *cmd.Context, apiRoot base.APICallCloser) (charm.BundleDataSource, error) {
 	ds, err := charm.LocalBundleDataSource(c.bundle)
 
-	// NotValid/NotFound means we should try interpreting it as a charm store
-	// bundle URL.
-	if err != nil && !errors.IsNotValid(err) && !errors.IsNotFound(err) {
+	// NotFound means that the provided local file is not found, and
+	// therefore we should try interpreting it as a charm store bundle URL.
+	if err != nil && !errors.Is(err, errors.NotFound) {
 		return nil, errors.Trace(err)
 	}
 	if ds != nil {

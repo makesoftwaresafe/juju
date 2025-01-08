@@ -16,6 +16,7 @@ import (
 	"github.com/juju/utils/v3/exec"
 	"github.com/juju/worker/v3"
 	"github.com/juju/worker/v3/catacomb"
+	"gopkg.in/tomb.v2"
 
 	"github.com/juju/juju/agent/tools"
 	"github.com/juju/juju/api/agent/uniter"
@@ -49,10 +50,10 @@ import (
 	"github.com/juju/juju/worker/uniter/verifycharmprofile"
 )
 
-var (
+const (
 	// ErrCAASUnitDead is the error returned from terminate or init
 	// if the unit is Dead.
-	ErrCAASUnitDead = errors.New("unit dead")
+	ErrCAASUnitDead = errors.ConstError("unit dead")
 )
 
 // A UniterExecutionObserver gets the appropriate methods called when a hook
@@ -72,10 +73,7 @@ type RebootQuerier interface {
 // RemoteInitFunc is used to init remote state
 type RemoteInitFunc func(remotestate.ContainerRunningStatus, <-chan struct{}) error
 
-// Uniter implements the capabilities of the unit agent. It is not intended to
-// implement the actual *behaviour* of the unit agent; that responsibility is
-// delegated to Mode values, which are expected to react to events and direct
-// the uniter's responses to them.
+// Uniter implements the capabilities of the unit agent, for example running hooks.
 type Uniter struct {
 	catacomb                     catacomb.Catacomb
 	st                           *uniter.State
@@ -300,7 +298,15 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 		if err != nil {
 			errorString = err.Error()
 		}
-		if errors.Cause(err) == ErrCAASUnitDead {
+		// If something else killed the tomb, then use that error.
+		if errors.Is(err, tomb.ErrDying) {
+			select {
+			case <-u.catacomb.Dying():
+				errorString = u.catacomb.Err().Error()
+			default:
+			}
+		}
+		if errors.Is(err, ErrCAASUnitDead) {
 			errorString = err.Error()
 			err = nil
 		}
@@ -328,18 +334,26 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 	}
 	u.logger.Infof("unit %q started", u.unit)
 
+	// Check we are running the correct charm version.
+	if u.sidecar && u.enforcedCharmModifiedVersion != -1 {
+		app, err := u.unit.Application()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		appCharmModifiedVersion, err := app.CharmModifiedVersion()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if appCharmModifiedVersion != u.enforcedCharmModifiedVersion {
+			u.logger.Infof("remote charm modified version (%d) does not match agent's (%d)",
+				appCharmModifiedVersion, u.enforcedCharmModifiedVersion)
+			return u.stopUnitError()
+		}
+	}
+
 	canApplyCharmProfile, charmURL, charmModifiedVersion, err := u.charmState()
 	if err != nil {
 		return errors.Trace(err)
-	}
-
-	// Check we are running the correct charm version.
-	if u.sidecar && u.enforcedCharmModifiedVersion != -1 {
-		if charmModifiedVersion != u.enforcedCharmModifiedVersion {
-			u.logger.Infof("remote charm modified version (%d) does not match agent's (%d)",
-				charmModifiedVersion, u.enforcedCharmModifiedVersion)
-			return u.stopUnitError()
-		}
 	}
 
 	var watcher *remotestate.RemoteStateWatcher
@@ -524,31 +538,34 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 
 			err = u.translateResolverErr(err)
 
-			switch cause := errors.Cause(err); cause {
-			case nil:
+			switch {
+			case err == nil:
 				// Loop back around.
-			case resolver.ErrLoopAborted:
+			case errors.Is(err, resolver.ErrLoopAborted):
 				err = u.catacomb.ErrDying()
-			case operation.ErrNeedsReboot:
+			case errors.Is(err, operation.ErrNeedsReboot):
 				err = jworker.ErrRebootMachine
-			case operation.ErrHookFailed:
+			case errors.Is(err, operation.ErrHookFailed):
 				// Loop back around. The resolver can tell that it is in
 				// an error state by inspecting the operation state.
 				err = nil
-			case resolver.ErrTerminate:
+			case errors.Is(err, runner.ErrTerminated):
+				localState.HookWasShutdown = true
+				err = nil
+			case errors.Is(err, resolver.ErrUnitDead):
 				err = u.terminate()
-			case resolver.ErrRestart:
+			case errors.Is(err, resolver.ErrRestart):
 				// make sure we update the two values used above in
 				// creating LocalState.
 				charmURL = localState.CharmURL
 				charmModifiedVersion = localState.CharmModifiedVersion
 				// leave err assigned, causing loop to break
-			case jworker.ErrTerminateAgent:
+			case errors.Is(err, jworker.ErrTerminateAgent):
 				// terminate agent
 			default:
 				// We need to set conflicted from here, because error
 				// handling is outside of the resolver's control.
-				if operation.IsDeployConflictError(cause) {
+				if _, is := errors.AsType[*operation.DeployConflictError](err); is {
 					localState.Conflicted = true
 					err = setAgentStatus(u, status.Error, "upgrade failed", nil)
 				} else {
@@ -557,14 +574,18 @@ func (u *Uniter) loop(unitTag names.UnitTag) (err error) {
 			}
 		}
 
-		if errors.Cause(err) != resolver.ErrRestart {
+		if !errors.Is(err, resolver.ErrRestart) {
 			break
 		}
 	}
 	return err
 }
 
-func (u *Uniter) verifyCharmProfile(curl *corecharm.URL) error {
+func (u *Uniter) verifyCharmProfile(url string) error {
+	curl, err := corecharm.ParseURL(url)
+	if err != nil {
+		return errors.Trace(err)
+	}
 	// NOTE: this is very similar code to verifyCharmProfile.NextOp,
 	// if you make changes here, check to see if they are needed there.
 	ch, err := u.st.Charm(curl)
@@ -613,11 +634,11 @@ func (u *Uniter) verifyCharmProfile(curl *corecharm.URL) error {
 // charmState returns data for the local state setup.
 // While gathering the data, look for interrupted Install or pending
 // charm upgrade, execute if found.
-func (u *Uniter) charmState() (bool, *corecharm.URL, int, error) {
+func (u *Uniter) charmState() (bool, string, int, error) {
 	// Install is a special case, as it must run before there
 	// is any remote state, and before the remote state watcher
 	// is started.
-	var charmURL *corecharm.URL
+	var charmURL string
 	var charmModifiedVersion int
 
 	canApplyCharmProfile, err := u.unit.CanApplyLXDProfile()
@@ -707,7 +728,10 @@ func (u *Uniter) terminate() error {
 // an individual agent for that unit.
 func (u *Uniter) stopUnitError() error {
 	u.logger.Debugf("u.modelType: %s", u.modelType)
-	if u.modelType == model.CAAS && !u.sidecar {
+	if u.modelType == model.CAAS {
+		if u.sidecar {
+			return errors.WithType(jworker.ErrTerminateAgent, ErrCAASUnitDead)
+		}
 		return ErrCAASUnitDead
 	}
 	return jworker.ErrTerminateAgent
@@ -803,7 +827,6 @@ func (u *Uniter) init(unitTag names.UnitTag) (err error) {
 		Payloads:         u.payloads,
 		Tracker:          u.leadershipTracker,
 		GetRelationInfos: u.relationStateTracker.GetInfo,
-		Storage:          u.storage,
 		Paths:            u.paths,
 		Clock:            u.clock,
 		Logger:           u.logger.Child("context"),
@@ -900,11 +923,11 @@ func (u *Uniter) Wait() error {
 	return u.catacomb.Wait()
 }
 
-func (u *Uniter) getApplicationCharmURL() (*corecharm.URL, error) {
+func (u *Uniter) getApplicationCharmURL() (string, error) {
 	// TODO(fwereade): pretty sure there's no reason to make 2 API calls here.
 	app, err := u.st.Application(u.unit.ApplicationTag())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	charmURL, _, err := app.CharmURL()
 	return charmURL, err

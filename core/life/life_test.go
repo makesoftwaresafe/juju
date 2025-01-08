@@ -40,6 +40,19 @@ func (*LifeSuite) TestValidateInvalid(c *gc.C) {
 	}
 }
 
+func (*LifeSuite) TestIsAliveSuccess(c *gc.C) {
+	c.Check(life.IsAlive(life.Alive), jc.IsTrue)
+}
+
+func (*LifeSuite) TestIsAliveFailure(c *gc.C) {
+	for i, test := range []life.Value{
+		life.Dying, life.Dead, "", "bad", "ALIVE",
+	} {
+		c.Logf("test %d: %s", i, test)
+		c.Check(life.IsAlive(test), jc.IsFalse)
+	}
+}
+
 func (*LifeSuite) TestIsNotAliveFailure(c *gc.C) {
 	c.Check(life.IsNotAlive(life.Alive), jc.IsFalse)
 }
@@ -63,5 +76,18 @@ func (*LifeSuite) TestIsNotDeadSuccess(c *gc.C) {
 	} {
 		c.Logf("test %d: %s", i, test)
 		c.Check(life.IsNotDead(test), jc.IsTrue)
+	}
+}
+
+func (*LifeSuite) TestIsDeadSuccess(c *gc.C) {
+	c.Check(life.IsDead(life.Dead), jc.IsTrue)
+}
+
+func (*LifeSuite) TestIsDeadFailure(c *gc.C) {
+	for i, test := range []life.Value{
+		life.Alive, life.Dying, "", "bad", "DEAD",
+	} {
+		c.Logf("test %d: %s", i, test)
+		c.Check(life.IsDead(test), jc.IsFalse)
 	}
 }

@@ -110,6 +110,10 @@ type StateBackend interface {
 	UpdateOperationWithEnqueuingErrors() error
 	RemoveLocalCharmOriginChannels() error
 	FixCharmhubLastPolltime() error
+	RemoveUseFloatingIPConfigFalse() error
+	CharmOriginChannelMustHaveTrack() error
+	RemoveDefaultSeriesFromModelConfig() error
+	CorrectControllerConfigDurations() error
 }
 
 // Model is an interface providing access to the details of a model within the
@@ -503,4 +507,20 @@ func (s stateBackend) RemoveLocalCharmOriginChannels() error {
 
 func (s stateBackend) FixCharmhubLastPolltime() error {
 	return state.FixCharmhubLastPolltime(s.pool)
+}
+
+func (s stateBackend) RemoveUseFloatingIPConfigFalse() error {
+	return state.RemoveUseFloatingIPConfigFalse(s.pool)
+}
+
+func (s stateBackend) CharmOriginChannelMustHaveTrack() error {
+	return state.CharmOriginChannelMustHaveTrack(s.pool)
+}
+
+func (s stateBackend) RemoveDefaultSeriesFromModelConfig() error {
+	return state.RemoveDefaultSeriesFromModelConfig(s.pool)
+}
+
+func (s stateBackend) CorrectControllerConfigDurations() error {
+	return state.CorrectControllerConfigDurations(s.pool)
 }

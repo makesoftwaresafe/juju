@@ -20,6 +20,7 @@ import (
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/common"
+	"github.com/juju/juju/api/controller/controller"
 	"github.com/juju/juju/api/controller/migrationtarget"
 	coremigration "github.com/juju/juju/core/migration"
 	"github.com/juju/juju/core/resources"
@@ -74,10 +75,14 @@ type Facade interface {
 
 	// Prechecks performs pre-migration checks on the model and
 	// (source) controller.
-	Prechecks() error
+	Prechecks(targetControllerVersion version.Number) error
 
 	// ModelInfo return basic information about the model to migrated.
 	ModelInfo() (coremigration.ModelInfo, error)
+
+	// SourceControllerInfo returns connection information about the source controller
+	// and uuids of any other hosted models involved in cross model relations.
+	SourceControllerInfo() (coremigration.SourceControllerInfo, []string, error)
 
 	// Export returns a serialized representation of the model
 	// associated with the API connection.
@@ -332,32 +337,66 @@ func (w *Worker) doQUIESCE(status coremigration.MigrationStatus) (coremigration.
 	return coremigration.IMPORT, nil
 }
 
+var incompatibleTargetMessage = `
+target controller must be upgraded to 2.9.43 or later
+to be able to migrate models with cross model relations
+to other models hosted on the source controller
+`[1:]
+
 func (w *Worker) prechecks(status coremigration.MigrationStatus) error {
+	model, err := w.config.Facade.ModelInfo()
+	if err != nil {
+		return errors.Annotate(err, "failed to obtain model info during prechecks")
+	}
+	targetConn, err := w.openAPIConn(status.TargetInfo)
+	if err != nil {
+		return errors.Annotate(err, "failed to connect to target controller during prechecks")
+	}
+	defer targetConn.Close()
+
+	targetControllerVersion, err := w.getTargetControllerVersion(targetConn)
+	if err != nil {
+		return errors.Annotate(err, "cannot get target controller version")
+	}
+
 	w.setInfoStatus("performing source prechecks")
-	err := w.config.Facade.Prechecks()
+	err = w.config.Facade.Prechecks(targetControllerVersion)
 	if err != nil {
 		return errors.Annotate(err, "source prechecks failed")
 	}
 
 	w.setInfoStatus("performing target prechecks")
-	model, err := w.config.Facade.ModelInfo()
-	if err != nil {
-		return errors.Annotate(err, "failed to obtain model info during prechecks")
-	}
-	conn, err := w.openAPIConn(status.TargetInfo)
-	if err != nil {
-		return errors.Annotate(err, "failed to connect to target controller during prechecks")
-	}
-	defer conn.Close()
-
-	if conn.ControllerTag() != status.TargetInfo.ControllerTag {
+	if targetConn.ControllerTag() != status.TargetInfo.ControllerTag {
 		return errors.Errorf("unexpected target controller UUID (got %s, expected %s)",
-			conn.ControllerTag(), status.TargetInfo.ControllerTag)
+			targetConn.ControllerTag(), status.TargetInfo.ControllerTag)
 	}
-
-	targetClient := migrationtarget.NewClient(conn)
+	targetClient := migrationtarget.NewClient(targetConn)
+	// If we have cross model relations to other models on this controller,
+	// we need to ensure the target controller is recent enough to process those.
+	if targetClient.BestFacadeVersion() < 2 {
+		_, localRelatedModels, err := w.config.Facade.SourceControllerInfo()
+		if err != nil {
+			return errors.Annotate(err, "cannot get local model info")
+		}
+		if len(localRelatedModels) > 0 {
+			return errors.Errorf(incompatibleTargetMessage)
+		}
+	}
 	err = targetClient.Prechecks(model)
 	return errors.Annotate(err, "target prechecks failed")
+}
+
+func (w *Worker) getTargetControllerVersion(conn api.Connection) (version.Number, error) {
+	client := controller.NewClient(conn)
+	result, err := client.ControllerVersion()
+	if err != nil {
+		return version.Number{}, errors.Annotate(err, "failed to obtain target controller version during prechecks")
+	}
+	number, err := version.Parse(result.Version)
+	if err != nil {
+		return version.Number{}, errors.Trace(err)
+	}
+	return number, nil
 }
 
 func (w *Worker) doIMPORT(targetInfo coremigration.TargetInfo, modelUUID string) (coremigration.Phase, error) {
@@ -517,7 +556,11 @@ func (w *Worker) checkTargetMachines(targetClient *migrationtarget.Client, model
 
 func (w *Worker) activateModel(targetClient *migrationtarget.Client, modelUUID string) error {
 	w.setInfoStatus("activating model in target controller")
-	return errors.Trace(targetClient.Activate(modelUUID))
+	info, localRelatedModels, err := w.config.Facade.SourceControllerInfo()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	return errors.Trace(targetClient.Activate(modelUUID, info, localRelatedModels))
 }
 
 func (w *Worker) doSUCCESS(status coremigration.MigrationStatus) (coremigration.Phase, error) {
@@ -874,10 +917,14 @@ func (w *Worker) openAPIConnForModel(targetInfo coremigration.TargetInfo, modelU
 	apiInfo := &api.Info{
 		Addrs:     targetInfo.Addrs,
 		CACert:    targetInfo.CACert,
-		Tag:       targetInfo.AuthTag,
 		Password:  targetInfo.Password,
 		ModelTag:  names.NewModelTag(modelUUID),
 		Macaroons: targetInfo.Macaroons,
+	}
+	// Only local users must be added to the api info.
+	// For external users, the tag needs to be left empty.
+	if targetInfo.AuthTag.IsLocal() {
+		apiInfo.Tag = targetInfo.AuthTag
 	}
 	return w.config.APIOpen(apiInfo, migration.ControllerDialOpts())
 }

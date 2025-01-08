@@ -1,5 +1,6 @@
 // Copyright 2018 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package model
 
 import (
@@ -32,7 +33,6 @@ func NewExportBundleCommand() cmd.Command {
 
 type exportBundleCommand struct {
 	modelcmd.ModelCommandBase
-	out                  cmd.Output
 	newAPIFunc           func() (ExportBundleAPI, ConfigAPI, error)
 	Filename             string
 	includeCharmDefaults bool

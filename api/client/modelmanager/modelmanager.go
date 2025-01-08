@@ -13,11 +13,11 @@ import (
 
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/api/common"
+	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/environs/config"
-	"github.com/juju/juju/rpc"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -75,10 +75,6 @@ func (c *Client) CreateModel(
 	var modelInfo params.ModelInfo
 	err := c.facade.FacadeCall("CreateModel", createArgs, &modelInfo)
 	if err != nil {
-		// We don't want the message to contain the "(already exists)" suffix.
-		if rpcErr, ok := errors.Cause(err).(*rpc.RequestError); ok {
-			return result, errors.New(rpcErr.Message)
-		}
 		return result, errors.Trace(err)
 	}
 	return convertParamsModelInfo(modelInfo)
@@ -393,7 +389,7 @@ func (c *Client) DumpModelDB(model names.ModelTag) (map[string]interface{}, erro
 // DestroyModel puts the specified model into a "dying" state, which will
 // cause the model's resources to be cleaned up, after which the model will
 // be removed.
-func (c *Client) DestroyModel(tag names.ModelTag, destroyStorage, force *bool, maxWait *time.Duration, timeout time.Duration) error {
+func (c *Client) DestroyModel(tag names.ModelTag, destroyStorage, force *bool, maxWait *time.Duration, timeout *time.Duration) error {
 	var args interface{}
 	if c.BestAPIVersion() < 4 {
 		if destroyStorage == nil || !*destroyStorage {
@@ -408,7 +404,7 @@ func (c *Client) DestroyModel(tag names.ModelTag, destroyStorage, force *bool, m
 		if c.BestAPIVersion() > 6 {
 			arg.Force = force
 			arg.MaxWait = maxWait
-			arg.Timeout = &timeout
+			arg.Timeout = timeout
 		}
 		args = params.DestroyModelsParams{Models: []params.DestroyModelParams{arg}}
 	}
@@ -604,14 +600,13 @@ func (c *Client) ChangeModelCredential(model names.ModelTag, credential names.Cl
 }
 
 // ValidateModelUpgrade checks to see if it's possible to upgrade a model,
-// before actually attempting to do the real model-upgrade.
+// before actually attempting to do the real environ-upgrade.
 func (c *Client) ValidateModelUpgrade(model names.ModelTag, force bool) error {
-	if bestVer := c.BestAPIVersion(); bestVer < 9 {
-		return errors.NotImplementedf("ValidateModelUpgrade in version %v", bestVer)
+	if bestVer := c.BestAPIVersion(); bestVer != 9 {
+		return errors.NotImplementedf("ValidateModelUpgrades in version %v", bestVer)
 	}
-
 	args := params.ValidateModelUpgradeParams{
-		Models: []params.ValidateModelUpgradeParam{{
+		Models: []params.ModelParam{{
 			ModelTag: model.String(),
 		}},
 		Force: force,
@@ -623,5 +618,5 @@ func (c *Client) ValidateModelUpgrade(model names.ModelTag, force bool) error {
 	if num := len(results.Results); num != 1 {
 		return errors.Errorf("expected one result, got %d", num)
 	}
-	return results.OneError()
+	return apiservererrors.RestoreError(results.OneError())
 }

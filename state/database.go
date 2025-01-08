@@ -28,10 +28,10 @@ type SessionCloser func()
 
 func dontCloseAnything() {}
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/database_mock.go github.com/juju/juju/state Database
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/mongo_mock.go github.com/juju/juju/mongo Collection,Query
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/txn_mock.go github.com/juju/txn Runner
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/clock_mock.go github.com/juju/clock Clock
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/database_mock.go github.com/juju/juju/state Database
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/mongo_mock.go github.com/juju/juju/mongo Collection,Query
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/txn_mock.go github.com/juju/txn/v2 Runner
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/clock_mock.go github.com/juju/clock Clock
 
 // Database exposes the mongodb capabilities that most of state should see.
 type Database interface {
@@ -98,6 +98,11 @@ type Database interface {
 	// Run is a convenience method running a transaction using a
 	// transaction building function.
 	Run(transactions jujutxn.TransactionSource) error
+
+	// Run is a convenience method running a transaction using a
+	// transaction building function using a "raw" transaction runner
+	// that won't perform model filtering.
+	RunRaw(transactions jujutxn.TransactionSource) error
 
 	// Schema returns the schema used to load the database. The returned schema
 	// is not a copy and must not be modified.
@@ -429,6 +434,16 @@ func (db *database) RunRawTransaction(ops []txn.Op) error {
 func (db *database) Run(transactions jujutxn.TransactionSource) error {
 	runner, closer := db.TransactionRunner()
 	defer closer()
+	return runner.Run(transactions)
+}
+
+// RunRaw is part of the Database interface.
+func (db *database) RunRaw(transactions jujutxn.TransactionSource) error {
+	runner, closer := db.TransactionRunner()
+	defer closer()
+	if multiRunner, ok := runner.(*multiModelRunner); ok {
+		runner = multiRunner.rawRunner
+	}
 	return runner.Run(transactions)
 }
 

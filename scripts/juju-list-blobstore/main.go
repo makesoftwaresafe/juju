@@ -527,7 +527,6 @@ type ModelChecker struct {
 	foundBlobPaths set.Strings
 	session        *mgo.Session
 	model          *state.Model
-	system         *state.State
 
 	managedResources *mgo.Collection
 	resources        *mgo.Collection
@@ -627,14 +626,12 @@ func (checker *ModelChecker) readApplicationsAndUnits() {
 		units, err := app.AllUnits()
 		checkErr(err, "AllUnits")
 		for _, unit := range units {
-			unitCharmURL, err := unit.CharmURL()
-			checkErr(err, "unit CharmURL")
+			unitCharmURL := unit.CharmURL()
 			if unitCharmURL == nil {
 				continue
 			}
-			unitString := unitCharmURL.String()
-			if unitString != *charmURL {
-				checker.unitReferencedCharms.Add(unitString, unit.Name())
+			if *unitCharmURL != *charmURL {
+				checker.unitReferencedCharms.Add(*unitCharmURL, unit.Name())
 			}
 			tools, err := unit.AgentTools()
 			checkErr(err, "unit AgentTools")
@@ -991,8 +988,9 @@ var blobstoreFileFieldSelector = bson.M{"_id": 1, "filename": 1, "length": 1}
 // This should be called after checkUnreferencedResources, so that we have already
 // flagged every Blobstore.files object that has been referenced.
 // TODO: ideally we would have some way of giving a hint as to what the content is.
-//  We could consider looking at the first chunk for text content, or checking
-//  if the content is a .zip file, etc.
+//
+//	We could consider looking at the first chunk for text content, or checking
+//	if the content is a .zip file, etc.
 func (b *BlobStoreChecker) checkUnreferencedFiles() {
 	blobstoreDB := b.session.DB("blobstore")
 	blobFiles := blobstoreDB.C("blobstore.files")

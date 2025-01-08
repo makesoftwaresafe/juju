@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
 	"github.com/juju/utils/v3/arch"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api"
@@ -218,7 +218,7 @@ func (s *provisionerSuite) TestEnsureDeadAndRemove(c *gc.C) {
 	// Now try to EnsureDead machine 0 - should fail.
 	apiMachine = s.assertGetOneMachine(c, s.machine.MachineTag())
 	err = apiMachine.EnsureDead()
-	c.Assert(err, gc.ErrorMatches, "machine 0 is still a controller member")
+	c.Assert(err, gc.ErrorMatches, "machine 0 is still a non-voting controller member")
 }
 
 func (s *provisionerSuite) TestMarkForRemoval(c *gc.C) {
@@ -555,10 +555,15 @@ func (s *provisionerSuite) TestProvisioningInfo(c *gc.C) {
 	}
 	machine, err := s.State.AddOneMachine(template)
 	c.Assert(err, jc.ErrorIsNil)
-	apiMachine := s.assertGetOneMachine(c, machine.MachineTag())
-	provisioningInfo, err := apiMachine.ProvisioningInfo()
+
+	res, err := s.provisioner.ProvisioningInfo([]names.MachineTag{machine.MachineTag()})
 	c.Assert(err, jc.ErrorIsNil)
+
+	results := res.Results
+	c.Assert(results, gc.HasLen, 1)
+	provisioningInfo := results[0].Result
 	c.Assert(provisioningInfo.Series, gc.Equals, template.Series)
+	c.Assert(provisioningInfo.Base, jc.DeepEquals, params.Base{Name: "ubuntu", Channel: "12.10/stable"})
 	c.Assert(provisioningInfo.Placement, gc.Equals, template.Placement)
 	c.Assert(provisioningInfo.Constraints, jc.DeepEquals, template.Constraints)
 
@@ -572,17 +577,13 @@ func (s *provisionerSuite) TestProvisioningInfo(c *gc.C) {
 }
 
 func (s *provisionerSuite) TestProvisioningInfoMachineNotFound(c *gc.C) {
-	stateMachine, err := s.State.AddMachine("quantal", state.JobHostUnits)
+	res, err := s.provisioner.ProvisioningInfo([]names.MachineTag{names.NewMachineTag("1")})
 	c.Assert(err, jc.ErrorIsNil)
-	apiMachine := s.assertGetOneMachine(c, stateMachine.MachineTag())
-	err = apiMachine.EnsureDead()
-	c.Assert(err, jc.ErrorIsNil)
-	err = apiMachine.Remove()
-	c.Assert(err, jc.ErrorIsNil)
-	_, err = apiMachine.ProvisioningInfo()
-	c.Assert(err, gc.ErrorMatches, "machine 1 not found")
-	c.Assert(err, jc.Satisfies, params.IsCodeNotFound)
-	// auth tests in apiserver
+
+	results := res.Results
+	c.Assert(results, gc.HasLen, 1)
+	c.Assert(results[0].Error, gc.ErrorMatches, "machine 1 not found")
+	c.Assert(results[0].Error, jc.Satisfies, params.IsCodeNotFound)
 }
 
 func (s *provisionerSuite) TestWatchContainers(c *gc.C) {
@@ -774,7 +775,7 @@ func (s *provisionerSuite) TestFindToolsLogicError(c *gc.C) {
 }
 
 func (s *provisionerSuite) testFindTools(c *gc.C, matchArch bool, apiError, logicError error) {
-	current := coretesting.CurrentVersion(c)
+	current := coretesting.CurrentVersion()
 	var toolsList = coretools.List{&coretools.Tools{Version: current}}
 	var called bool
 	var a string

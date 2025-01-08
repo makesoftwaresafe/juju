@@ -18,6 +18,7 @@ import (
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/loggo"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/pubsub/v2"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -40,7 +41,6 @@ type workerFixture struct {
 	hub                  *pubsub.StructuredHub
 	config               httpserver.Config
 	logDir               string
-	stub                 testing.Stub
 }
 
 func (s *workerFixture) SetUpTest(c *gc.C) {
@@ -371,8 +371,8 @@ func (s *WorkerControllerPortSuite) TestDualPortListenerWithDelay(c *gc.C) {
 	}
 
 	// Make a worker with a controller API port.
-	port := testing.FindTCPPort()
-	controllerPort := testing.FindTCPPort()
+	port := mgotesting.FindTCPPort()
+	controllerPort := mgotesting.FindTCPPort()
 	s.config.APIPort = port
 	s.config.ControllerAPIPort = controllerPort
 	s.config.APIPortOpenDelay = 10 * time.Second
@@ -473,8 +473,8 @@ func (s *WorkerControllerPortSuite) TestDualPortListenerWithDelayShutdown(c *gc.
 		return err
 	}
 	// Make a worker with a controller API port.
-	port := testing.FindTCPPort()
-	controllerPort := testing.FindTCPPort()
+	port := mgotesting.FindTCPPort()
+	controllerPort := mgotesting.FindTCPPort()
 	s.config.APIPort = port
 	s.config.ControllerAPIPort = controllerPort
 	s.config.APIPortOpenDelay = 10 * time.Second

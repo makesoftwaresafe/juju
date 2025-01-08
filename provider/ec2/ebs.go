@@ -102,7 +102,8 @@ const (
 )
 
 // Limits for volume parameters. See:
-//   http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html
+//
+//	http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html
 const (
 	// minMagneticVolumeSizeGiB is the minimum size for magnetic volumes in GiB.
 	minMagneticVolumeSizeGiB = 1
@@ -387,7 +388,7 @@ func (v *ebsVolumeSource) CreateVolumes(ctx context.ProviderCallContext, params 
 			// InstanceId reference from one VolumeParams to prevent
 			// the creation of another volume.
 			// Except if it is a credential error...
-			if common.IsCredentialNotValid(err) {
+			if errors.Is(err, common.ErrorCredentialNotValid) {
 				return nil, errors.Trace(err)
 			}
 		}
@@ -774,7 +775,7 @@ func (v *ebsVolumeSource) AttachVolumes(ctx context.ProviderCallContext, attachP
 		// InstanceId reference from one VolumeParams to prevent
 		// the creation of another volume.
 		// Except if it is a credential error...
-		if common.IsCredentialNotValid(err) {
+		if errors.Is(err, common.ErrorCredentialNotValid) {
 			return nil, errors.Trace(err)
 		}
 	}

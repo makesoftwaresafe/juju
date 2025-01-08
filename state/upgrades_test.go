@@ -3616,7 +3616,7 @@ func (s *upgradesSuite) TestConvertAddressSpaceIDs(c *gc.C) {
 	mod := s.makeModel(c, "the-model", coretesting.Attrs{})
 	defer func() { _ = mod.Close() }()
 
-	uuid := mod.modelUUID()
+	uuid := mod.ModelUUID()
 	s.makeMachine(c, uuid, "0", Alive)
 	s.makeMachine(c, uuid, "1", Alive)
 
@@ -4301,7 +4301,6 @@ func (s *upgradesSuite) TestAddBakeryConfig(c *gc.C) {
 }
 
 func (s *upgradesSuite) TestReplaceNeverSetWithUnset(c *gc.C) {
-	const bakeryConfigKey = "bakeryConfig"
 	coll, closer := s.state.db().GetCollection(statusesC)
 	defer closer()
 
@@ -4928,12 +4927,12 @@ func (s *upgradesSuite) TestRemoveUnusedLinkLayerDeviceProviderIDs(c *gc.C) {
 	pidCol, pidCloser := s.state.db().GetRawCollection(providerIDsC)
 	defer pidCloser()
 
-	keepLLD := bson.M{"_id": model1.modelUUID() + ":linklayerdevice:keep"}
-	keepSubnet := bson.M{"_id": model1.modelUUID() + ":subnet:keep"}
+	keepLLD := bson.M{"_id": model1.ModelUUID() + ":linklayerdevice:keep"}
+	keepSubnet := bson.M{"_id": model1.ModelUUID() + ":subnet:keep"}
 	docs := []interface{}{
 		keepLLD,
 		keepSubnet,
-		bson.M{"_id": model1.modelUUID() + ":linklayerdevice:delete"},
+		bson.M{"_id": model1.ModelUUID() + ":linklayerdevice:delete"},
 	}
 	err := pidCol.Insert(docs...)
 	c.Assert(err, jc.ErrorIsNil)
@@ -5227,16 +5226,16 @@ func (s *upgradesSuite) TestUpdateDHCPAddressConfigs(c *gc.C) {
 	defer closer()
 
 	docs := []interface{}{
-		bson.M{"_id": model1.modelUUID() + ":m#0#d#eth0#ip#10.10.10.10", "config-method": "dynamic"},
-		bson.M{"_id": model1.modelUUID() + ":m#1#d#eth1#ip#20.20.20.20", "config-method": network.ConfigStatic},
+		bson.M{"_id": model1.ModelUUID() + ":m#0#d#eth0#ip#10.10.10.10", "config-method": "dynamic"},
+		bson.M{"_id": model1.ModelUUID() + ":m#1#d#eth1#ip#20.20.20.20", "config-method": network.ConfigStatic},
 	}
 	err := col.Insert(docs...)
 	c.Assert(err, jc.ErrorIsNil)
 
 	// The first of the docs has an upgraded config method.
 	s.assertUpgradedData(c, UpdateDHCPAddressConfigs, upgradedData(col, []bson.M{
-		{"_id": model1.modelUUID() + ":m#0#d#eth0#ip#10.10.10.10", "config-method": string(network.ConfigDHCP)},
-		{"_id": model1.modelUUID() + ":m#1#d#eth1#ip#20.20.20.20", "config-method": string(network.ConfigStatic)},
+		{"_id": model1.ModelUUID() + ":m#0#d#eth0#ip#10.10.10.10", "config-method": string(network.ConfigDHCP)},
+		{"_id": model1.ModelUUID() + ":m#1#d#eth1#ip#20.20.20.20", "config-method": string(network.ConfigStatic)},
 	}))
 }
 
@@ -5631,9 +5630,13 @@ func (s *upgradesSuite) TestRemoveOrphanedCrossModelProxies(c *gc.C) {
 		Endpoints: []charm.Relation{{
 			Interface: "mysql",
 			Name:      "server",
-			Role:      charm.RoleProvider,
+			Role:      charm.RoleRequirer,
 			Scope:     charm.ScopeGlobal,
 		}}})
+	c.Assert(err, jc.ErrorIsNil)
+	eps, err := s.state.InferEndpoints("good", "test")
+	c.Assert(err, jc.ErrorIsNil)
+	_, err = s.state.AddRelation(eps...)
 	c.Assert(err, jc.ErrorIsNil)
 
 	_, err = s.state.AddRemoteApplication(AddRemoteApplicationParams{
@@ -5930,8 +5933,8 @@ func (s *upgradesSuite) TestRemoveOrphanedLinkLayerDevices(c *gc.C) {
 
 	// Only the link-layer data for the second machine should be retained.
 	devExp := bsonMById{{
-		"_id":               ensureModelUUID(s.state.modelUUID(), fmt.Sprintf("m#%s#d#eth0", m1.Id())),
-		"model-uuid":        s.state.modelUUID(),
+		"_id":               ensureModelUUID(s.state.ModelUUID(), fmt.Sprintf("m#%s#d#eth0", m1.Id())),
+		"model-uuid":        s.state.ModelUUID(),
 		"is-auto-start":     false,
 		"is-up":             false,
 		"mac-address":       "",
@@ -5944,8 +5947,8 @@ func (s *upgradesSuite) TestRemoveOrphanedLinkLayerDevices(c *gc.C) {
 	}}
 
 	addrExp := bsonMById{{
-		"_id":           ensureModelUUID(s.state.modelUUID(), fmt.Sprintf("m#%s#d#eth0#ip#192.168.0.99", m1.Id())),
-		"model-uuid":    s.state.modelUUID(),
+		"_id":           ensureModelUUID(s.state.ModelUUID(), fmt.Sprintf("m#%s#d#eth0#ip#192.168.0.99", m1.Id())),
+		"model-uuid":    s.state.ModelUUID(),
 		"config-method": "",
 		"device-name":   "eth0",
 		"machine-id":    m1.Id(),
@@ -6018,7 +6021,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfo(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      false,
 			"life":                   0,
-			"model-uuid":             model0.modelUUID(),
+			"model-uuid":             model0.ModelUUID(),
 			"name":                   "remote-application",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6032,7 +6035,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfo(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      false,
 			"life":                   0,
-			"model-uuid":             model0.modelUUID(),
+			"model-uuid":             model0.ModelUUID(),
 			"name":                   "remote-application2",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6046,7 +6049,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfo(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      false,
 			"life":                   0,
-			"model-uuid":             model0.modelUUID(),
+			"model-uuid":             model0.ModelUUID(),
 			"name":                   "remote-application3",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6060,7 +6063,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfo(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      true,
 			"life":                   0,
-			"model-uuid":             model0.modelUUID(),
+			"model-uuid":             model0.ModelUUID(),
 			"name":                   "remote-application4",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6074,7 +6077,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfo(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      false,
 			"life":                   0,
-			"model-uuid":             model1.modelUUID(),
+			"model-uuid":             model1.ModelUUID(),
 			"name":                   "remote-application5",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6156,7 +6159,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfoFixRefCount(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      false,
 			"life":                   0,
-			"model-uuid":             model0.modelUUID(),
+			"model-uuid":             model0.ModelUUID(),
 			"name":                   "remote-application",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6170,7 +6173,7 @@ func (s *upgradesSuite) TestUpdateExternalControllerInfoFixRefCount(c *gc.C) {
 			"endpoints":              []interface{}{},
 			"is-consumer-proxy":      false,
 			"life":                   0,
-			"model-uuid":             model0.modelUUID(),
+			"model-uuid":             model0.ModelUUID(),
 			"name":                   "remote-application2",
 			"offer-uuid":             "",
 			"relationcount":          0,
@@ -6775,6 +6778,334 @@ func (s *upgradesSuite) TestFixCharmhubLastPollTime(c *gc.C) {
 	s.assertUpgradedData(c, FixCharmhubLastPolltime,
 		upgradedData(coll, expected),
 	)
+}
+
+func (s *upgradesSuite) TestRemoveUseFloatingIPConfigFalse(c *gc.C) {
+	model1 := s.makeModel(c, "model-1", coretesting.Attrs{"use-floating-ip": true})
+	model2 := s.makeModel(c, "model-2", coretesting.Attrs{"use-floating-ip": false})
+	model3 := s.makeModel(c, "model-3", coretesting.Attrs{})
+	defer func() {
+		_ = model1.Close()
+		_ = model2.Close()
+		_ = model3.Close()
+	}()
+
+	err := RemoveUseFloatingIPConfigFalse(s.pool)
+	c.Assert(err, jc.ErrorIsNil)
+
+	m1, _, err := s.pool.GetModel(model1.ModelUUID())
+	c.Assert(err, jc.ErrorIsNil)
+	cfg1, err := m1.Config()
+	c.Assert(err, jc.ErrorIsNil)
+	m1Val, ok := cfg1.AllAttrs()["use-floating-ip"]
+	c.Assert(ok, jc.IsTrue)
+	c.Assert(m1Val, jc.IsTrue)
+
+	m2, _, err := s.pool.GetModel(model2.ModelUUID())
+	c.Assert(err, jc.ErrorIsNil)
+	cfg2, err := m2.Config()
+	c.Assert(err, jc.ErrorIsNil)
+	_, ok = cfg2.AllAttrs()["use-floating-ip"]
+	c.Assert(ok, jc.IsFalse)
+
+	m3, _, err := s.pool.GetModel(model3.ModelUUID())
+	c.Assert(err, jc.ErrorIsNil)
+	cfg3, err := m3.Config()
+	c.Assert(err, jc.ErrorIsNil)
+	_, ok = cfg3.AllAttrs()["use-floating-ip"]
+	c.Assert(ok, jc.IsFalse)
+}
+
+func (s *upgradesSuite) TestCharmOriginChannelMustHaveTrack(c *gc.C) {
+	model1 := s.makeModel(c, "model-1", coretesting.Attrs{})
+	model2 := s.makeModel(c, "model-2", coretesting.Attrs{})
+	defer func() {
+		_ = model1.Close()
+		_ = model2.Close()
+	}()
+
+	uuid1 := model1.ModelUUID()
+	uuid2 := model2.ModelUUID()
+
+	appColl, appCloser := s.state.db().GetRawCollection(applicationsC)
+	defer appCloser()
+
+	var err error
+	err = appColl.Insert(bson.M{
+		"_id":        ensureModelUUID(uuid1, "app1"),
+		"name":       "app1",
+		"model-uuid": uuid1,
+		"charmurl":   charm.MustParseURL("cs:test").String(),
+		"charm-origin": bson.M{
+			"source": "charmstore",
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	err = appColl.Insert(bson.M{
+		"_id":        ensureModelUUID(uuid1, "app2"),
+		"name":       "app2",
+		"model-uuid": uuid1,
+		"charmurl":   charm.MustParseURL("ch:amd64/focal/test").String(),
+		"charm-origin": bson.M{
+			"source":   "charm-hub",
+			"type":     "charm",
+			"id":       "yyyy",
+			"hash":     "xxxx",
+			"revision": 12,
+			"channel": bson.M{
+				"track": "latest",
+				"risk":  "edge",
+			},
+			"platform": bson.M{
+				"architecture": "amd64",
+				"series":       "20.04",
+			},
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	err = appColl.Insert(bson.M{
+		"_id":        ensureModelUUID(uuid2, "app3"),
+		"name":       "app3",
+		"model-uuid": uuid2,
+		"charmurl":   charm.MustParseURL("local:test2").String(),
+		"charm-origin": bson.M{
+			"source": "local",
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	err = appColl.Insert(bson.M{
+		"_id":        ensureModelUUID(uuid2, "app4"),
+		"name":       "app4",
+		"model-uuid": uuid2,
+		"charmurl":   charm.MustParseURL("ch:amd64/focal/testtwo").String(),
+		"charm-origin": bson.M{
+			"source":   "charm-hub",
+			"type":     "charm",
+			"id":       "yyyy",
+			"hash":     "xxxx",
+			"revision": 12,
+			"channel": bson.M{
+				"risk": "edge",
+			},
+			"platform": bson.M{
+				"architecture": "amd64",
+				"series":       "20.04",
+			},
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	err = appColl.Insert(bson.M{
+		"_id":        ensureModelUUID(uuid2, "app5"),
+		"name":       "app5",
+		"model-uuid": uuid2,
+		"charmurl":   charm.MustParseURL("ch:amd64/focal/test").String(),
+		"charm-origin": bson.M{
+			"source":   "charm-hub",
+			"type":     "charm",
+			"id":       "yyyy",
+			"hash":     "xxxx",
+			"revision": 12,
+			"channel": bson.M{
+				"track": "8.0",
+				"risk":  "stable",
+			},
+			"platform": bson.M{
+				"architecture": "amd64",
+				"series":       "20.04",
+			},
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	expected := bsonMById{
+		{
+			"_id":        ensureModelUUID(uuid1, "app1"),
+			"model-uuid": uuid1,
+			"name":       "app1",
+			"charmurl":   "cs:test",
+			"charm-origin": bson.M{
+				"source": "charmstore",
+			},
+		},
+		{
+			"_id":        ensureModelUUID(uuid1, "app2"),
+			"model-uuid": uuid1,
+			"name":       "app2",
+			"charmurl":   "ch:amd64/focal/test",
+			"charm-origin": bson.M{
+				"source":   "charm-hub",
+				"type":     "charm",
+				"id":       "yyyy",
+				"hash":     "xxxx",
+				"revision": 12,
+				"channel": bson.M{
+					"track": "latest",
+					"risk":  "edge",
+				},
+				"platform": bson.M{
+					"architecture": "amd64",
+					"series":       "20.04",
+				},
+			},
+		},
+		{
+			"_id":        ensureModelUUID(uuid2, "app3"),
+			"model-uuid": uuid2,
+			"name":       "app3",
+			"charmurl":   "local:test2",
+			"charm-origin": bson.M{
+				"source": "local",
+			},
+		},
+		{
+			"_id":        ensureModelUUID(uuid2, "app4"),
+			"model-uuid": uuid2,
+			"name":       "app4",
+			"charmurl":   charm.MustParseURL("ch:amd64/focal/testtwo").String(),
+			"charm-origin": bson.M{
+				"source":   "charm-hub",
+				"type":     "charm",
+				"id":       "yyyy",
+				"hash":     "xxxx",
+				"revision": 12,
+				"channel": bson.M{
+					"track": "latest",
+					"risk":  "edge",
+				},
+				"platform": bson.M{
+					"architecture": "amd64",
+					"series":       "20.04",
+				},
+			},
+		},
+		{
+			"_id":        ensureModelUUID(uuid2, "app5"),
+			"model-uuid": uuid2,
+			"name":       "app5",
+			"charmurl":   charm.MustParseURL("ch:amd64/focal/test").String(),
+			"charm-origin": bson.M{
+				"source":   "charm-hub",
+				"type":     "charm",
+				"id":       "yyyy",
+				"hash":     "xxxx",
+				"revision": 12,
+				"channel": bson.M{
+					"track": "8.0",
+					"risk":  "stable",
+				},
+				"platform": bson.M{
+					"architecture": "amd64",
+					"series":       "20.04",
+				},
+			},
+		},
+	}
+
+	sort.Sort(expected)
+	s.assertUpgradedData(c, CharmOriginChannelMustHaveTrack,
+		upgradedData(appColl, expected),
+	)
+}
+
+func (s *upgradesSuite) TestRemoveDefaultSeriesFromModelConfig(c *gc.C) {
+	settingsColl, settingsCloser := s.state.db().GetRawCollection(settingsC)
+	defer settingsCloser()
+	_, err := settingsColl.RemoveAll(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	err = settingsColl.Insert(bson.M{
+		"_id": "modelXXX:e",
+		// this document should be changed
+		"settings": bson.M{
+			"keepme":         "have value",
+			"default-series": "delete-me",
+		},
+	}, bson.M{
+		"_id": "modelXXX:a#testing",
+		// this document has no change
+		"settings": bson.M{
+			"default-series": "application has no default series",
+		},
+	}, bson.M{
+		"_id": "modelXYZ:e",
+		// this document has no change, is skipped
+		"settings": bson.M{
+			"keepme":   "have value",
+			"removeme": nil,
+		},
+	}, bson.M{
+		"_id": "modelXYZ:epool#lxd-btrfs",
+		// this document has no change
+		"settings": bson.M{
+			"keepme":   "have value",
+			"removeme": nil,
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	expectedSettings := []bson.M{
+		{
+			"_id":      "modelXXX:a#testing",
+			"settings": bson.M{"default-series": "application has no default series"},
+		}, {
+			"_id":      "modelXXX:e",
+			"settings": bson.M{"keepme": "have value", "default-series": ""},
+		}, {
+			"_id":      "modelXYZ:e",
+			"settings": bson.M{"keepme": "have value", "removeme": nil},
+		}, {
+			"_id":      "modelXYZ:epool#lxd-btrfs",
+			"settings": bson.M{"keepme": "have value", "removeme": nil},
+		}}
+
+	s.assertUpgradedData(c, RemoveDefaultSeriesFromModelConfig,
+		upgradedData(settingsColl, expectedSettings),
+	)
+}
+
+func (s *upgradesSuite) TestCorrectControllerConfigDurations(c *gc.C) {
+	settingsColl, settingsCloser := s.state.db().GetRawCollection(controllersC)
+	defer settingsCloser()
+	_, err := settingsColl.RemoveAll(nil)
+	c.Assert(err, jc.ErrorIsNil)
+	err = settingsColl.Insert(bson.M{
+		"_id": "controllerSettings",
+		// this document should be changed
+		"settings": bson.M{
+			"unrelated":              1000,
+			"unrelated2":             "1000",
+			"unrelated3":             int64(1000),
+			"unrelated4":             true,
+			"agent-ratelimit-rate":   int(time.Minute),
+			"max-debug-log-duration": int64(time.Hour),
+		},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	config, err := s.state.ControllerConfig()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(config.AgentRateLimitRate(), gc.Equals, controller.DefaultAgentRateLimitRate)
+	c.Assert(config.MaxDebugLogDuration(), gc.Equals, controller.DefaultMaxDebugLogDuration)
+
+	expectedSettings := []bson.M{{
+		"_id": "controllerSettings",
+		"settings": bson.M{
+			"unrelated":              1000,
+			"unrelated2":             "1000",
+			"unrelated3":             int64(1000),
+			"unrelated4":             true,
+			"agent-ratelimit-rate":   "1m0s",
+			"max-debug-log-duration": "1h0m0s",
+		},
+	}}
+
+	s.assertUpgradedData(c, CorrectControllerConfigDurations,
+		upgradedData(settingsColl, expectedSettings),
+	)
+
+	config, err = s.state.ControllerConfig()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(config.AgentRateLimitRate(), gc.Equals, time.Minute)
+	c.Assert(config.MaxDebugLogDuration(), gc.Equals, time.Hour)
 }
 
 type docById []bson.M

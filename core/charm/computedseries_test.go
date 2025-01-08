@@ -4,11 +4,11 @@
 package charm
 
 import (
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	charmresource "github.com/juju/charm/v8/resource"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 )
 
@@ -17,22 +17,6 @@ type computedSeriesSuite struct {
 }
 
 var _ = gc.Suite(&computedSeriesSuite{})
-
-func (s *computedSeriesSuite) TestComputedSeriesLegacy(c *gc.C) {
-	ctrl := gomock.NewController(c)
-	defer ctrl.Finish()
-	cm := NewMockCharmMeta(ctrl)
-	cm.EXPECT().Meta().Return(&charm.Meta{
-		Name:        "a",
-		Summary:     "b",
-		Description: "c",
-		Series:      []string{"bionic"},
-	}).AnyTimes()
-	cm.EXPECT().Manifest().Return(nil).AnyTimes()
-	series, err := ComputedSeries(cm)
-	c.Assert(err, gc.IsNil)
-	c.Assert(series, jc.DeepEquals, []string{"bionic"})
-}
 
 func (s *computedSeriesSuite) TestComputedSeriesNilManifest(c *gc.C) {
 	ctrl := gomock.NewController(c)
@@ -103,7 +87,7 @@ func (s *computedSeriesSuite) TestComputedSeriesKubernetes(c *gc.C) {
 	}).AnyTimes()
 	series, err := ComputedSeries(cm)
 	c.Assert(err, gc.IsNil)
-	c.Assert(series, jc.DeepEquals, []string{"bionic", "kubernetes"})
+	c.Assert(series, jc.DeepEquals, []string{"bionic"})
 }
 
 func (s *computedSeriesSuite) TestComputedSeriesError(c *gc.C) {

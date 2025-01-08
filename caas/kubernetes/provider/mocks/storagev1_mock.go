@@ -8,7 +8,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
+	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/storage/v1"
 	v10 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
@@ -67,6 +67,20 @@ func (m *MockStorageV1Interface) CSINodes() v12.CSINodeInterface {
 func (mr *MockStorageV1InterfaceMockRecorder) CSINodes() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CSINodes", reflect.TypeOf((*MockStorageV1Interface)(nil).CSINodes))
+}
+
+// CSIStorageCapacities mocks base method.
+func (m *MockStorageV1Interface) CSIStorageCapacities(arg0 string) v12.CSIStorageCapacityInterface {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CSIStorageCapacities", arg0)
+	ret0, _ := ret[0].(v12.CSIStorageCapacityInterface)
+	return ret0
+}
+
+// CSIStorageCapacities indicates an expected call of CSIStorageCapacities.
+func (mr *MockStorageV1InterfaceMockRecorder) CSIStorageCapacities(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CSIStorageCapacities", reflect.TypeOf((*MockStorageV1Interface)(nil).CSIStorageCapacities), arg0)
 }
 
 // RESTClient mocks base method.

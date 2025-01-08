@@ -224,6 +224,11 @@ func (c *statusCommand) Init(args []string) error {
 			}
 		}
 	}
+
+	if c.watch < 0 {
+		return errors.Errorf("invalid value %q, expected a positive value", c.watch)
+	}
+
 	if c.clock == nil {
 		c.clock = clock.WallClock
 	}
@@ -341,29 +346,29 @@ func (c *statusCommand) runStatus(ctx *cmd.Context) error {
 			ctx.Infof("provided %s always enabled in non tabular formats", joinedMsg)
 		}
 	}
-	formatterParams := newStatusFormatterParams{
-		status:         status,
-		controllerName: controllerName,
-		outputName:     c.out.Name(),
-		isoTime:        c.isoTime,
-		showRelations:  showRelations,
-		activeBranch:   activeBranch,
+	formatterParams := NewStatusFormatterParams{
+		Status:         status,
+		ControllerName: controllerName,
+		OutputName:     c.out.Name(),
+		ISOTime:        c.isoTime,
+		ShowRelations:  showRelations,
+		ActiveBranch:   activeBranch,
 	}
 	if showStorage {
 		storageInfo, err := c.getStorageInfo(ctx)
 		if err != nil {
 			return errors.Trace(err)
 		}
-		formatterParams.storage = storageInfo
+		formatterParams.Storage = storageInfo
 		if storageInfo == nil || storageInfo.Empty() {
 			if c.out.Name() == "tabular" {
 				// hide storage section for tabular view if nothing to show.
-				formatterParams.storage = nil
+				formatterParams.Storage = nil
 			}
 		}
 	}
 
-	formatted, err := newStatusFormatter(formatterParams).format()
+	formatted, err := NewStatusFormatter(formatterParams).Format()
 	if err != nil {
 		return errors.Trace(err)
 	}

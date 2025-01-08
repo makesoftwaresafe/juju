@@ -7,7 +7,6 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	crossmodel "github.com/juju/juju/apiserver/common/crossmodel"
 	crossmodel0 "github.com/juju/juju/core/crossmodel"
 	firewall "github.com/juju/juju/core/network/firewall"
@@ -15,6 +14,7 @@ import (
 	params "github.com/juju/juju/rpc/params"
 	state "github.com/juju/juju/state"
 	names "github.com/juju/names/v4"
+	gomock "go.uber.org/mock/gomock"
 	macaroon "gopkg.in/macaroon.v2"
 )
 
@@ -88,6 +88,21 @@ func (m *MockRemoteRelationsState) AllModelUUIDs() ([]string, error) {
 func (mr *MockRemoteRelationsStateMockRecorder) AllModelUUIDs() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AllModelUUIDs", reflect.TypeOf((*MockRemoteRelationsState)(nil).AllModelUUIDs))
+}
+
+// AppNameForOffer mocks base method.
+func (m *MockRemoteRelationsState) AppNameForOffer(arg0 string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AppNameForOffer", arg0)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AppNameForOffer indicates an expected call of AppNameForOffer.
+func (mr *MockRemoteRelationsStateMockRecorder) AppNameForOffer(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AppNameForOffer", reflect.TypeOf((*MockRemoteRelationsState)(nil).AppNameForOffer), arg0)
 }
 
 // Application mocks base method.

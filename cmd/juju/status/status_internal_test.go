@@ -3814,17 +3814,6 @@ func composeCharms(origin, extras M) M {
 	return result
 }
 
-// TODO(dfc) test failing components by destructively mutating the state under the hood
-
-// sometimes you just need to skip the tests for windows (environment variables etc)
-type skipTestOnWindows struct{}
-
-func (skipTestOnWindows) step(c *gc.C, ctx *context) {
-	if runtime.GOOS == "windows" {
-		ctx.skipTest = true
-	}
-}
-
 type setSLA struct {
 	level string
 }
@@ -3970,26 +3959,6 @@ func (sm startMachineWithHardware) step(c *gc.C, ctx *context) {
 	inst, _ := testing.AssertStartInstanceWithConstraints(c, ctx.env, environscontext.NewEmptyCloudCallContext(), cfg.ControllerUUID(), m.Id(), cons)
 	err = m.SetProvisioned(inst.Id(), "", "fake_nonce", &sm.hc)
 	c.Assert(err, jc.ErrorIsNil)
-}
-
-type startAliveMachineWithDisplayName struct {
-	machineId   string
-	displayName string
-}
-
-func (sm startAliveMachineWithDisplayName) step(c *gc.C, ctx *context) {
-	m, err := ctx.st.Machine(sm.machineId)
-	c.Assert(err, jc.ErrorIsNil)
-	cons, err := m.Constraints()
-	c.Assert(err, jc.ErrorIsNil)
-	cfg, err := ctx.st.ControllerConfig()
-	c.Assert(err, jc.ErrorIsNil)
-	inst, hc := testing.AssertStartInstanceWithConstraints(c, ctx.env, environscontext.NewEmptyCloudCallContext(), cfg.ControllerUUID(), m.Id(), cons)
-	err = m.SetProvisioned(inst.Id(), sm.displayName, "fake_nonce", hc)
-	c.Assert(err, jc.ErrorIsNil)
-	_, displayName, err := m.InstanceNames()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(displayName, gc.Equals, sm.displayName)
 }
 
 type setMachineInstanceStatus struct {
@@ -5435,6 +5404,117 @@ foo/0  waiting   allocating  10.0.0.1  80/TCP
 `[1:])
 }
 
+func (s *StatusSuite) TestFormatTabularTruncateMessage(c *gc.C) {
+	longMessage := "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+	longMeterStatus := meterStatus{
+		Color:   "blue",
+		Message: longMessage,
+	}
+	longStatusInfo := statusInfoContents{
+		Current: status.Active,
+		Message: longMessage,
+	}
+
+	status := formattedStatus{
+		Model: modelStatus{
+			Name:        "m",
+			Controller:  "c",
+			Cloud:       "localhost",
+			Version:     "3.0.0",
+			Status:      longStatusInfo,
+			MeterStatus: &longMeterStatus,
+		},
+		Applications: map[string]applicationStatus{
+			"foo": {
+				CharmName:    "foo",
+				CharmChannel: "latest/stable",
+				StatusInfo:   longStatusInfo,
+				Units: map[string]unitStatus{
+					"foo/0": {
+						WorkloadStatusInfo: longStatusInfo,
+						JujuStatusInfo:     longStatusInfo,
+						Machine:            "0",
+						PublicAddress:      "10.53.62.100",
+						MeterStatus:        &longMeterStatus,
+						Subordinates: map[string]unitStatus{
+							"foo/1": {
+								WorkloadStatusInfo: longStatusInfo,
+								JujuStatusInfo:     longStatusInfo,
+								Machine:            "0/lxd/0",
+								PublicAddress:      "10.53.62.101",
+								MeterStatus:        &longMeterStatus,
+							},
+						},
+					},
+				},
+			},
+		},
+		RemoteApplications: map[string]remoteApplicationStatus{
+			"bar": {
+				OfferURL:   "model.io/bar",
+				StatusInfo: longStatusInfo,
+			},
+		},
+		Machines: map[string]machineStatus{
+			"0": {
+				Id:                 "0",
+				DNSName:            "10.53.62.100",
+				Series:             "jammy",
+				JujuStatus:         longStatusInfo,
+				MachineStatus:      longStatusInfo,
+				ModificationStatus: longStatusInfo,
+				Containers: map[string]machineStatus{
+					"0": {
+						Id:                 "0/lxd/0",
+						DNSName:            "10.53.62.101",
+						Series:             "jammy",
+						JujuStatus:         longStatusInfo,
+						MachineStatus:      longStatusInfo,
+						ModificationStatus: longStatusInfo,
+					},
+				},
+			},
+		},
+		Relations: []relationStatus{
+			{
+				Provider:  "foo",
+				Requirer:  "bar",
+				Interface: "baz",
+				Message:   longMessage,
+			},
+		},
+	}
+
+	out := &bytes.Buffer{}
+	err := FormatTabular(out, false, status)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(out.String(), gc.Equals, `
+Model  Controller  Cloud/Region  Version  Notes
+m      c           localhost     3.0.0    Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+
+SAAS  Status  Store    URL
+bar   active  unknown  model.io/bar
+
+App  Version  Status  Scale  Charm  Channel        Rev  Exposed  Message
+foo           active    0/1  foo    latest/stable    0  no       Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+
+Unit     Workload  Agent   Machine  Public address  Ports  Message
+foo/0    active    active  0        10.53.62.100           Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+  foo/1  active    active  0/lxd/0  10.53.62.101           Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+
+Entity  Meter status  Message
+model   blue          Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...  
+foo/0   blue          Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...  
+
+Machine  State   Address       Inst id  Series  AZ  Message
+0        active  10.53.62.100           jammy       Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+0/lxd/0  active  10.53.62.101           jammy       Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...
+
+Relation provider  Requirer  Interface  Type  Message
+foo                bar       baz                 - Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna a...  
+`[1:])
+}
+
 func (s *StatusSuite) TestStatusWithNilStatusAPI(c *gc.C) {
 	ctx := s.newContext(c)
 	defer s.resetContext(c, ctx)
@@ -6037,6 +6117,7 @@ func (s *StatusSuite) TestFormatProvisioningError(c *gc.C) {
 				InstanceId:     "pending",
 				InstanceStatus: params.DetailedStatus{},
 				Series:         "trusty",
+				Base:           params.Base{Name: "ubuntu", Channel: "14.04"},
 				Id:             "1",
 				Jobs:           []coremodel.MachineJob{"JobHostUnits"},
 			},
@@ -6044,8 +6125,11 @@ func (s *StatusSuite) TestFormatProvisioningError(c *gc.C) {
 		ControllerTimestamp: &now,
 	}
 	isoTime := true
-	formatter := NewStatusFormatter(status, isoTime)
-	formatted, err := formatter.format()
+	formatter := NewStatusFormatter(NewStatusFormatterParams{
+		Status:  status,
+		ISOTime: isoTime,
+	})
+	formatted, err := formatter.Format()
 	c.Assert(err, jc.ErrorIsNil)
 
 	c.Check(formatted, jc.DeepEquals, formattedStatus{
@@ -6087,14 +6171,18 @@ func (s *StatusSuite) TestMissingControllerTimestampInFullStatus(c *gc.C) {
 				InstanceId:     "pending",
 				InstanceStatus: params.DetailedStatus{},
 				Series:         "trusty",
+				Base:           params.Base{Name: "ubuntu", Channel: "14.04"},
 				Id:             "1",
 				Jobs:           []coremodel.MachineJob{"JobHostUnits"},
 			},
 		},
 	}
 	isoTime := true
-	formatter := NewStatusFormatter(status, isoTime)
-	formatted, err := formatter.format()
+	formatter := NewStatusFormatter(NewStatusFormatterParams{
+		Status:  status,
+		ISOTime: isoTime,
+	})
+	formatted, err := formatter.Format()
 	c.Assert(err, jc.ErrorIsNil)
 
 	c.Check(formatted, jc.DeepEquals, formattedStatus{
@@ -6134,6 +6222,7 @@ func (s *StatusSuite) TestControllerTimestampInFullStatus(c *gc.C) {
 				InstanceId:     "pending",
 				InstanceStatus: params.DetailedStatus{},
 				Series:         "trusty",
+				Base:           params.Base{Name: "ubuntu", Channel: "14.04"},
 				Id:             "1",
 				Jobs:           []coremodel.MachineJob{"JobHostUnits"},
 			},
@@ -6141,8 +6230,12 @@ func (s *StatusSuite) TestControllerTimestampInFullStatus(c *gc.C) {
 		ControllerTimestamp: &now,
 	}
 	isoTime := true
-	formatter := NewStatusFormatter(status, isoTime)
-	formatted, err := formatter.format()
+
+	formatter := NewStatusFormatter(NewStatusFormatterParams{
+		Status:  status,
+		ISOTime: isoTime,
+	})
+	formatted, err := formatter.Format()
 	c.Assert(err, jc.ErrorIsNil)
 
 	c.Check(formatted, jc.DeepEquals, formattedStatus{

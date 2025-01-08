@@ -6,8 +6,8 @@ package lxd
 import (
 	"errors"
 
+	lxdclient "github.com/canonical/lxd/client"
 	"github.com/juju/clock"
-	lxdclient "github.com/lxc/lxd/client"
 
 	"github.com/juju/juju/container"
 	"github.com/juju/juju/core/network"
@@ -54,7 +54,9 @@ func PatchGetSnapManager(patcher patcher, mgr SnapManager) {
 }
 
 func GetImageSources(mgr container.Manager) ([]ServerSpec, error) {
-	return mgr.(*containerManager).getImageSources()
+	cMgr := mgr.(*containerManager)
+	_ = cMgr.ensureInitialized()
+	return cMgr.getImageSources()
 }
 
 func VerifyNICsWithConfigFile(svr *Server, nics map[string]device, reader func(string) ([]byte, error)) error {
@@ -65,10 +67,11 @@ func NetworkDevicesFromConfig(mgr container.Manager, netConfig *container.Networ
 	map[string]device, []string, error,
 ) {
 	cMgr := mgr.(*containerManager)
+	_ = cMgr.ensureInitialized()
 	return cMgr.networkDevicesFromConfig(netConfig)
 }
 
-func NewTestingServer(svr lxdclient.ContainerServer, clock clock.Clock) (*Server, error) {
+func NewTestingServer(svr lxdclient.InstanceServer, clock clock.Clock) (*Server, error) {
 	server, err := NewServer(svr)
 	if err != nil {
 		return nil, err

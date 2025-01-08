@@ -20,8 +20,10 @@ import (
 	"github.com/juju/retry"
 	"github.com/juju/utils/v3/ssh"
 
+	"github.com/juju/juju/api/client/application"
 	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/sshclient"
+	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
 	jujussh "github.com/juju/juju/network/ssh"
 	"github.com/juju/juju/rpc/params"
@@ -30,19 +32,24 @@ import (
 // sshMachine implements functionality shared by sshCommand, SCPCommand
 // and DebugHooksCommand.
 type sshMachine struct {
+	leaderResolver
 	modelName string
+	// TODO(juju3) - remove
+	modelType model.ModelType
 
-	proxy           bool
-	noHostKeyChecks bool
-	target          string
-	args            []string
-	apiClient       sshAPIClient
-	statusClient    statusClient
-	apiAddr         string
-	knownHostsPath  string
-	hostChecker     jujussh.ReachableChecker
-	forceAPIv1      bool
-	retryStrategy   retry.CallArgs
+	proxy                  bool
+	noHostKeyChecks        bool
+	target                 string
+	args                   []string
+	apiClient              sshAPIClient
+	leaderAPI              LeaderAPI
+	statusClient           statusClient
+	apiAddr                string
+	knownHostsPath         string
+	hostChecker            jujussh.ReachableChecker
+	forceAPIv1             bool
+	retryStrategy          retry.CallArgs
+	publicKeyRetryStrategy retry.CallArgs
 
 	statusAPIGetter statusAPIGetterFunc
 	leaderAPIGetter leaderAPIGetterFunc
@@ -91,8 +98,8 @@ func (t *resolvedTarget) isAgent() bool {
 	return targetIsAgent(t.entity)
 }
 
-// SSHPort is the TCP port used for SSH connections.
-const SSHPort = 22
+// sshPort is the TCP port used for SSH connections.
+const sshPort = 22
 
 func (c *sshMachine) SetFlags(f *gnuflag.FlagSet) {
 	f.BoolVar(&c.proxy, "proxy", false, "Proxy through the API server")
@@ -120,9 +127,9 @@ func (c *sshMachine) setArgs(args []string) {
 }
 
 // defaultReachableChecker returns a jujussh.ReachableChecker with a connection
-// timeout of SSHRetryDelay and an overall timout of SSHTimeout
+// timeout of SSHTimeout/2 and an overall timout of SSHTimeout
 func defaultReachableChecker() jujussh.ReachableChecker {
-	return jujussh.NewReachableChecker(&net.Dialer{Timeout: SSHRetryDelay}, SSHTimeout)
+	return jujussh.NewReachableChecker(&net.Dialer{Timeout: SSHTimeout / 2}, SSHTimeout)
 }
 
 func (c *sshMachine) setHostChecker(checker jujussh.ReachableChecker) {
@@ -134,6 +141,18 @@ func (c *sshMachine) setHostChecker(checker jujussh.ReachableChecker) {
 
 func (c *sshMachine) setRetryStrategy(retryStrategy retry.CallArgs) {
 	c.retryStrategy = retryStrategy
+}
+
+func (c *sshMachine) setPublicKeyRetryStrategy(retryStrategy retry.CallArgs) {
+	c.publicKeyRetryStrategy = retryStrategy
+}
+
+func (c *sshMachine) getModelType() model.ModelType {
+	return c.modelType
+}
+
+func (c *sshMachine) setModelType(modelType model.ModelType) {
+	c.modelType = modelType
 }
 
 // initRun initializes the API connection if required, and determines
@@ -171,6 +190,10 @@ func (c *sshMachine) cleanupRun() {
 	if c.apiClient != nil {
 		_ = c.apiClient.Close()
 		c.apiClient = nil
+	}
+	if c.leaderAPI != nil {
+		_ = c.leaderAPI.Close()
+		c.leaderAPI = nil
 	}
 }
 
@@ -292,9 +315,9 @@ func (c *sshMachine) generateKnownHosts(targets []*resolvedTarget) (string, erro
 	for _, target := range targets {
 		if target.isAgent() {
 			agentCount++
-			keys, err := c.apiClient.PublicKeys(target.entity)
+			keys, err := c.getKeysWithRetry(target.entity)
 			if err != nil {
-				return "", errors.Annotatef(err, "retrieving SSH host keys for %q", target.entity)
+				return "", errors.Trace(err)
 			}
 			knownHosts.add(target.host, keys)
 		} else {
@@ -400,8 +423,14 @@ func (c *sshMachine) ensureAPIClient(mc ModelCommand) error {
 		}
 	}
 	if c.leaderAPIGetter == nil {
-		c.leaderAPIGetter = func() (LeaderAPI, error) {
-			return c.apiClient, nil
+		c.leaderAPIGetter = func() (LeaderAPI, bool, error) {
+			if c.leaderAPI.BestAPIVersion() > 13 {
+				return c.leaderAPI, true, nil
+			}
+			if c.apiClient.BestAPIVersion() > 2 {
+				return c.apiClient, true, nil
+			}
+			return nil, false, nil
 		}
 	}
 
@@ -417,16 +446,23 @@ func (c *sshMachine) initAPIClient(mc ModelCommand) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
+	if c.leaderAPI == nil {
+		c.leaderAPI = application.NewClient(conn)
+	}
+	if c.apiClient != nil {
+		return nil
+	}
+
 	c.apiClient = sshclient.NewFacade(conn)
 	c.apiAddr = conn.Addr()
-	c.statusClient = apiclient.NewClient(conn)
+	c.statusClient = apiclient.NewClient(conn, logger)
 	return nil
 }
 
 func (c *sshMachine) resolveTarget(target string) (*resolvedTarget, error) {
 	// If the user specified a leader unit, try to resolve it to the
 	// appropriate unit name and override the requested target name.
-	resolvedTargetName, err := maybeResolveLeaderUnit(c.leaderAPIGetter, c.statusAPIGetter, target)
+	resolvedTargetName, err := c.maybeResolveLeaderUnit(c.leaderAPIGetter, c.statusAPIGetter, target)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -535,13 +571,13 @@ func (c *sshMachine) reachableAddressGetter(entity string) (string, error) {
 	}
 	var publicKeys []string
 	if !c.noHostKeyChecks {
-		publicKeys, err = c.apiClient.PublicKeys(entity)
+		publicKeys, err = c.getKeysWithRetry(entity)
 		if err != nil {
-			return "", errors.Annotatef(err, "retrieving SSH host keys for %q", entity)
+			return "", errors.Trace(err)
 		}
 	}
 
-	usable := network.NewMachineHostPorts(SSHPort, addresses...).HostPorts().FilterUnusable()
+	usable := network.NewMachineHostPorts(sshPort, addresses...).HostPorts().FilterUnusable()
 	best, err := c.hostChecker.FindHost(usable, publicKeys)
 	if err != nil {
 		return "", errors.Trace(err)
@@ -592,6 +628,27 @@ func (c *sshMachine) maybePopulateTargetViaField(target *resolvedTarget, statusG
 	}
 
 	return nil
+}
+
+func (c *sshMachine) getKeysWithRetry(entity string) ([]string, error) {
+	var publicKeys []string
+	strategy := c.publicKeyRetryStrategy
+	strategy.IsFatalError = func(err error) bool {
+		return !errors.Is(err, errors.NotFound)
+	}
+	strategy.Func = func() error {
+		keys, err := c.apiClient.PublicKeys(entity)
+		if err != nil {
+			return errors.Annotatef(err, "retrieving SSH host keys for %q", entity)
+		}
+		publicKeys = keys
+		return nil
+	}
+	err := retry.Call(strategy)
+	if err != nil {
+		return nil, err
+	}
+	return publicKeys, nil
 }
 
 // getJujuExecutable returns the path to the juju

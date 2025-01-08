@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/canonical/lxd/shared/api"
 	"github.com/juju/errors"
-	"github.com/lxc/lxd/shared/api"
 
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/lxdprofile"
@@ -22,7 +22,7 @@ import (
 	"github.com/juju/juju/provider/common"
 )
 
-const bootstrapMessage = `To configure your system to better support LXD containers, please see: https://github.com/lxc/lxd/blob/master/doc/production-setup.md`
+const bootstrapMessage = `To configure your system to better support LXD containers, please see: https://documentation.ubuntu.com/lxd/en/latest/explanation/performance_tuning/`
 
 type baseProvider interface {
 	// BootstrapEnv bootstraps a Juju environment.
@@ -410,7 +410,7 @@ func (env *environ) verifyProfile(pName string) error {
 	if err != nil {
 		return err
 	}
-	logger.Debugf("lxd profile %q: received %+v ", pName, profile.ProfilePut)
+	logger.Debugf("lxd profile %q: received %+v ", pName, profile)
 	return nil
 }
 

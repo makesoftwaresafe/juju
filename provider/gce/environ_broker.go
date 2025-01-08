@@ -29,17 +29,17 @@ func (env *environ) StartInstance(ctx context.ProviderCallContext, args environs
 
 	spec, err := buildInstanceSpec(env, ctx, args)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	if err := env.finishInstanceConfig(args, spec); err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	// Validate availability zone.
 	volumeAttachmentsZone, err := volumeAttachmentsZone(args.VolumeAttachments)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 	if err := validateAvailabilityZoneConsistency(args.AvailabilityZone, volumeAttachmentsZone); err != nil {
 		return nil, errors.Trace(err)
@@ -138,9 +138,12 @@ func (env *environ) imageURLBase(os jujuos.OSType) (string, error) {
 
 	switch os {
 	case jujuos.Ubuntu:
-		if env.Config().ImageStream() == "daily" {
+		switch env.Config().ImageStream() {
+		case "daily":
 			base = ubuntuDailyImageBasePath
-		} else {
+		case "pro":
+			base = ubuntuProImageBasePath
+		default:
 			base = ubuntuImageBasePath
 		}
 	case jujuos.Windows:
@@ -160,17 +163,17 @@ func (env *environ) newRawInstance(
 ) (_ *google.Instance, err error) {
 	hostname, err := env.namespace.Hostname(args.InstanceConfig.MachineId)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	os, err := series.GetOSFromSeries(args.InstanceConfig.Series)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	metadata, err := getMetadata(args, os)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 	tags := []string{
 		env.globalFirewallName(),
@@ -179,7 +182,7 @@ func (env *environ) newRawInstance(
 
 	imageURLBase, err := env.imageURLBase(os)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	disks, err := getDisks(
@@ -189,7 +192,7 @@ func (env *environ) newRawInstance(
 		imageURLBase,
 	)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	allocatePublicIP := true

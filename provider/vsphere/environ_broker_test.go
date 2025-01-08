@@ -11,7 +11,6 @@ import (
 	"path"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	"github.com/juju/testing"
@@ -22,6 +21,7 @@ import (
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api"
@@ -29,6 +29,7 @@ import (
 	corearch "github.com/juju/juju/core/arch"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/environs/config"
@@ -68,8 +69,9 @@ func (s *legacyEnvironBrokerSuite) SetUpTest(c *gc.C) {
 
 func (s *legacyEnvironBrokerSuite) createStartInstanceArgs(c *gc.C) environs.StartInstanceParams {
 	var cons constraints.Value
+	base := coreseries.MakeDefaultBase("ubuntu", "14.04")
 	instanceConfig, err := instancecfg.NewBootstrapInstanceConfig(
-		coretesting.FakeControllerConfig(), cons, cons, "trusty", "", nil,
+		coretesting.FakeControllerConfig(), cons, cons, base, "", nil,
 	)
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -338,7 +340,7 @@ func (s *legacyEnvironBrokerSuite) TestStartInstanceWithUnsupportedConstraints(c
 	startInstArgs.Tools[0].Version.Arch = "someArch"
 	_, err := s.env.StartInstance(s.callCtx, startInstArgs)
 	c.Assert(err, gc.ErrorMatches, "no matching images found for given constraints: .*")
-	c.Assert(err, jc.Satisfies, environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsTrue)
 }
 
 func (s *legacyEnvironBrokerSuite) TestStartInstanceDefaultConstraintsApplied(c *gc.C) {
@@ -433,7 +435,7 @@ func (s *legacyEnvironBrokerSuite) TestStartInstanceFailsWithAvailabilityZone(c 
 	s.client.SetErrors(nil, nil, nil, nil, errors.New("nope"))
 	startInstArgs := s.createStartInstanceArgs(c)
 	_, err := s.env.StartInstance(s.callCtx, startInstArgs)
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 
 	s.client.CheckCallNames(c, "Folders", "ComputeResources", "ResourcePools", "ResourcePools", "GetTargetDatastore", "Close")
 	getDatastoreCall := s.client.Calls()[4]
@@ -639,7 +641,7 @@ func (s *legacyEnvironBrokerSuite) TestNotBootstrapping(c *gc.C) {
 		"0",
 		"nonce",
 		"",
-		"trusty",
+		coreseries.MakeDefaultBase("ubuntu", "14.04"),
 		&api.Info{
 			Tag:      names.NewMachineTag("0"),
 			ModelTag: coretesting.ModelTag,

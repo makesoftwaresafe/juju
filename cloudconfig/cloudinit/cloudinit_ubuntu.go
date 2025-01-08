@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
-	"github.com/juju/juju/core/snap"
-	jujupackaging "github.com/juju/juju/packaging"
 	"github.com/juju/packaging/v2"
 	"github.com/juju/packaging/v2/config"
 	"github.com/juju/proxy"
 	"github.com/juju/utils/v3"
 	"gopkg.in/yaml.v2"
+
+	"github.com/juju/juju/core/snap"
+	jujupackaging "github.com/juju/juju/packaging"
 )
 
 // ubuntuCloudConfig is the cloudconfig type specific to Ubuntu machines
@@ -167,7 +168,7 @@ func (cfg *ubuntuCloudConfig) getCommandsForAddingPackages() ([]string, error) {
 		if !strings.HasPrefix(src.URL, "ppa:") {
 			if src.Key != "" {
 				key := utils.ShQuote(src.Key)
-				cmd := fmt.Sprintf("printf '%%s\\n' %s | apt-key add -", key)
+				cmd := fmt.Sprintf("echo %s | apt-key add -", key)
 				cmds = append(cmds, cmd)
 			}
 		}
@@ -193,7 +194,9 @@ func (cfg *ubuntuCloudConfig) getCommandsForAddingPackages() ([]string, error) {
 	}
 	if cfg.SystemUpgrade() {
 		cmds = append(cmds, LogProgressCmd("Running apt-get upgrade"))
+		cmds = append(cmds, looper+"apt-mark hold cloud-init")
 		cmds = append(cmds, looper+pkgCmder.UpgradeCmd())
+		cmds = append(cmds, looper+"apt-mark unhold cloud-init")
 	}
 
 	var pkgCmds []string
@@ -278,7 +281,7 @@ var waitSnapSeeded = `
 n=1
 while true; do
 
-printf "Attempt $n to wait for snapd to be seeded...\n"
+echo "Attempt $n to wait for snapd to be seeded...\n"
 snap wait core seed.loaded && break
 if [ $n -eq 5 ]; then
   echo "snapd not initialised"
@@ -298,7 +301,7 @@ func (cfg *ubuntuCloudConfig) updateProxySettings(proxyCfg PackageManagerProxyCo
 		pkgCmder := cfg.paccmder[jujupackaging.AptPackageManager]
 		filename := config.AptProxyConfigFile
 		cfg.AddBootCmd(fmt.Sprintf(
-			`printf '%%s\n' %s > %s`,
+			`echo %s > %s`,
 			utils.ShQuote(pkgCmder.ProxyConfigContents(aptProxy)),
 			filename))
 	}

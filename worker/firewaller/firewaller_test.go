@@ -53,7 +53,6 @@ const allEndpoints = ""
 // into each of the other per-mode suites.
 type firewallerBaseSuite struct {
 	jujutesting.JujuConnSuite
-	op                 <-chan dummy.Operation
 	charm              *state.Charm
 	controllerMachine  *state.Machine
 	controllerPassword string
@@ -108,7 +107,8 @@ func (s *firewallerBaseSuite) setUpTest(c *gc.C, firewallMode string) {
 
 // assertIngressRules retrieves the ingress rules from the provided instance
 // and compares them to the expected value.
-func (s *firewallerBaseSuite) assertIngressRules(c *gc.C, inst instances.Instance, machineId string, expected firewall.IngressRules) {
+func (s *firewallerBaseSuite) assertIngressRules(c *gc.C, inst instances.Instance, machineId string,
+	expected firewall.IngressRules) {
 	fwInst, ok := inst.(instances.InstanceFirewaller)
 	c.Assert(ok, gc.Equals, true)
 
@@ -219,7 +219,8 @@ func (s *InstanceModeSuite) newFirewallerWithClock(c *gc.C, clock clock.Clock) w
 	return s.newFirewallerWithClockAndIPV6CIDRSupport(c, clock, true)
 }
 
-func (s *InstanceModeSuite) newFirewallerWithClockAndIPV6CIDRSupport(c *gc.C, clock clock.Clock, ipv6CIDRSupport bool) worker.Worker {
+func (s *InstanceModeSuite) newFirewallerWithClockAndIPV6CIDRSupport(c *gc.C, clock clock.Clock,
+	ipv6CIDRSupport bool) worker.Worker {
 	s.clock = clock
 	fwEnv, ok := s.Environ.(environs.Firewaller)
 	c.Assert(ok, gc.Equals, true)
@@ -827,7 +828,7 @@ func (s *InstanceModeSuite) TestStartWithStateOpenPortsBroken(c *gc.C) {
 	select {
 	case err := <-errc:
 		c.Assert(err, gc.ErrorMatches,
-			`cannot respond to units changes for "machine-1": dummyInstance.OpenPorts is broken`)
+			`cannot respond to units changes for "machine-1", \"deadbeef-0bad-400d-8000-4b1d0d06f00d\": dummyInstance.OpenPorts is broken`)
 	case <-time.After(coretesting.LongWait):
 		fw.Kill()
 		fw.Wait()
@@ -842,15 +843,9 @@ func (s *InstanceModeSuite) setupRemoteRelationRequirerRoleConsumingSide(
 	wordpress := s.AddTestingApplication(c, "wordpress", s.AddTestingCharm(c, "wordpress"))
 	// Set up the consuming model - create the remote app.
 	offeringModelTag := names.NewModelTag(utils.MustNewUUID().String())
-	appToken := utils.MustNewUUID().String()
-	app, err := s.State.AddRemoteApplication(state.AddRemoteApplicationParams{
-		Name: "mysql", SourceModel: offeringModelTag,
-		Endpoints: []charm.Relation{{Name: "database", Interface: "mysql", Role: "provider", Scope: "global"}},
-	})
-	c.Assert(err, jc.ErrorIsNil)
 	// Create the external controller info.
 	ec := state.NewExternalControllers(s.State)
-	_, err = ec.Save(crossmodel.ControllerInfo{
+	_, err := ec.Save(crossmodel.ControllerInfo{
 		ControllerTag: coretesting.ControllerTag,
 		Addrs:         []string{"1.2.3.4:1234"},
 		CACert:        coretesting.CACert}, offeringModelTag.Id())
@@ -859,15 +854,15 @@ func (s *InstanceModeSuite) setupRemoteRelationRequirerRoleConsumingSide(
 	mac, err := apitesting.NewMacaroon("apimac")
 	c.Assert(err, jc.ErrorIsNil)
 	var relToken string
-	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string,
+		arg, result interface{}) error {
 		c.Check(objType, gc.Equals, "CrossModelRelations")
 		c.Check(version, gc.Equals, 0)
 		c.Check(id, gc.Equals, "")
 		c.Check(request, gc.Equals, "PublishIngressNetworkChanges")
 		expected := params.IngressNetworksChanges{
 			Changes: []params.IngressNetworksChangeEvent{{
-				RelationToken:    relToken,
-				ApplicationToken: appToken,
+				RelationToken: relToken,
 			}},
 		}
 
@@ -918,6 +913,11 @@ func (s *InstanceModeSuite) setupRemoteRelationRequirerRoleConsumingSide(
 	// Create the firewaller facade on the consuming model.
 	fw := s.newFirewallerWithClock(c, clock)
 
+	_, err = s.State.AddRemoteApplication(state.AddRemoteApplicationParams{
+		Name: "mysql", SourceModel: offeringModelTag,
+		Endpoints: []charm.Relation{{Name: "database", Interface: "mysql", Role: "provider", Scope: "global"}},
+	})
+	c.Assert(err, jc.ErrorIsNil)
 	eps, err := s.State.InferEndpoints("wordpress", "mysql")
 	c.Assert(err, jc.ErrorIsNil)
 	rel, err := s.State.AddRelation(eps...)
@@ -928,8 +928,6 @@ func (s *InstanceModeSuite) setupRemoteRelationRequirerRoleConsumingSide(
 	relToken, err = re.ExportLocalEntity(rel.Tag())
 	c.Assert(err, jc.ErrorIsNil)
 	err = re.SaveMacaroon(rel.Tag(), mac)
-	c.Assert(err, jc.ErrorIsNil)
-	err = re.ImportRemoteEntity(app.Tag(), appToken)
 	c.Assert(err, jc.ErrorIsNil)
 
 	// We should not have published any ingress events yet - no unit has entered scope.
@@ -989,7 +987,8 @@ func (s *InstanceModeSuite) TestRemoteRelationWorkerError(c *gc.C) {
 	published := make(chan bool)
 	ingressRequired := true
 	apiErr := true
-	fw, ru := s.setupRemoteRelationRequirerRoleConsumingSide(c, published, &apiErr, &ingressRequired, testclock.NewClock(time.Time{}))
+	fw, ru := s.setupRemoteRelationRequirerRoleConsumingSide(c, published, &apiErr, &ingressRequired,
+		testclock.NewClock(time.Time{}))
 	defer statetesting.AssertKillAndWait(c, fw)
 
 	// Add a unit on the consuming app and have it enter the relation scope.
@@ -1039,7 +1038,8 @@ func (s *InstanceModeSuite) TestRemoteRelationProviderRoleConsumingSide(c *gc.C)
 	watched := make(chan bool)
 	var relToken string
 	callCount := int32(0)
-	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string,
+		arg, result interface{}) error {
 		switch atomic.LoadInt32(&callCount) {
 		case 0:
 			c.Check(objType, gc.Equals, "CrossModelRelations")
@@ -1126,7 +1126,8 @@ func (s *InstanceModeSuite) TestRemoteRelationIngressRejected(c *gc.C) {
 
 	published := make(chan bool)
 	done := false
-	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string,
+		arg, result interface{}) error {
 		c.Assert(result, gc.FitsTypeOf, &params.ErrorResults{})
 		*(result.(*params.ErrorResults)) = params.ErrorResults{
 			Results: []params.ErrorResult{{Error: &params.Error{Code: params.CodeForbidden, Message: "error"}}},
@@ -1384,7 +1385,8 @@ func (s *InstanceModeSuite) TestExposedApplicationWithExposedEndpoints(c *gc.C) 
 		// of space-1).
 		//
 		// We expect to see port 80 use all three CIDRs as valid input sources
-		firewall.NewIngressRule(network.MustParsePortRange("80/tcp"), "10.0.0.0/24", "192.168.0.0/24", "192.168.1.0/24", "42.42.0.0/16"),
+		firewall.NewIngressRule(network.MustParsePortRange("80/tcp"), "10.0.0.0/24", "192.168.0.0/24", "192.168.1.0/24",
+			"42.42.0.0/16"),
 		//
 		// The 1337/{tcp,udp} ports have only been opened for the "url"
 		// endpoint and the "url" endpoint has been exposed to 192.168.{0,1}.0/24
@@ -1394,8 +1396,10 @@ func (s *InstanceModeSuite) TestExposedApplicationWithExposedEndpoints(c *gc.C) 
 		// that the expose for the wildcard ("") endpoint is ignored
 		// here as the expose settings for the "url" endpoint must
 		// supersede it.
-		firewall.NewIngressRule(network.MustParsePortRange("1337/tcp"), "192.168.0.0/24", "192.168.1.0/24", "42.42.0.0/16"),
-		firewall.NewIngressRule(network.MustParsePortRange("1337/udp"), "192.168.0.0/24", "192.168.1.0/24", "42.42.0.0/16"),
+		firewall.NewIngressRule(network.MustParsePortRange("1337/tcp"), "192.168.0.0/24", "192.168.1.0/24",
+			"42.42.0.0/16"),
+		firewall.NewIngressRule(network.MustParsePortRange("1337/udp"), "192.168.0.0/24", "192.168.1.0/24",
+			"42.42.0.0/16"),
 	})
 
 	// Change the expose settings and remove the entry for the wildcard endpoint
@@ -1408,9 +1412,12 @@ func (s *InstanceModeSuite) TestExposedApplicationWithExposedEndpoints(c *gc.C) 
 		// explicitly open as well as port 80 which is opened for ALL
 		// endpoints. These three ports should be exposed to the
 		// CIDRs used when the "url" endpoint was exposed
-		firewall.NewIngressRule(network.MustParsePortRange("80/tcp"), "192.168.0.0/24", "192.168.1.0/24", "42.42.0.0/16"),
-		firewall.NewIngressRule(network.MustParsePortRange("1337/tcp"), "192.168.0.0/24", "192.168.1.0/24", "42.42.0.0/16"),
-		firewall.NewIngressRule(network.MustParsePortRange("1337/udp"), "192.168.0.0/24", "192.168.1.0/24", "42.42.0.0/16"),
+		firewall.NewIngressRule(network.MustParsePortRange("80/tcp"), "192.168.0.0/24", "192.168.1.0/24",
+			"42.42.0.0/16"),
+		firewall.NewIngressRule(network.MustParsePortRange("1337/tcp"), "192.168.0.0/24", "192.168.1.0/24",
+			"42.42.0.0/16"),
+		firewall.NewIngressRule(network.MustParsePortRange("1337/udp"), "192.168.0.0/24", "192.168.1.0/24",
+			"42.42.0.0/16"),
 	})
 }
 

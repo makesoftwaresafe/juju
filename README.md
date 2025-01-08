@@ -1,4 +1,8 @@
-[![Juju logo](doc/juju-logo.png?raw=true)](https://juju.is/)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/juju-logo-dark.png?raw=true">
+  <source media="(prefers-color-scheme: light)" srcset="doc/juju-logo.png?raw=true">
+  <img alt="Juju logo next to the text Canonical Juju" src="doc/juju-logo.png?raw=true" width="30%">
+</picture>
 
 [Juju is a model-driven **Operator Lifecycle Manager**
 (OLM)](https://juju.is/about). Juju greatly improves the experience of
@@ -92,7 +96,7 @@ to your charm by the framework.
 ## Architecture
 
 The Juju client, server and agent are all written in Golang. The standard Juju
-packaging includes an embedded database for centralised logging and ersistence,
+packaging includes an embedded database for centralised logging and persistence,
 but there is no need to manage that database separately.
 
 Operators can be written in any language but we do encourage new authors to

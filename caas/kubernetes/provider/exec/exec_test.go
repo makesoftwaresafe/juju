@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -481,22 +481,4 @@ func (s *execSuite) TestErrorHandling(c *gc.C) {
 	c.Assert(err, gc.FitsTypeOf, &exec.ContainerNotRunningError{})
 	err = exec.HandleContainerNotFoundError(errors.New(`wow`))
 	c.Assert(err, gc.ErrorMatches, "wow")
-}
-
-func (s *execSuite) TestModelNameToNameSpace(c *gc.C) {
-	ctrl := s.setupExecClient(c)
-	defer ctrl.Finish()
-
-	gomock.InOrder(
-		s.mockNamespaces.EXPECT().List(gomock.Any(), metav1.ListOptions{LabelSelector: "model.juju.is/name=controller"}).
-			Return(&core.NamespaceList{Items: []core.Namespace{
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "controller-k1"},
-				},
-			}}, nil),
-	)
-
-	nsName, err := exec.ModelNameToNameSpace("controller", false, s.mockNamespaces)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(nsName, gc.DeepEquals, "controller-k1")
 }

@@ -17,6 +17,7 @@ var commonModelFacadeNames = set.NewStrings(
 	"ActionPruner",
 	"AllWatcher",
 	"Agent",
+	"AgentLifeFlag",
 	"Annotations",
 	"Application",
 	"Block",
@@ -31,6 +32,7 @@ var commonModelFacadeNames = set.NewStrings(
 	"CredentialValidator",
 	"CrossController",
 	"CrossModelRelations",
+	"EnvironUpgrader",
 	"ExternalControllerUpdater",
 	"FilesystemAttachmentsWatcher",
 	"LeadershipService",
@@ -43,7 +45,6 @@ var commonModelFacadeNames = set.NewStrings(
 	"MigrationStatusWatcher",
 	"MigrationTarget",
 	"ModelConfig",
-	"ModelUpgrader",
 	"NotifyWatcher",
 	"OfferStatusWatcher",
 	"Payloads",
@@ -69,6 +70,7 @@ var commonModelFacadeNames = set.NewStrings(
 	"Upgrader",
 	"VolumeAttachmentsWatcher",
 	"RemoteRelationWatcher",
+	"SSHClient",
 )
 
 // caasModelFacadeNames lists facades that are only used with CAAS

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/httpbakery"
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	charmresource "github.com/juju/charm/v8/resource"
 	"github.com/juju/clock"
@@ -18,6 +17,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/macaroon.v2"
 
@@ -403,7 +403,7 @@ func (s *deployerSuite) TestMaybeReadLocalCharmErrorWithApplicationName(c *gc.C)
 	s.expectModelGet(c)
 
 	s.charmReader.EXPECT().ReadCharm("meshuggah").Return(s.charm, nil)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{}).AnyTimes()
+	s.charm.EXPECT().Manifest().Return(nil).AnyTimes()
 	s.charm.EXPECT().Meta().Return(&charm.Meta{Series: []string{"focal"}}).AnyTimes()
 
 	f := &factory{
@@ -423,7 +423,7 @@ func (s *deployerSuite) TestMaybeReadLocalCharmErrorWithoutApplicationName(c *gc
 	s.expectModelGet(c)
 
 	s.charmReader.EXPECT().ReadCharm("meshuggah").Return(s.charm, nil)
-	s.charm.EXPECT().Manifest().Return(&charm.Manifest{}).AnyTimes()
+	s.charm.EXPECT().Manifest().Return(nil).AnyTimes()
 	s.charm.EXPECT().Meta().Return(&charm.Meta{Name: "meshuggah", Series: []string{"focal"}}).AnyTimes()
 
 	f := &factory{

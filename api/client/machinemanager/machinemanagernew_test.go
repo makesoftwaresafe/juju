@@ -15,10 +15,10 @@ The plan is to start moving those old style tests and when finished delete the o
 package machinemanager_test
 
 import (
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/base/mocks"
@@ -50,11 +50,12 @@ func (s *NewMachineManagerSuite) SetUpTest(c *gc.C) {
 func (s *NewMachineManagerSuite) TestUpgradeSeriesValidate(c *gc.C) {
 	defer s.setup(c).Finish()
 
-	args := params.UpdateSeriesArgs{
-		Args: []params.UpdateSeriesArg{
+	args := params.UpdateChannelArgs{
+		Args: []params.UpdateChannelArg{
 			{
-				Entity: params.Entity{Tag: names.NewMachineTag(s.tag.String()).String()},
-				Series: "xenial",
+				Entity:  params.Entity{Tag: names.NewMachineTag(s.tag.String()).String()},
+				Series:  "xenial",
+				Channel: "16.04/stable",
 			},
 		},
 	}
@@ -72,10 +73,11 @@ func (s *NewMachineManagerSuite) TestUpgradeSeriesValidate(c *gc.C) {
 func (s *NewMachineManagerSuite) TestUpgradeSeriesPrepareAlreadyInProgress(c *gc.C) {
 	defer s.setup(c).Finish()
 
-	arg := params.UpdateSeriesArg{
-		Entity: params.Entity{Tag: s.tag.String()},
-		Series: "xenial",
-		Force:  true,
+	arg := params.UpdateChannelArg{
+		Entity:  params.Entity{Tag: s.tag.String()},
+		Series:  "xenial",
+		Channel: "16.04/stable",
+		Force:   true,
 	}
 	resultSource := params.ErrorResult{
 		Error: &params.Error{

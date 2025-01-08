@@ -13,6 +13,9 @@ import (
 	"github.com/juju/cmd/v3"
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
+	"github.com/juju/names/v4"
+	"golang.org/x/crypto/ssh/terminal"
+
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/authentication"
 	jujucmd "github.com/juju/juju/cmd"
@@ -20,8 +23,6 @@ import (
 	"github.com/juju/juju/cmd/modelcmd"
 	"github.com/juju/juju/juju"
 	"github.com/juju/juju/jujuclient"
-	"github.com/juju/names/v4"
-	"golang.org/x/crypto/ssh/terminal"
 )
 
 const userChangePasswordDoc = `
@@ -70,6 +71,8 @@ type changePasswordCommand struct {
 	User  string
 	Reset bool
 
+	noPrompt bool
+
 	// Internally initialised and used during run
 	controllerName string
 	userTag        names.UserTag
@@ -78,6 +81,7 @@ type changePasswordCommand struct {
 
 func (c *changePasswordCommand) SetFlags(f *gnuflag.FlagSet) {
 	f.BoolVar(&c.Reset, "reset", false, "Reset user password")
+	f.BoolVar(&c.noPrompt, "no-prompt", false, "don't prompt for password and just read a line from stdin")
 }
 
 // Info implements Command.Info.
@@ -190,7 +194,7 @@ func (c *changePasswordCommand) resetUserPassword(ctx *cmd.Context) error {
 	}
 	ctx.Infof("Password for %q has been reset.", c.User)
 	base64RegistrationData, err := generateUserControllerAccessToken(
-		c.ControllerCommandBase,
+		&c.ControllerCommandBase,
 		c.userTag.Id(),
 		key,
 	)
@@ -202,9 +206,23 @@ func (c *changePasswordCommand) resetUserPassword(ctx *cmd.Context) error {
 }
 
 func (c *changePasswordCommand) updateUserPassword(ctx *cmd.Context) error {
-	newPassword, err := readAndConfirmPassword(ctx)
-	if err != nil {
-		return errors.Trace(err)
+	var err error
+	var newPassword string
+	if c.noPrompt {
+		fmt.Fprintln(ctx.Stderr, "reading password from stdin...")
+		newPassword, err = readLine(ctx.Stdin)
+		if err != nil {
+			return errors.Trace(err)
+		}
+	} else {
+		newPassword, err = readAndConfirmPassword(ctx)
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+
+	if newPassword == "" {
+		return errors.Errorf("password cannot be empty")
 	}
 
 	if err := c.api.SetPassword(c.userTag.Id(), newPassword); err != nil {

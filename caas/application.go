@@ -4,6 +4,8 @@
 package caas
 
 import (
+	"context"
+
 	"github.com/juju/version/v2"
 
 	"github.com/juju/juju/core/constraints"
@@ -13,7 +15,7 @@ import (
 	"github.com/juju/juju/storage"
 )
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/application_mock.go github.com/juju/juju/caas Application
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/application_mock.go github.com/juju/juju/caas Application
 
 // Application is for interacting with the CAAS substrate.
 type Application interface {
@@ -36,11 +38,11 @@ type Application interface {
 
 	// Units of the application fetched from kubernetes by matching pod labels.
 	Units() ([]Unit, error)
+
+	UnitsToRemove(context.Context, int) ([]string, error)
+
 	// Service returns the service associated with the application.
 	Service() (*Service, error)
-
-	// Upgrade upgrades the app to the specified version.
-	Upgrade(version.Number) error
 
 	ServiceInterface
 }

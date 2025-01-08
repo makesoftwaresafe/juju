@@ -1,8 +1,6 @@
 // Copyright 2014 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package testcharms holds a corpus of charms
-// for testing.
 package testcharms
 
 import (
@@ -13,11 +11,10 @@ import (
 	"os"
 	"time"
 
-	jc "github.com/juju/testing/checkers"
-	gc "gopkg.in/check.v1"
-
 	"github.com/juju/charm/v8"
 	"github.com/juju/charmrepo/v6/testing"
+	jc "github.com/juju/testing/checkers"
+	gc "gopkg.in/check.v1"
 
 	jtesting "github.com/juju/juju/testing"
 )
@@ -44,6 +41,11 @@ func RepoForSeries(series string) *testing.Repo {
 // RepoWithSeries returns a new charm repository for the specified series.
 func RepoWithSeries(series string) *testing.Repo {
 	return testing.NewRepo(localCharmRepo, series)
+}
+
+// CharmRepo returns a new charm repository.
+func CharmRepo() *testing.Repo {
+	return testing.NewRepo("charms", "")
 }
 
 // CheckCharmReady ensures that a desired charm archive exists and

@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	"github.com/juju/utils/v3"
 	"gopkg.in/yaml.v2"
 
-	"github.com/juju/collections/set"
 	"github.com/juju/juju/agent"
 	"github.com/juju/juju/api/agent/upgradesteps"
 	"github.com/juju/juju/api/base"
@@ -147,7 +147,7 @@ var getUpgradeStepsClient = func(caller base.APICaller) UpgradeStepsClient {
 	return upgradesteps.NewClient(caller)
 }
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/upgradestepsclient_mock.go github.com/juju/juju/upgrades UpgradeStepsClient
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/upgradestepsclient_mock.go github.com/juju/juju/upgrades UpgradeStepsClient
 type UpgradeStepsClient interface {
 	WriteAgentState([]params.SetUnitStateArg) error
 }

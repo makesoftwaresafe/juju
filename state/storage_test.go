@@ -19,6 +19,7 @@ import (
 	k8sprovider "github.com/juju/juju/caas/kubernetes/provider"
 	k8stesting "github.com/juju/juju/caas/kubernetes/provider/testing"
 	"github.com/juju/juju/state"
+	stateerrors "github.com/juju/juju/state/errors"
 	"github.com/juju/juju/state/stateenvirons"
 	"github.com/juju/juju/state/testing"
 	"github.com/juju/juju/storage"
@@ -518,7 +519,7 @@ func (s *StorageStateSuite) TestAddApplicationStorageConstraintsValidation(c *gc
 	}
 	assertErr(storageCons, `cannot add application "storage-block2": charm "storage-block2" store "multi2up": 2 instances required, 1 specified`)
 	storageCons["multi2up"] = makeStorageCons("loop-pool", 1024, 2)
-	assertErr(storageCons, `cannot add application "storage-block2": charm "storage-block2" store "multi2up": minimum storage size is 2.0GB, 1.0GB specified`)
+	assertErr(storageCons, `cannot add application "storage-block2": charm "storage-block2" store "multi2up": minimum storage size is 2.0 GB, 1.0 GB specified`)
 	storageCons["multi2up"] = makeStorageCons("loop-pool", 2048, 2)
 	storageCons["multi1to10"] = makeStorageCons("loop-pool", 1024, 11)
 	assertErr(storageCons, `cannot add application "storage-block2": charm "storage-block2" store "multi1to10": at most 10 instances supported, 11 specified`)
@@ -1254,7 +1255,7 @@ func (s *StorageStateSuite) TestDestroyStorageInstanceAttachedError(c *gc.C) {
 
 	err := s.storageBackend.DestroyStorageInstance(storageTag, false, false, dontWait)
 	c.Assert(err, gc.ErrorMatches, `cannot destroy storage "data/0": storage is attached`)
-	c.Assert(err, jc.Satisfies, state.IsStorageAttachedError)
+	c.Assert(errors.Is(err, stateerrors.StorageAttachedError), jc.IsTrue)
 }
 
 func (s *StorageStateSuite) TestWatchStorageAttachments(c *gc.C) {

@@ -4,6 +4,7 @@
 package errorutils
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -149,7 +150,14 @@ func SimpleError(err error) error {
 	if reqErr.ServiceError == nil {
 		return respErr
 	}
-	return errors.New(reqErr.ServiceError.Message)
+	msg := ""
+	if len(reqErr.ServiceError.Details) > 0 {
+		msg = reqErr.ServiceError.Details[0].Message
+	}
+	if msg == "" {
+		msg = reqErr.ServiceError.Message
+	}
+	return errors.New(msg)
 }
 
 // HandleCredentialError determines if given error relates to invalid credential.
@@ -170,7 +178,7 @@ func MaybeInvalidateCredential(err error, ctx context.ProviderCallContext) bool 
 		return false
 	}
 
-	converted := common.CredentialNotValidf(err, "azure cloud denied access")
+	converted := fmt.Errorf("azure cloud denied access: %w", common.CredentialNotValidError(err))
 	invalidateErr := ctx.InvalidateCredential(converted.Error())
 	if invalidateErr != nil {
 		logger.Warningf("could not invalidate stored azure cloud credential on the controller: %v", invalidateErr)

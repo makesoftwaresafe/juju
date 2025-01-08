@@ -6,9 +6,9 @@ package lxd_test
 import (
 	"errors"
 
-	"github.com/golang/mock/gomock"
+	lxdapi "github.com/canonical/lxd/shared/api"
 	jc "github.com/juju/testing/checkers"
-	lxdapi "github.com/lxc/lxd/shared/api"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/container/lxd"
@@ -30,12 +30,10 @@ func (s *networkSuite) patch() {
 func defaultProfileWithNIC() *lxdapi.Profile {
 	return &lxdapi.Profile{
 		Name: "default",
-		ProfilePut: lxdapi.ProfilePut{
-			Devices: map[string]map[string]string{
-				"eth0": {
-					"network": network.DefaultLXDBridge,
-					"type":    "nic",
-				},
+		Devices: map[string]map[string]string{
+			"eth0": {
+				"network": network.DefaultLXDBridge,
+				"type":    "nic",
 			},
 		},
 	}
@@ -44,13 +42,11 @@ func defaultProfileWithNIC() *lxdapi.Profile {
 func defaultLegacyProfileWithNIC() *lxdapi.Profile {
 	return &lxdapi.Profile{
 		Name: "default",
-		ProfilePut: lxdapi.ProfilePut{
-			Devices: map[string]map[string]string{
-				"eth0": {
-					"parent":  network.DefaultLXDBridge,
-					"type":    "nic",
-					"nictype": "bridged",
-				},
+		Devices: map[string]map[string]string{
+			"eth0": {
+				"parent":  network.DefaultLXDBridge,
+				"type":    "nic",
+				"nictype": "bridged",
 			},
 		},
 	}
@@ -62,10 +58,8 @@ func (s *networkSuite) TestEnsureIPv4NoChange(c *gc.C) {
 	cSvr := s.NewMockServerWithExtensions(ctrl, "network")
 
 	net := &lxdapi.Network{
-		NetworkPut: lxdapi.NetworkPut{
-			Config: map[string]string{
-				"ipv4.address": "10.5.3.1",
-			},
+		Config: map[string]string{
+			"ipv4.address": "10.5.3.1",
 		},
 	}
 	cSvr.EXPECT().GetNetwork("some-net-name").Return(net, lxdtesting.ETag, nil)
@@ -174,10 +168,8 @@ func (s *networkSuite) TestVerifyNetworkDeviceMultipleNICsOneValid(c *gc.C) {
 	net := &lxdapi.Network{
 		Name:    network.DefaultLXDBridge,
 		Managed: true,
-		NetworkPut: lxdapi.NetworkPut{
-			Config: map[string]string{
-				"ipv6.address": "something-not-nothing",
-			},
+		Config: map[string]string{
+			"ipv6.address": "something-not-nothing",
 		},
 	}
 
@@ -216,11 +208,12 @@ func (s *networkSuite) TestVerifyNetworkDevicePresentBadNicType(c *gc.C) {
 	c.Assert(err, gc.ErrorMatches,
 		`profile "default": no network device found with nictype "bridged" or "macvlan"\n`+
 			`\tthe following devices were checked: eth0\n`+
-			`Note: juju does not support IPv6.\n`+
-			`Reconfigure lxd to use a network of type "bridged" or "macvlan", disabling IPv6.`)
+			`Reconfigure lxd to use a network of type "bridged" or "macvlan".`)
 }
 
-func (s *networkSuite) TestVerifyNetworkDeviceIPv6Present(c *gc.C) {
+// Juju used to fail when IPv6 was enabled on the lxd network. This test now
+// checks regression to make sure that we know longer fail.
+func (s *networkSuite) TestVerifyNetworkDeviceIPv6PresentNoFail(c *gc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
 	cSvr := s.NewMockServerWithExtensions(ctrl, "network")
@@ -228,10 +221,8 @@ func (s *networkSuite) TestVerifyNetworkDeviceIPv6Present(c *gc.C) {
 	net := &lxdapi.Network{
 		Name:    network.DefaultLXDBridge,
 		Managed: true,
-		NetworkPut: lxdapi.NetworkPut{
-			Config: map[string]string{
-				"ipv6.address": "something-not-nothing",
-			},
+		Config: map[string]string{
+			"ipv6.address": "2001:DB8::1",
 		},
 	}
 	cSvr.EXPECT().GetNetwork(network.DefaultLXDBridge).Return(net, "", nil)
@@ -240,10 +231,7 @@ func (s *networkSuite) TestVerifyNetworkDeviceIPv6Present(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 
 	err = jujuSvr.VerifyNetworkDevice(defaultLegacyProfileWithNIC(), "")
-	c.Assert(err, gc.ErrorMatches,
-		`profile "default": juju does not support IPv6. Disable IPv6 in LXD via:\n`+
-			`\tlxc network set lxdbr0 ipv6.address none\n`+
-			`and run the command again`)
+	c.Assert(err, jc.ErrorIsNil)
 }
 
 func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreated(c *gc.C) {
@@ -265,10 +253,10 @@ func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreated(c *gc.C) {
 		NetworkPut: lxdapi.NetworkPut{Config: netConf},
 	}
 	newNet := &lxdapi.Network{
-		Name:       network.DefaultLXDBridge,
-		Type:       "bridge",
-		Managed:    true,
-		NetworkPut: lxdapi.NetworkPut{Config: netConf},
+		Name:    network.DefaultLXDBridge,
+		Type:    "bridge",
+		Managed: true,
+		Config:  netConf,
 	}
 	gomock.InOrder(
 		cSvr.EXPECT().GetNetwork(network.DefaultLXDBridge).Return(nil, "", errors.New("network not found")),
@@ -298,13 +286,11 @@ func (s *networkSuite) TestVerifyNetworkDeviceNotPresentCreatedWithUnusedName(c 
 		Name:    network.DefaultLXDBridge,
 		Type:    "bridge",
 		Managed: true,
-		NetworkPut: lxdapi.NetworkPut{
-			Config: map[string]string{
-				"ipv4.address": "auto",
-				"ipv4.nat":     "true",
-				"ipv6.address": "none",
-				"ipv6.nat":     "false",
-			},
+		Config: map[string]string{
+			"ipv4.address": "auto",
+			"ipv4.nat":     "true",
+			"ipv6.address": "none",
+			"ipv6.nat":     "false",
 		},
 	}
 	devReq := lxdapi.ProfilePut{
@@ -559,7 +545,7 @@ func (s *networkSuite) TestEnableHTTPSListener(c *gc.C) {
 	defer ctrl.Finish()
 
 	cfg := &lxdapi.Server{}
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	gomock.InOrder(
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil).Times(2),
@@ -582,7 +568,7 @@ func (s *networkSuite) TestEnableHTTPSListenerWithFallbackToIPv4(c *gc.C) {
 	defer ctrl.Finish()
 
 	cfg := &lxdapi.Server{}
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	gomock.InOrder(
 		cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil).Times(2),
@@ -611,7 +597,7 @@ func (s *networkSuite) TestEnableHTTPSListenerWithErrors(c *gc.C) {
 	defer ctrl.Finish()
 
 	cfg := &lxdapi.Server{}
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	cSvr.EXPECT().GetServer().Return(cfg, lxdtesting.ETag, nil)
 

@@ -1,5 +1,6 @@
 // Copyright 2020 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package charmhub
 
 import (
@@ -8,10 +9,10 @@ import (
 	http "net/http"
 	"net/http/httptest"
 
-	gomock "github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	gomock "go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	path "github.com/juju/juju/charmhub/path"

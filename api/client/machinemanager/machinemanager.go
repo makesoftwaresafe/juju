@@ -12,6 +12,7 @@ import (
 	"github.com/juju/juju/api/base"
 	apiwatcher "github.com/juju/juju/api/watcher"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/watcher"
 	"github.com/juju/juju/rpc/params"
 )
@@ -43,6 +44,23 @@ func (c *Client) ModelUUID() (string, bool) {
 
 // AddMachines adds new machines with the supplied parameters, creating any requested disks.
 func (client *Client) AddMachines(machineParams []params.AddMachineParams) ([]params.AddMachinesResult, error) {
+	if client.BestAPIVersion() == 8 {
+		for i, m := range machineParams {
+			if m.Base == nil || m.Base.Name != "centos" {
+				continue
+			}
+			m.Base.Channel = coreseries.ToLegacyCentosChannel(m.Base.Channel)
+			machineParams[i] = m
+		}
+	} else if client.BestAPIVersion() >= 9 {
+		for i, m := range machineParams {
+			if m.Base == nil || m.Base.Name != "centos" {
+				continue
+			}
+			m.Base.Channel = coreseries.FromLegacyCentosChannel(m.Base.Channel)
+			machineParams[i] = m
+		}
+	}
 	args := params.AddMachines{
 		MachineParams: machineParams,
 	}
@@ -99,39 +117,6 @@ func (client *Client) DestroyMachinesWithParams(force, keep bool, maxWait *time.
 	return allResults, nil
 }
 
-func (client *Client) destroyMachines(method string, machines []string) ([]params.DestroyMachineResult, error) {
-	args := params.Entities{
-		Entities: make([]params.Entity, 0, len(machines)),
-	}
-	allResults := make([]params.DestroyMachineResult, len(machines))
-	index := make([]int, 0, len(machines))
-	for i, machineId := range machines {
-		if !names.IsValidMachine(machineId) {
-			allResults[i].Error = &params.Error{
-				Message: errors.NotValidf("machine ID %q", machineId).Error(),
-			}
-			continue
-		}
-		index = append(index, i)
-		args.Entities = append(args.Entities, params.Entity{
-			Tag: names.NewMachineTag(machineId).String(),
-		})
-	}
-	if len(args.Entities) > 0 {
-		var result params.DestroyMachineResults
-		if err := client.facade.FacadeCall(method, args, &result); err != nil {
-			return nil, errors.Trace(err)
-		}
-		if n := len(result.Results); n != len(args.Entities) {
-			return nil, errors.Errorf("expected %d result(s), got %d", len(args.Entities), n)
-		}
-		for i, result := range result.Results {
-			allResults[index[i]] = result
-		}
-	}
-	return allResults, nil
-}
-
 // ProvisioningScript returns a shell script that, when run,
 // provisions a machine agent on the machine executing the script.
 func (c *Client) ProvisioningScript(args params.ProvisioningScriptParams) (script string, err error) {
@@ -144,11 +129,13 @@ func (c *Client) ProvisioningScript(args params.ProvisioningScriptParams) (scrip
 
 // RetryProvisioning updates the provisioning status of a machine allowing the
 // provisioner to retry.
-func (c *Client) RetryProvisioning(machines ...names.MachineTag) ([]params.ErrorResult, error) {
-	p := params.Entities{}
-	p.Entities = make([]params.Entity, len(machines))
+func (c *Client) RetryProvisioning(all bool, machines ...names.MachineTag) ([]params.ErrorResult, error) {
+	p := params.RetryProvisioningArgs{
+		All: all,
+	}
+	p.Machines = make([]string, len(machines))
 	for i, machine := range machines {
-		p.Entities[i] = params.Entity{Tag: machine.String()}
+		p.Machines[i] = machine.String()
 	}
 	var results params.ErrorResults
 	err := c.facade.FacadeCall("RetryProvisioning", p, &results)
@@ -162,12 +149,17 @@ func (client *Client) UpgradeSeriesPrepare(machineName, series string, force boo
 	if client.BestAPIVersion() < 5 {
 		return errors.NotSupportedf("upgrade-series prepare")
 	}
-	args := params.UpdateSeriesArg{
+	base, err := coreseries.GetBaseFromSeries(series)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	args := params.UpdateChannelArg{
 		Entity: params.Entity{
 			Tag: names.NewMachineTag(machineName).String(),
 		},
-		Series: series,
-		Force:  force,
+		Series:  series,
+		Channel: base.Channel.String(),
+		Force:   force,
 	}
 	var result params.ErrorResult
 	if err := client.facade.FacadeCall("UpgradeSeriesPrepare", args, &result); err != nil {
@@ -186,7 +178,7 @@ func (client *Client) UpgradeSeriesComplete(machineName string) error {
 	if client.BestAPIVersion() < 5 {
 		return errors.NotSupportedf("UpgradeSeriesComplete")
 	}
-	args := params.UpdateSeriesArg{
+	args := params.UpdateChannelArg{
 		Entity: params.Entity{Tag: names.NewMachineTag(machineName).String()},
 	}
 	result := new(params.ErrorResult)
@@ -205,16 +197,21 @@ func (client *Client) UpgradeSeriesValidate(machineName, series string) ([]strin
 	if client.BestAPIVersion() < 5 {
 		return nil, errors.NotSupportedf("UpgradeSeriesValidate")
 	}
-	args := params.UpdateSeriesArgs{
-		Args: []params.UpdateSeriesArg{
+	base, err := coreseries.GetBaseFromSeries(series)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	args := params.UpdateChannelArgs{
+		Args: []params.UpdateChannelArg{
 			{
-				Entity: params.Entity{Tag: names.NewMachineTag(machineName).String()},
-				Series: series,
+				Entity:  params.Entity{Tag: names.NewMachineTag(machineName).String()},
+				Series:  series,
+				Channel: base.Channel.String(),
 			},
 		},
 	}
 	results := new(params.UpgradeSeriesUnitsResults)
-	err := client.facade.FacadeCall("UpgradeSeriesValidate", args, results)
+	err = client.facade.FacadeCall("UpgradeSeriesValidate", args, results)
 	if err != nil {
 		return nil, err
 	}

@@ -6,9 +6,9 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +32,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8slabels "k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic"
@@ -41,6 +42,7 @@ import (
 	"k8s.io/utils/pointer"
 
 	"github.com/juju/juju/caas"
+	k8sapplication "github.com/juju/juju/caas/kubernetes/provider/application"
 	"github.com/juju/juju/caas/kubernetes/provider/constants"
 	"github.com/juju/juju/caas/kubernetes/provider/resources"
 	k8sspecs "github.com/juju/juju/caas/kubernetes/provider/specs"
@@ -52,7 +54,6 @@ import (
 	k8sannotations "github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/assumes"
 	coreconfig "github.com/juju/juju/core/config"
-	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/paths"
 	coreresources "github.com/juju/juju/core/resources"
@@ -137,26 +138,26 @@ type kubernetesClient struct {
 
 // To regenerate the mocks for the kubernetes Client used by this broker,
 // run "go generate" from the package directory.
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/k8sclient_mock.go k8s.io/client-go/kubernetes Interface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/context_mock.go context Context
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/appv1_mock.go k8s.io/client-go/kubernetes/typed/apps/v1 AppsV1Interface,DeploymentInterface,StatefulSetInterface,DaemonSetInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/corev1_mock.go k8s.io/client-go/kubernetes/typed/core/v1 EventInterface,CoreV1Interface,NamespaceInterface,PodInterface,ServiceInterface,ConfigMapInterface,PersistentVolumeInterface,PersistentVolumeClaimInterface,SecretInterface,NodeInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/networkingv1beta1_mock.go -mock_names=IngressInterface=MockIngressV1Beta1Interface k8s.io/client-go/kubernetes/typed/networking/v1beta1 NetworkingV1beta1Interface,IngressInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/networkingv1_mock.go -mock_names=IngressInterface=MockIngressV1Interface k8s.io/client-go/kubernetes/typed/networking/v1 NetworkingV1Interface,IngressInterface,IngressClassInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/storagev1_mock.go k8s.io/client-go/kubernetes/typed/storage/v1 StorageV1Interface,StorageClassInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/rbacv1_mock.go k8s.io/client-go/kubernetes/typed/rbac/v1 RbacV1Interface,ClusterRoleBindingInterface,ClusterRoleInterface,RoleInterface,RoleBindingInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/apiextensionsv1beta1_mock.go -mock_names=CustomResourceDefinitionInterface=MockCustomResourceDefinitionV1Beta1Interface k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1beta1 ApiextensionsV1beta1Interface,CustomResourceDefinitionInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/apiextensionsv1_mock.go -mock_names=CustomResourceDefinitionInterface=MockCustomResourceDefinitionV1Interface k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1 ApiextensionsV1Interface,CustomResourceDefinitionInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/apiextensionsclientset_mock.go -mock_names=Interface=MockApiExtensionsClientInterface k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset Interface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/discovery_mock.go k8s.io/client-go/discovery DiscoveryInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/dynamic_mock.go -mock_names=Interface=MockDynamicInterface k8s.io/client-go/dynamic Interface,ResourceInterface,NamespaceableResourceInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/admissionregistrationv1beta1_mock.go -mock_names=MutatingWebhookConfigurationInterface=MockMutatingWebhookConfigurationV1Beta1Interface,ValidatingWebhookConfigurationInterface=MockValidatingWebhookConfigurationV1Beta1Interface k8s.io/client-go/kubernetes/typed/admissionregistration/v1beta1  AdmissionregistrationV1beta1Interface,MutatingWebhookConfigurationInterface,ValidatingWebhookConfigurationInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/admissionregistrationv1_mock.go -mock_names=MutatingWebhookConfigurationInterface=MockMutatingWebhookConfigurationV1Interface,ValidatingWebhookConfigurationInterface=MockValidatingWebhookConfigurationV1Interface k8s.io/client-go/kubernetes/typed/admissionregistration/v1  AdmissionregistrationV1Interface,MutatingWebhookConfigurationInterface,ValidatingWebhookConfigurationInterface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/serviceaccountinformer_mock.go k8s.io/client-go/informers/core/v1 ServiceAccountInformer
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/serviceaccountlister_mock.go k8s.io/client-go/listers/core/v1 ServiceAccountLister,ServiceAccountNamespaceLister
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/sharedindexinformer_mock.go k8s.io/client-go/tools/cache SharedIndexInformer
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/restclient_mock.go -mock_names=Interface=MockRestClientInterface k8s.io/client-go/rest Interface
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/serviceaccount_mock.go k8s.io/client-go/kubernetes/typed/core/v1 ServiceAccountInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/k8sclient_mock.go k8s.io/client-go/kubernetes Interface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/context_mock.go context Context
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/appv1_mock.go k8s.io/client-go/kubernetes/typed/apps/v1 AppsV1Interface,DeploymentInterface,StatefulSetInterface,DaemonSetInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/corev1_mock.go k8s.io/client-go/kubernetes/typed/core/v1 EventInterface,CoreV1Interface,NamespaceInterface,PodInterface,ServiceInterface,ConfigMapInterface,PersistentVolumeInterface,PersistentVolumeClaimInterface,SecretInterface,NodeInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/networkingv1beta1_mock.go -mock_names=IngressInterface=MockIngressV1Beta1Interface k8s.io/client-go/kubernetes/typed/networking/v1beta1 NetworkingV1beta1Interface,IngressInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/networkingv1_mock.go -mock_names=IngressInterface=MockIngressV1Interface k8s.io/client-go/kubernetes/typed/networking/v1 NetworkingV1Interface,IngressInterface,IngressClassInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/storagev1_mock.go k8s.io/client-go/kubernetes/typed/storage/v1 StorageV1Interface,StorageClassInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/rbacv1_mock.go k8s.io/client-go/kubernetes/typed/rbac/v1 RbacV1Interface,ClusterRoleBindingInterface,ClusterRoleInterface,RoleInterface,RoleBindingInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/apiextensionsv1beta1_mock.go -mock_names=CustomResourceDefinitionInterface=MockCustomResourceDefinitionV1Beta1Interface k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1beta1 ApiextensionsV1beta1Interface,CustomResourceDefinitionInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/apiextensionsv1_mock.go -mock_names=CustomResourceDefinitionInterface=MockCustomResourceDefinitionV1Interface k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1 ApiextensionsV1Interface,CustomResourceDefinitionInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/apiextensionsclientset_mock.go -mock_names=Interface=MockApiExtensionsClientInterface k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset Interface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/discovery_mock.go k8s.io/client-go/discovery DiscoveryInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/dynamic_mock.go -mock_names=Interface=MockDynamicInterface k8s.io/client-go/dynamic Interface,ResourceInterface,NamespaceableResourceInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/admissionregistrationv1beta1_mock.go -mock_names=MutatingWebhookConfigurationInterface=MockMutatingWebhookConfigurationV1Beta1Interface,ValidatingWebhookConfigurationInterface=MockValidatingWebhookConfigurationV1Beta1Interface k8s.io/client-go/kubernetes/typed/admissionregistration/v1beta1  AdmissionregistrationV1beta1Interface,MutatingWebhookConfigurationInterface,ValidatingWebhookConfigurationInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/admissionregistrationv1_mock.go -mock_names=MutatingWebhookConfigurationInterface=MockMutatingWebhookConfigurationV1Interface,ValidatingWebhookConfigurationInterface=MockValidatingWebhookConfigurationV1Interface k8s.io/client-go/kubernetes/typed/admissionregistration/v1  AdmissionregistrationV1Interface,MutatingWebhookConfigurationInterface,ValidatingWebhookConfigurationInterface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/serviceaccountinformer_mock.go k8s.io/client-go/informers/core/v1 ServiceAccountInformer
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/serviceaccountlister_mock.go k8s.io/client-go/listers/core/v1 ServiceAccountLister,ServiceAccountNamespaceLister
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/sharedindexinformer_mock.go k8s.io/client-go/tools/cache SharedIndexInformer
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/restclient_mock.go -mock_names=Interface=MockRestClientInterface k8s.io/client-go/rest Interface
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/serviceaccount_mock.go k8s.io/client-go/kubernetes/typed/core/v1 ServiceAccountInterface
 
 // NewK8sClientFunc defines a function which returns a k8s client based on the supplied config.
 type NewK8sClientFunc func(c *rest.Config) (kubernetes.Interface, apiextensionsclientset.Interface, dynamic.Interface, error)
@@ -223,30 +224,39 @@ func newK8sBroker(
 	if len(controllerUUID) > 0 {
 		client.annotations.Add(utils.AnnotationControllerUUIDKey(isLegacy), controllerUUID)
 	}
-	if namespace != "" {
-		if err := client.ensureNamespaceAnnotationForControllerUUID(controllerUUID, isLegacy); err != nil {
-			if errors.IsNotFound(err) {
-				return nil, errors.NewAlreadyExists(nil, fmt.Sprintf("namespace %q may already be in use", cfg.Name()))
-			}
-			return nil, errors.Trace(err)
-		}
+	if namespace == "" {
+		return client, nil
+	}
+
+	ns, err := client.getNamespaceByName(namespace)
+	if errors.Is(err, errors.NotFound) {
+		return client, nil
+	} else if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	if !isK8sObjectOwnedByJuju(ns.ObjectMeta) {
+		return client, nil
+	}
+
+	if err := client.ensureNamespaceAnnotationForControllerUUID(ns, controllerUUID, isLegacy); err != nil {
+		return nil, errors.Trace(err)
 	}
 	return client, nil
 }
 
-func (k *kubernetesClient) ensureNamespaceAnnotationForControllerUUID(controllerUUID string, isLegacy bool) error {
-	if k.namespace == "" {
-		return errNoNamespace
-	}
+func (k *kubernetesClient) ensureNamespaceAnnotationForControllerUUID(
+	ns *core.Namespace,
+	controllerUUID string,
+	isLegacy bool,
+) error {
 	if len(controllerUUID) == 0 {
 		// controllerUUID could be empty in add-k8s without -c because there might be no controller yet.
 		return nil
 	}
-	ns, err := k.getNamespaceByName(k.namespace)
-	if err != nil && !errors.IsNotFound(err) {
-		return errors.Trace(err)
-	}
+
 	annotationControllerUUIDKey := utils.AnnotationControllerUUIDKey(isLegacy)
+
 	if !isLegacy {
 		// Ignore the controller uuid since it is handled below for model migrations.
 		expected := k.annotations.Copy()
@@ -254,13 +264,9 @@ func (k *kubernetesClient) ensureNamespaceAnnotationForControllerUUID(controller
 		if ns != nil && !k8sannotations.New(ns.Annotations).HasAll(expected) {
 			// This should never happen unless we changed annotations for a new juju version.
 			// But in this case, we should have already managed to fix it in upgrade steps.
-			return errors.NewNotValid(nil,
-				fmt.Sprintf("annotations %v for namespace %q must include %v", ns.Annotations, k.namespace, k.annotations),
-			)
+			return fmt.Errorf("annotations %v for namespace %q %w must include %v",
+				ns.Annotations, k.namespace, errors.NotValid, k.annotations)
 		}
-	}
-	if errors.IsNotFound(err) {
-		return nil
 	}
 	if ns.Annotations[annotationControllerUUIDKey] == controllerUUID {
 		// No change needs to be done.
@@ -273,7 +279,7 @@ func (k *kubernetesClient) ensureNamespaceAnnotationForControllerUUID(controller
 	if err := k.ensureNamespaceAnnotations(ns); err != nil {
 		return errors.Trace(err)
 	}
-	_, err = k.client().CoreV1().Namespaces().Update(context.TODO(), ns, v1.UpdateOptions{})
+	_, err := k.client().CoreV1().Namespaces().Update(context.TODO(), ns, v1.UpdateOptions{})
 	return errors.Trace(err)
 }
 
@@ -653,7 +659,8 @@ func (k *kubernetesClient) GetService(appName string, mode caas.DeploymentMode, 
 	)
 	// We may have the stateful set or deployment but service not done yet.
 	if len(servicesList.Items) > 0 {
-		for _, s := range servicesList.Items {
+		for _, v := range servicesList.Items {
+			s := v
 			// Ignore any headless service for this app.
 			if !strings.HasSuffix(s.Name, "-endpoints") {
 				svc = &s
@@ -802,244 +809,6 @@ func (k *kubernetesClient) DeleteService(appName string) (err error) {
 
 	if err := k.deleteDaemonSets(appName); err != nil {
 		return errors.Trace(err)
-	}
-	return nil
-}
-
-func processConstraints(pod *core.PodSpec, appName string, cons constraints.Value) error {
-	// TODO(caas): Allow constraints to be set at the container level.
-	if mem := cons.Mem; mem != nil {
-		if err := configureConstraint(pod, "memory", fmt.Sprintf("%dMi", *mem)); err != nil {
-			return errors.Annotatef(err, "configuring memory constraint for %s", appName)
-		}
-	}
-	if cpu := cons.CpuPower; cpu != nil {
-		if err := configureConstraint(pod, "cpu", fmt.Sprintf("%dm", *cpu)); err != nil {
-			return errors.Annotatef(err, "configuring cpu constraint for %s", appName)
-		}
-	}
-	nodeSelector := map[string]string(nil)
-	if cons.HasArch() {
-		cpuArch := *cons.Arch
-		cpuArch = arch.NormaliseArch(cpuArch)
-		// Convert to Golang arch string
-		switch cpuArch {
-		case arch.AMD64:
-			cpuArch = "amd64"
-		case arch.ARM64:
-			cpuArch = "arm64"
-		case arch.PPC64EL:
-			cpuArch = "ppc64le"
-		case arch.S390X:
-			cpuArch = "s390x"
-		default:
-			return errors.NotSupportedf("architecture %q", cpuArch)
-		}
-		nodeSelector = map[string]string{"kubernetes.io/arch": cpuArch}
-	}
-	if pod.NodeSelector != nil {
-		for k, v := range nodeSelector {
-			pod.NodeSelector[k] = v
-		}
-	} else if nodeSelector != nil {
-		pod.NodeSelector = nodeSelector
-	}
-
-	// Translate tags to pod or node affinity.
-	// Tag names are prefixed with "pod.", "anti-pod.", or "node."
-	// with the default being "node".
-	// The tag 'topology-key', if set, is used for the affinity topology key value.
-	if cons.Tags != nil {
-		affinityLabels := make(map[string]string)
-		for _, labelPair := range *cons.Tags {
-			parts := strings.Split(labelPair, "=")
-			if len(parts) != 2 {
-				return errors.Errorf("invalid affinity constraints: %v", affinityLabels)
-			}
-			key := strings.Trim(parts[0], " ")
-			value := strings.Trim(parts[1], " ")
-			affinityLabels[key] = value
-		}
-
-		if err := processNodeAffinity(pod, affinityLabels); err != nil {
-			return errors.Annotatef(err, "configuring node affinity for %s", appName)
-		}
-		if err := processPodAffinity(pod, affinityLabels); err != nil {
-			return errors.Annotatef(err, "configuring pod affinity for %s", appName)
-		}
-	}
-	if cons.Zones != nil {
-		zones := *cons.Zones
-		affinity := pod.Affinity
-		if affinity == nil {
-			affinity = &core.Affinity{
-				NodeAffinity: &core.NodeAffinity{
-					RequiredDuringSchedulingIgnoredDuringExecution: &core.NodeSelector{
-						NodeSelectorTerms: []core.NodeSelectorTerm{{}},
-					},
-				},
-			}
-			pod.Affinity = affinity
-		}
-		nodeSelector := &affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0]
-		nodeSelector.MatchExpressions = append(nodeSelector.MatchExpressions,
-			core.NodeSelectorRequirement{
-				Key:      "failure-domain.beta.kubernetes.io/zone",
-				Operator: core.NodeSelectorOpIn,
-				Values:   zones,
-			})
-	}
-	return nil
-}
-
-const (
-	podPrefix      = "pod."
-	antiPodPrefix  = "anti-pod."
-	topologyKeyTag = "topology-key"
-	nodePrefix     = "node."
-)
-
-func processNodeAffinity(pod *core.PodSpec, affinityLabels map[string]string) error {
-	affinityTags := make(map[string]string)
-	for key, value := range affinityLabels {
-		keyVal := key
-		if strings.HasPrefix(key, "^") {
-			if len(key) == 1 {
-				return errors.Errorf("invalid affinity constraints: %v", affinityLabels)
-			}
-			key = key[1:]
-		}
-		if strings.HasPrefix(key, podPrefix) || strings.HasPrefix(key, antiPodPrefix) {
-			continue
-		}
-		key = strings.TrimPrefix(keyVal, nodePrefix)
-		affinityTags[key] = value
-	}
-
-	updateSelectorTerms := func(nodeSelectorTerm *core.NodeSelectorTerm, tags map[string]string) {
-		// Sort for stable ordering.
-		var keys []string
-		for k := range tags {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, tag := range keys {
-			allValues := strings.Split(tags[tag], "|")
-			for i, v := range allValues {
-				allValues[i] = strings.Trim(v, " ")
-			}
-			op := core.NodeSelectorOpIn
-			if strings.HasPrefix(tag, "^") {
-				tag = tag[1:]
-				op = core.NodeSelectorOpNotIn
-			}
-			nodeSelectorTerm.MatchExpressions = append(nodeSelectorTerm.MatchExpressions, core.NodeSelectorRequirement{
-				Key:      tag,
-				Operator: op,
-				Values:   allValues,
-			})
-		}
-	}
-	var nodeSelectorTerm core.NodeSelectorTerm
-	updateSelectorTerms(&nodeSelectorTerm, affinityTags)
-	if pod.Affinity == nil {
-		pod.Affinity = &core.Affinity{}
-	}
-	pod.Affinity.NodeAffinity = &core.NodeAffinity{
-		RequiredDuringSchedulingIgnoredDuringExecution: &core.NodeSelector{
-			NodeSelectorTerms: []core.NodeSelectorTerm{nodeSelectorTerm},
-		},
-	}
-	return nil
-}
-
-func processPodAffinity(pod *core.PodSpec, affinityLabels map[string]string) error {
-	affinityTags := make(map[string]string)
-	antiAffinityTags := make(map[string]string)
-	for key, value := range affinityLabels {
-		notVal := false
-		if strings.HasPrefix(key, "^") {
-			if len(key) == 1 {
-				return errors.Errorf("invalid affinity constraints: %v", affinityLabels)
-			}
-			notVal = true
-			key = key[1:]
-		}
-		if !strings.HasPrefix(key, podPrefix) && !strings.HasPrefix(key, antiPodPrefix) {
-			continue
-		}
-		if strings.HasPrefix(key, podPrefix) {
-			key = strings.TrimPrefix(key, podPrefix)
-			if notVal {
-				key = "^" + key
-			}
-			affinityTags[key] = value
-		}
-		if strings.HasPrefix(key, antiPodPrefix) {
-			key = strings.TrimPrefix(key, antiPodPrefix)
-			if notVal {
-				key = "^" + key
-			}
-			antiAffinityTags[key] = value
-		}
-	}
-	if len(affinityTags) == 0 && len(antiAffinityTags) == 0 {
-		return nil
-	}
-
-	updateAffinityTerm := func(affinityTerm *core.PodAffinityTerm, tags map[string]string) {
-		// Sort for stable ordering.
-		var keys []string
-		for k := range tags {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var (
-			labelSelector v1.LabelSelector
-			topologyKey   string
-		)
-		for _, tag := range keys {
-			if tag == topologyKeyTag {
-				topologyKey = tags[tag]
-				continue
-			}
-			allValues := strings.Split(tags[tag], "|")
-			for i, v := range allValues {
-				allValues[i] = strings.Trim(v, " ")
-			}
-			op := v1.LabelSelectorOpIn
-			if strings.HasPrefix(tag, "^") {
-				tag = tag[1:]
-				op = v1.LabelSelectorOpNotIn
-			}
-			labelSelector.MatchExpressions = append(labelSelector.MatchExpressions, v1.LabelSelectorRequirement{
-				Key:      tag,
-				Operator: op,
-				Values:   allValues,
-			})
-		}
-		affinityTerm.LabelSelector = &labelSelector
-		if topologyKey != "" {
-			affinityTerm.TopologyKey = topologyKey
-		}
-	}
-	if pod.Affinity == nil {
-		pod.Affinity = &core.Affinity{}
-	}
-	var affinityTerm core.PodAffinityTerm
-	updateAffinityTerm(&affinityTerm, affinityTags)
-	if len(affinityTerm.LabelSelector.MatchExpressions) > 0 {
-		pod.Affinity.PodAffinity = &core.PodAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: []core.PodAffinityTerm{affinityTerm},
-		}
-	}
-
-	var antiAffinityTerm core.PodAffinityTerm
-	updateAffinityTerm(&antiAffinityTerm, antiAffinityTags)
-	if len(antiAffinityTerm.LabelSelector.MatchExpressions) > 0 {
-		pod.Affinity.PodAntiAffinity = &core.PodAntiAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: []core.PodAffinityTerm{antiAffinityTerm},
-		}
 	}
 	return nil
 }
@@ -1258,7 +1027,9 @@ func (k *kubernetesClient) ensureService(
 			return errors.Annotatef(err, "configuring devices for %s", appName)
 		}
 	}
-	if err := processConstraints(&workloadSpec.Pod.PodSpec, appName, params.Constraints); err != nil {
+	if err := k8sapplication.ApplyConstraints(
+		&workloadSpec.Pod.PodSpec, appName, params.Constraints, k8sapplication.ConfigureConstraint,
+	); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -1455,18 +1226,6 @@ func (k *kubernetesClient) configureDevices(unitSpec *workloadSpec, devices []de
 		} else {
 			unitSpec.Pod.NodeSelector = nodeSelector
 		}
-	}
-	return nil
-}
-
-func configureConstraint(pod *core.PodSpec, constraint, value string) error {
-	for i := range pod.Containers {
-		resources := pod.Containers[i].Resources
-		err := mergeConstraint(constraint, value, &resources)
-		if err != nil {
-			return errors.Annotatef(err, "merging constraint %q to %#v", constraint, resources)
-		}
-		pod.Containers[i].Resources = resources
 	}
 	return nil
 }
@@ -1973,6 +1732,7 @@ func (k *kubernetesClient) deleteVolumeClaims(appName string, p *core.Pod) ([]st
 			continue
 		}
 		pvClaims := k.client().CoreV1().PersistentVolumeClaims(k.namespace)
+		logger.Infof("deleting operator PVC %s for application %s due to call to kubernetesClient.deleteVolumeClaims", vol.PersistentVolumeClaim.ClaimName, appName)
 		err := pvClaims.Delete(context.TODO(), vol.PersistentVolumeClaim.ClaimName, v1.DeleteOptions{
 			PropagationPolicy: constants.DefaultPropagationPolicy(),
 		})
@@ -2229,16 +1989,25 @@ func (k *kubernetesClient) AnnotateUnit(appName string, mode caas.DeploymentMode
 		return errors.NotFoundf("pod %q", podName)
 	}
 
-	if pod.Annotations == nil {
-		pod.Annotations = make(map[string]string)
-	}
 	unitID := unit.Id()
-	if pod.Annotations[utils.AnnotationUnitKey(k.IsLegacyLabels())] == unitID {
+	if pod.Annotations != nil && pod.Annotations[utils.AnnotationUnitKey(k.IsLegacyLabels())] == unitID {
 		return nil
 	}
-	pod.Annotations[utils.AnnotationUnitKey(k.IsLegacyLabels())] = unitID
 
-	_, err = pods.Update(context.TODO(), pod, v1.UpdateOptions{})
+	patch := struct {
+		ObjectMeta struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}{}
+	patch.ObjectMeta.Annotations = map[string]string{
+		utils.AnnotationUnitKey(k.IsLegacyLabels()): unitID,
+	}
+	jsonPatch, err := json.Marshal(patch)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	_, err = pods.Patch(context.TODO(), pod.Name, types.MergePatchType, jsonPatch, v1.PatchOptions{})
 	if k8serrors.IsNotFound(err) {
 		return errors.NotFoundf("pod %q", podName)
 	}
@@ -2822,22 +2591,6 @@ func mergeDeviceConstraints(device devices.KubernetesDeviceParams, resources *co
 	// - https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/#clusters-containing-different-types-of-nvidia-gpus
 	resources.Limits[resourceName] = *resource.NewQuantity(device.Count, resource.DecimalSI)
 	resources.Requests[resourceName] = *resource.NewQuantity(device.Count, resource.DecimalSI)
-	return nil
-}
-
-func mergeConstraint(constraint string, value string, resources *core.ResourceRequirements) error {
-	if resources.Limits == nil {
-		resources.Limits = core.ResourceList{}
-	}
-	resourceName := core.ResourceName(constraint)
-	if v, ok := resources.Limits[resourceName]; ok {
-		return errors.NotValidf("resource limit for %q has already been set to %v!", resourceName, v)
-	}
-	parsedValue, err := resource.ParseQuantity(value)
-	if err != nil {
-		return errors.Annotatef(err, "invalid constraint value %q for %v", value, constraint)
-	}
-	resources.Limits[resourceName] = parsedValue
 	return nil
 }
 

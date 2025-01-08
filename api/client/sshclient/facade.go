@@ -8,6 +8,9 @@ import (
 	"github.com/juju/names/v4"
 
 	"github.com/juju/juju/api/base"
+	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/cloud"
+	"github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/rpc/params"
 )
 
@@ -95,12 +98,13 @@ func (facade *Facade) PublicKeys(target string) ([]string, error) {
 		return nil, countError(len(out.Results))
 	}
 	if err := out.Results[0].Error; err != nil {
-		return nil, errors.Trace(err)
+		return nil, errors.Trace(apiservererrors.RestoreError(err))
 	}
 	return out.Results[0].PublicKeys, nil
 }
 
 // Leader returns the unit name for the leader of the provided application.
+// TODO(juju3) - remove
 func (facade *Facade) Leader(app string) (string, error) {
 	var result params.StringResult
 	p := params.Entity{Tag: names.NewApplicationTag(app).String()}
@@ -148,4 +152,47 @@ func targetToTag(target string) (names.Tag, error) {
 // countError complains about malformed results.
 func countError(count int) error {
 	return errors.Errorf("expected 1 result, got %d", count)
+}
+
+// ModelCredentialForSSH returns a cloud spec for ssh purpose.
+// This facade call is only used for k8s model.
+func (facade *Facade) ModelCredentialForSSH() (cloudspec.CloudSpec, error) {
+	var result params.CloudSpecResult
+
+	err := facade.caller.FacadeCall("ModelCredentialForSSH", nil, &result)
+	if err != nil {
+		return cloudspec.CloudSpec{}, err
+	}
+	if result.Error != nil {
+		err := apiservererrors.RestoreError(result.Error)
+		return cloudspec.CloudSpec{}, err
+	}
+	pSpec := result.Result
+	if pSpec == nil {
+		return cloudspec.CloudSpec{}, errors.NotValidf("empty value")
+	}
+	var credential *cloud.Credential
+	if pSpec.Credential != nil {
+		credentialValue := cloud.NewCredential(
+			cloud.AuthType(pSpec.Credential.AuthType),
+			pSpec.Credential.Attributes,
+		)
+		credential = &credentialValue
+	}
+	spec := cloudspec.CloudSpec{
+		Type:              pSpec.Type,
+		Name:              pSpec.Name,
+		Region:            pSpec.Region,
+		Endpoint:          pSpec.Endpoint,
+		IdentityEndpoint:  pSpec.IdentityEndpoint,
+		StorageEndpoint:   pSpec.StorageEndpoint,
+		CACertificates:    pSpec.CACertificates,
+		SkipTLSVerify:     pSpec.SkipTLSVerify,
+		Credential:        credential,
+		IsControllerCloud: pSpec.IsControllerCloud,
+	}
+	if err := spec.Validate(); err != nil {
+		return cloudspec.CloudSpec{}, errors.Annotatef(err, "cannot validate CloudSpec %q", spec.Name)
+	}
+	return spec, nil
 }

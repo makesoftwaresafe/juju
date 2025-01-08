@@ -21,6 +21,7 @@ import (
 	k8sprovider "github.com/juju/juju/caas/kubernetes/provider"
 	k8sconstants "github.com/juju/juju/caas/kubernetes/provider/constants"
 	"github.com/juju/juju/environs/config"
+	stateerrors "github.com/juju/juju/state/errors"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/storage/poolmanager"
 	"github.com/juju/juju/storage/provider"
@@ -368,7 +369,7 @@ func (sb *storageBackend) storageInstances(query bson.D) (storageInstances []*st
 // any attachments first; if there are no attachments, then the storage instance
 // is removed immediately. If "destroyAttached" is instead false and there are
 // existing storage attachments, then DestroyStorageInstance will return an error
-// satisfying IsStorageAttachedError.
+// satisfying StorageAttachedError.
 func (sb *storageBackend) DestroyStorageInstance(tag names.StorageTag, destroyAttachments bool, force bool, maxWait time.Duration) (err error) {
 	defer errors.DeferredAnnotatef(&err, "cannot destroy storage %q", tag.Id())
 	return sb.destroyStorageInstance(tag, destroyAttachments, false, force, maxWait)
@@ -381,7 +382,7 @@ func (sb *storageBackend) DestroyStorageInstance(tag names.StorageTag, destroyAt
 // any attachments first; if there are no attachments, then the storage instance
 // is removed immediately. If "destroyAttached" is instead false and there are
 // existing storage attachments, then ReleaseStorageInstance will return an error
-// satisfying IsStorageAttachedError.
+// satisfying StorageAttachedError.
 func (sb *storageBackend) ReleaseStorageInstance(tag names.StorageTag, destroyAttachments bool, force bool, maxWait time.Duration) (err error) {
 	defer errors.DeferredAnnotatef(&err, "cannot release storage %q", tag.Id())
 	return sb.destroyStorageInstance(tag, destroyAttachments, true, force, maxWait)
@@ -443,7 +444,7 @@ func (sb *storageBackend) destroyStorageInstanceOps(
 	if !destroyAttachments {
 		// There are storage attachments, and we've been instructed
 		// not to destroy them.
-		return nil, newStorageAttachedError("storage is attached")
+		return nil, stateerrors.StorageAttachedError
 	}
 
 	// Check that removing the storage from its owner (if any) is permitted.
@@ -478,9 +479,6 @@ func (sb *storageBackend) destroyStorageInstanceOps(
 	update := bson.D{{"$set", setFields}}
 	ops := []txn.Op{
 		newCleanupOp(cleanupAttachmentsForDyingStorage, s.doc.Id, force, maxWait),
-	}
-	if owner != nil && sb.modelType == ModelTypeCAAS {
-		ops = append(ops, newCleanupOp(cleanupDyingUnitResources, owner.Id(), force, maxWait))
 	}
 	ops = append(ops, validateRemoveOps...)
 	ops = append(ops, txn.Op{
@@ -637,7 +635,7 @@ func validateRemoveOwnerStorageInstanceOps(si *storageInstance) ([]txn.Op, error
 			Id: app.Name(),
 			Assert: bson.D{
 				{"life", Alive},
-				{"charmurl", ch.URL},
+				{"charmurl", ch.String()},
 			},
 		})
 	case names.UnitTagKind:
@@ -1166,6 +1164,25 @@ func (sb *storageBackend) attachStorageOps(
 		}
 		ops = append(ops, machineStorageOps...)
 	}
+
+	// Attach volumes and filesystems for reattached storage on CAAS.
+	if sb.modelType == ModelTypeCAAS {
+		storageParams, err := storageParamsForStorageInstance(
+			sb, charmMeta, unitTag, unitSeries, si,
+		)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		// we should never be creating these here, but just to be sure.
+		storageParams.filesystems = nil
+		storageParams.volumes = nil
+		hostStorageOps, _, _, err := sb.hostStorageOps(unitTag.Id(), storageParams)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		ops = append(ops, hostStorageOps...)
+	}
+
 	return ops, nil
 }
 

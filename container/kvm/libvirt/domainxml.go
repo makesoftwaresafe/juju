@@ -178,16 +178,10 @@ func generateFeaturesElement(p domainParams) *Features {
 // generateCPU infor generates any model/fallback related settings. These are
 // typically to allow for better compatibility across versions of libvirt/qemu AFAIU.
 func generateCPU(p domainParams) *CPU {
-	if p.Arch() == arch.ARM64 {
-		return &CPU{
-			Mode:  "custom",
-			Match: "exact",
-			Model: Model{
-				Fallback: "allow",
-				Text:     "cortex-a53"},
-		}
+	return &CPU{
+		Mode:  "host-passthrough",
+		Check: "none",
 	}
-	return nil
 }
 
 // deviceID generates a device id from and int. The limit of 26 is arbitrary,
@@ -280,7 +274,7 @@ type GIC struct {
 type CPU struct {
 	Mode  string `xml:"mode,attr,omitempty"`
 	Match string `xml:"match,attr,omitempty"`
-	Model Model  `xml:"model,omitempty"`
+	Check string `xml:"check,attr,omitempty"`
 }
 
 // Address is static. We generate a default value for it.

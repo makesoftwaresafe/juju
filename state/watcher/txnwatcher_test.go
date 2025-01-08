@@ -4,14 +4,15 @@
 package watcher_test
 
 import (
+	"sync"
 	"time"
 
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"github.com/juju/mgo/v2"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/mgo/v2/txn"
-	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/tomb.v2"
@@ -22,14 +23,12 @@ import (
 )
 
 type TxnWatcherSuite struct {
-	gitjujutesting.MgoSuite
+	mgotesting.MgoSuite
 	testing.BaseSuite
 
 	log          *mgo.Collection
 	stash        *mgo.Collection
 	runner       *txn.Runner
-	w            *watcher.TxnWatcher
-	ch           chan watcher.Change
 	iteratorFunc func(collection *mgo.Collection) mongo.Iterator
 	clock        *testclock.Clock
 }
@@ -175,7 +174,7 @@ func (s *TxnWatcherSuite) TestInsert(c *gc.C) {
 	revno := s.insert(c, "test", "a")
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno},
@@ -189,7 +188,7 @@ func (s *TxnWatcherSuite) TestUpdate(c *gc.C) {
 	revno := s.update(c, "test", "a")
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno},
@@ -203,7 +202,7 @@ func (s *TxnWatcherSuite) TestRemove(c *gc.C) {
 	revno := s.remove(c, "test", "a")
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno},
@@ -218,7 +217,7 @@ func (s *TxnWatcherSuite) TestWatchOrder(c *gc.C) {
 	revno3 := s.insert(c, "test", "c")
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno1},
@@ -233,7 +232,7 @@ func (s *TxnWatcherSuite) TestTransactionWithMultiple(c *gc.C) {
 	revnos := s.insertAll(c, "test", "a", "b", "c")
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revnos[0]},
@@ -265,7 +264,7 @@ func (s *TxnWatcherSuite) TestScale(c *gc.C) {
 	c.Assert(count, gc.Equals, N)
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	for i := 0; i < N; i++ {
 		c.Assert(hub.values[i].Id, gc.Equals, i)
@@ -280,7 +279,7 @@ func (s *TxnWatcherSuite) TestInsertThenRemove(c *gc.C) {
 	revno2 := s.remove(c, "test", "a")
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 2)
 
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno1},
@@ -291,13 +290,16 @@ func (s *TxnWatcherSuite) TestInsertThenRemove(c *gc.C) {
 func (s *TxnWatcherSuite) TestDoubleUpdate(c *gc.C) {
 	_, hub := s.newWatcher(c, 2)
 
+	hub.setupSync()
 	revno1 := s.insert(c, "test", "a")
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
+	hub.waitSync()
+
 	s.update(c, "test", "a")
 	revno3 := s.update(c, "test", "a")
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 2)
 
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno1},
@@ -328,7 +330,7 @@ func (s *TxnWatcherSuite) TestErrorRetry(c *gc.C) {
 
 	fakeIter.err = nil
 	s.advanceTime(c, watcher.TxnWatcherErrorShortWait, 2)
-	hub.waitForExpected(c)
+	hub.waitForExpected()
 	c.Assert(hub.values, jc.DeepEquals, []watcher.Change{
 		{"test", "a", revno},
 	})
@@ -344,7 +346,7 @@ func (s *TxnWatcherSuite) TestOutOfSyncError(c *gc.C) {
 	s.insert(c, "test", "a")
 
 	s.advanceTime(c, watcher.TxnWatcherShortWait, 1)
-	hub.waitForError(c)
+	hub.waitForError()
 }
 
 type fakeIterator struct {
@@ -374,6 +376,9 @@ type fakeHub struct {
 	values []watcher.Change
 	done   chan struct{}
 	error  chan struct{}
+
+	syncMu sync.RWMutex
+	sync   chan struct{}
 }
 
 func newFakeHub(c *gc.C, expected int) *fakeHub {
@@ -390,6 +395,8 @@ func (hub *fakeHub) Publish(topic string, data interface{}) func() {
 	case watcher.TxnWatcherCollection:
 		change := data.(watcher.Change)
 		hub.values = append(hub.values, change)
+		hub.doSync()
+
 		if len(hub.values) == hub.expect {
 			close(hub.done)
 		}
@@ -401,18 +408,71 @@ func (hub *fakeHub) Publish(topic string, data interface{}) func() {
 	return nil
 }
 
-func (hub *fakeHub) waitForExpected(c *gc.C) {
-	select {
-	case <-hub.done:
-	case <-time.After(testing.LongWait):
-		c.Error("hub didn't get the expected number of changes")
+// setupSync should be called prior to clock advancement if you need to
+// synchronise on a subsequent change.
+// This can be used to prevent a scenario where steps like:
+// - change
+// - clock advance
+// - change
+// race with the worker loop causing both change events to be processed
+// in a single pass.
+// Failing to call waitSync at some point after setupSync will block the
+// hub from processing publish events.
+func (hub *fakeHub) setupSync() {
+	hub.syncMu.Lock()
+	defer hub.syncMu.Unlock()
+
+	if hub.sync != nil {
+		hub.c.Errorf("sync is already set up; did you fail to call waitSync?")
+	}
+	hub.sync = make(chan struct{})
+}
+
+// This is executed on a different Goroutine to setupSync and waitSync;
+// hence the read lock protection.
+func (hub *fakeHub) doSync() {
+	hub.syncMu.RLock()
+	defer hub.syncMu.RUnlock()
+
+	if hub.sync != nil {
+		hub.sync <- struct{}{}
 	}
 }
 
-func (hub *fakeHub) waitForError(c *gc.C) {
+// waitSync unblocks after a publish event.
+// if setupSync was not called prior, an error results.
+func (hub *fakeHub) waitSync() {
+	hub.syncMu.RLock()
+	if hub.sync == nil {
+		hub.syncMu.RUnlock()
+		hub.c.Errorf("waitSync called without preceding setupSync")
+		return
+	}
+
+	select {
+	case <-hub.sync:
+	case <-time.After(testing.LongWait):
+		hub.c.Error("hub did not receive a publish event")
+	}
+
+	hub.syncMu.RUnlock()
+	hub.syncMu.Lock()
+	hub.sync = nil
+	hub.syncMu.Unlock()
+}
+
+func (hub *fakeHub) waitForExpected() {
+	select {
+	case <-hub.done:
+	case <-time.After(testing.LongWait):
+		hub.c.Error("hub didn't get the expected number of changes")
+	}
+}
+
+func (hub *fakeHub) waitForError() {
 	select {
 	case <-hub.error:
 	case <-time.After(testing.LongWait):
-		c.Error("hub didn't get an error")
+		hub.c.Error("hub didn't get an error")
 	}
 }

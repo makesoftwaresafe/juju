@@ -6,17 +6,15 @@ package controller_test
 import (
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	stdtesting "testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charmrepo/v6/csclient"
 	"github.com/juju/collections/set"
 	"github.com/juju/loggo"
 	"github.com/juju/romulus"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/controller"
@@ -248,13 +246,13 @@ var newConfigTests = []struct {
 		config: controller.Config{
 			controller.APIPortOpenDelay: "15",
 		},
-		expectError: `api-port-open-delay value "15" must be a valid duration`,
+		expectError: `api-port-open-delay: conversion to duration: time: missing unit in duration "15"`,
 	}, {
 		about: "txn-prune-sleep-time not a duration",
 		config: controller.Config{
 			controller.PruneTxnSleepTime: "15",
 		},
-		expectError: `prune-txn-sleep-time must be a valid duration \(eg "10ms"\): time: missing unit in duration "?15"?`,
+		expectError: `prune-txn-sleep-time: conversion to duration: time: missing unit in duration "15"`,
 	}, {
 		about: "mongo-memory-profile not valid",
 		config: controller.Config{
@@ -387,7 +385,7 @@ var newConfigTests = []struct {
 		config: controller.Config{
 			controller.MigrationMinionWaitMax: "15",
 		},
-		expectError: `migration-agent-wait-time value "15" must be a valid duration`,
+		expectError: `migration-agent-wait-time: conversion to duration: time: missing unit in duration "15"`,
 	}, {
 		about: "application-resource-download-limit cannot be negative",
 		config: controller.Config{
@@ -657,42 +655,9 @@ func (s *ConfigSuite) TestConfigNoSpacesNilSpaceConfigPreserved(c *gc.C) {
 func (s *ConfigSuite) TestCAASImageRepo(c *gc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
+
+	// Ensure no requests are made from controller config code.
 	mockRoundTripper := mocks.NewMockRoundTripper(ctrl)
-	gomock.InOrder(
-		mockRoundTripper.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(
-			func(req *http.Request) (*http.Response, error) {
-				c.Assert(req.Method, gc.Equals, `GET`)
-				c.Assert(req.URL.String(), gc.Equals, `https://index.docker.io/v2`)
-				resps := &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       ioutil.NopCloser(nil),
-				}
-				return resps, nil
-			},
-		),
-		mockRoundTripper.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(
-			func(req *http.Request) (*http.Response, error) {
-				c.Assert(req.Method, gc.Equals, `GET`)
-				c.Assert(req.URL.String(), gc.Equals, `https://registry.foo.com/v2`)
-				resps := &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       ioutil.NopCloser(nil),
-				}
-				return resps, nil
-			},
-		),
-		mockRoundTripper.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(
-			func(req *http.Request) (*http.Response, error) {
-				c.Assert(req.Method, gc.Equals, `GET`)
-				c.Assert(req.URL.String(), gc.Equals, `https://ghcr.io/v2/`)
-				resps := &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       ioutil.NopCloser(nil),
-				}
-				return resps, nil
-			},
-		),
-	)
 	s.PatchValue(&registry.DefaultTransport, mockRoundTripper)
 
 	type tc struct {
@@ -949,9 +914,7 @@ func (s *ConfigSuite) TestMigrationMinionWaitMax(c *gc.C) {
 		testing.CACert, nil)
 	c.Assert(err, jc.ErrorIsNil)
 
-	defaultDuration, err := time.ParseDuration(controller.DefaultMigrationMinionWaitMax)
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(cfg.MigrationMinionWaitMax(), gc.Equals, defaultDuration)
+	c.Assert(cfg.MigrationMinionWaitMax(), gc.Equals, controller.DefaultMigrationMinionWaitMax)
 
 	cfg[controller.MigrationMinionWaitMax] = "500ms"
 	c.Assert(cfg.MigrationMinionWaitMax(), gc.Equals, 500*time.Millisecond)

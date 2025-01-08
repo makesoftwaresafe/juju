@@ -7,13 +7,11 @@ import (
 	"time"
 
 	"github.com/juju/cmd/v3"
-	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/gnuflag"
 	"github.com/juju/names/v4"
 
 	"github.com/juju/juju/api/client/application"
-	"github.com/juju/juju/api/client/storage"
 	jujucmd "github.com/juju/juju/cmd"
 	"github.com/juju/juju/cmd/juju/block"
 	"github.com/juju/juju/cmd/modelcmd"
@@ -106,6 +104,9 @@ func (c *removeUnitCommand) Info() *cmd.Info {
 
 func (c *removeUnitCommand) SetFlags(f *gnuflag.FlagSet) {
 	c.ModelCommandBase.SetFlags(f)
+	// This unused var is declared so we can pass a valid ptr into BoolVar
+	var noPromptHolder bool
+	f.BoolVar(&noPromptHolder, "no-prompt", false, "Does nothing. Option present for forward compatibility with Juju 3")
 	f.IntVar(&c.NumUnits, "num-units", 0, "Number of units to remove (k8s models only)")
 	f.BoolVar(&c.DestroyStorage, "destroy-storage", false, "Destroy storage attached to the unit")
 	f.BoolVar(&c.Force, "force", false, "Completely remove an unit and all its dependencies")
@@ -190,41 +191,6 @@ func (c *removeUnitCommand) getAPI() (RemoveApplicationAPI, int, error) {
 	}
 	api := application.NewClient(root)
 	return api, api.BestAPIVersion(), nil
-}
-
-func (c *removeUnitCommand) getStorageAPI() (storageAPI, error) {
-	root, err := c.NewAPIRoot()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return storage.NewClient(root), nil
-}
-
-func (c *removeUnitCommand) unitsHaveStorage(unitNames []string) (bool, error) {
-	client, err := c.getStorageAPI()
-	if err != nil {
-		return false, errors.Trace(err)
-	}
-	defer client.Close()
-
-	storages, err := client.ListStorageDetails()
-	if err != nil {
-		return false, errors.Trace(err)
-	}
-	namesSet := set.NewStrings(unitNames...)
-	for _, s := range storages {
-		if s.OwnerTag == "" {
-			continue
-		}
-		owner, err := names.ParseTag(s.OwnerTag)
-		if err != nil {
-			return false, errors.Trace(err)
-		}
-		if owner.Kind() == names.UnitTagKind && namesSet.Contains(owner.Id()) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // Run connects to the environment specified on the command line and destroys

@@ -37,46 +37,41 @@ type statusFormatter struct {
 	activeBranch      string
 }
 
-// NewStatusFormatter takes stored model information (params.FullStatus) and populates
-// the statusFormatter struct used in various status formatting methods
-func NewStatusFormatter(status *params.FullStatus, isoTime bool) *statusFormatter {
-	return newStatusFormatter(
-		newStatusFormatterParams{
-			status:        status,
-			isoTime:       isoTime,
-			showRelations: true,
-		})
+// NewStatusFormatterParams contains the parameters required
+// to be formatted for CLI output.
+type NewStatusFormatterParams struct {
+	Storage        *storage.CombinedStorage
+	Status         *params.FullStatus
+	ControllerName string
+	OutputName     string
+	ActiveBranch   string
+	ISOTime        bool
+	ShowRelations  bool
 }
 
-type newStatusFormatterParams struct {
-	storage                *storage.CombinedStorage
-	status                 *params.FullStatus
-	controllerName         string
-	outputName             string
-	activeBranch           string
-	isoTime, showRelations bool
-}
-
-func newStatusFormatter(p newStatusFormatterParams) *statusFormatter {
+// NewStatusFormatter returns a new status formatter used in various
+// formatting methods.
+func NewStatusFormatter(p NewStatusFormatterParams) *statusFormatter {
 	sf := statusFormatter{
-		storage:        p.storage,
-		status:         p.status,
-		controllerName: p.controllerName,
+		storage:        p.Storage,
+		status:         p.Status,
+		controllerName: p.ControllerName,
 		relations:      make(map[int]params.RelationStatus),
-		isoTime:        p.isoTime,
-		showRelations:  p.showRelations,
-		outputName:     p.outputName,
-		activeBranch:   p.activeBranch,
+		isoTime:        p.ISOTime,
+		showRelations:  p.ShowRelations,
+		outputName:     p.OutputName,
+		activeBranch:   p.ActiveBranch,
 	}
-	if p.showRelations {
-		for _, relation := range p.status.Relations {
+	if p.ShowRelations {
+		for _, relation := range p.Status.Relations {
 			sf.relations[relation.Id] = relation
 		}
 	}
 	return &sf
 }
 
-func (sf *statusFormatter) format() (formattedStatus, error) {
+// Format returns the formatted model status.
+func (sf *statusFormatter) Format() (formattedStatus, error) {
 	if sf.status == nil {
 		return formattedStatus{}, nil
 	}
@@ -173,9 +168,7 @@ func (sf *statusFormatter) MachineFormat(machineId []string) formattedMachineSta
 }
 
 func (sf *statusFormatter) formatMachine(machine params.MachineStatus) machineStatus {
-	var out machineStatus
-
-	out = machineStatus{
+	out := machineStatus{
 		JujuStatus:         sf.getStatusInfoContents(machine.AgentStatus),
 		Hostname:           machine.Hostname,
 		DNSName:            machine.DNSName,
@@ -231,14 +224,6 @@ func (sf *statusFormatter) formatMachine(machine params.MachineStatus) machineSt
 }
 
 func (sf *statusFormatter) formatApplication(name string, application params.ApplicationStatus) applicationStatus {
-	var osInfo string
-	appOS, _ := series.GetOSFromSeries(application.Series)
-	osInfo = strings.ToLower(appOS.String())
-
-	// TODO(caas) - enhance GetOSFromSeries
-	if appOS == os.Unknown && sf.status.Model.Type == "caas" {
-		osInfo = application.Series
-	}
 	var (
 		charmAlias  = ""
 		charmOrigin = ""
@@ -268,11 +253,30 @@ func (sf *statusFormatter) formatApplication(name string, application params.App
 		charmName = curl.Name
 	}
 
+	appSeries := application.Series
+	var appOS string
+	if appSeries == "" {
+		base, err := series.ParseBase(application.Base.Name, application.Base.Channel)
+		if err != nil {
+			logger.Errorf("failed to create charm base: %v", err)
+		}
+		appSeries, _ = series.GetSeriesFromBase(base)
+		appOS = base.Name
+	} else {
+		osInfo, _ := series.GetOSFromSeries(application.Series)
+		appOS = strings.ToLower(osInfo.String())
+
+		// TODO(caas) - enhance GetOSFromSeries
+		if osInfo == os.Unknown && sf.status.Model.Type == "caas" {
+			//appSeries = "kubernetes"
+			appOS = appSeries
+		}
+	}
 	out := applicationStatus{
 		Err:              typedNilCheck(application.Err),
 		Charm:            charmAlias,
-		Series:           application.Series,
-		OS:               osInfo,
+		Series:           appSeries,
+		OS:               appOS,
 		CharmOrigin:      charmOrigin,
 		CharmName:        charmName,
 		CharmRev:         charmRev,

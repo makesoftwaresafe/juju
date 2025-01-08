@@ -27,10 +27,11 @@ import (
 	unitdebug "github.com/juju/juju/worker/uniter/runner/debug"
 )
 
-func newDebugHooksCommand(hostChecker ssh.ReachableChecker, retryStrategy retry.CallArgs) cmd.Command {
+func newDebugHooksCommand(hostChecker ssh.ReachableChecker, retryStrategy retry.CallArgs, publicKeyRetryStrategy retry.CallArgs) cmd.Command {
 	c := new(debugHooksCommand)
 	c.hostChecker = hostChecker
 	c.retryStrategy = retryStrategy
+	c.publicKeyRetryStrategy = publicKeyRetryStrategy
 	return modelcmd.Wrap(c)
 }
 
@@ -91,6 +92,8 @@ func (c *debugHooksCommand) Init(args []string) error {
 
 type applicationAPI interface {
 	GetCharmURL(branchName, applicationName string) (*charm.URL, error)
+	Leader(string) (string, error)
+	BestAPIVersion() int
 	Close() error
 }
 
@@ -116,8 +119,17 @@ func (c *debugHooksCommand) initAPIs() (err error) {
 		c.charmAPI = charms.NewClient(root)
 	}
 	if c.leaderAPIGetter == nil {
-		c.leaderAPIGetter = func() (LeaderAPI, error) {
-			return sshclient.NewFacade(root), nil
+		c.leaderAPIGetter = func() (LeaderAPI, bool, error) {
+			if c.applicationAPI.BestAPIVersion() > 13 {
+				return c.applicationAPI, true, nil
+			}
+			if c.sshClient == nil {
+				c.sshClient = sshclient.NewFacade(root)
+			}
+			if c.sshClient.BestAPIVersion() > 2 && c.provider.getModelType() != model.CAAS {
+				return c.sshClient, true, nil
+			}
+			return nil, false, nil
 		}
 	}
 	return nil
@@ -131,6 +143,10 @@ func (c *debugHooksCommand) closeAPIs() {
 	if c.charmAPI != nil {
 		_ = c.charmAPI.Close()
 		c.charmAPI = nil
+	}
+	if c.sshClient != nil {
+		_ = c.sshClient.Close()
+		c.sshClient = nil
 	}
 }
 
@@ -214,12 +230,9 @@ func (c *debugHooksCommand) getValidHooks(ch charm.Charm) (set.Strings, error) {
 
 func (c *debugHooksCommand) decideEntryPoint(ctx *cmd.Context) string {
 	if c.modelType == model.CAAS {
-		c.provider.setArgs([]string{"which", "sudo"})
-		if err := c.sshCommand.Run(ctx); err != nil {
-			return "/bin/bash -c '%s'"
-		}
+		return "exec /bin/bash -c '%s'"
 	}
-	return "sudo /bin/bash -c '%s'"
+	return "exec sudo /bin/bash -c '%s'"
 }
 
 // commonRun is shared between debugHooks and debugCode
@@ -234,9 +247,10 @@ func (c *debugHooksCommand) commonRun(
 		return err
 	}
 
+	// TODO(juju3) - remove
 	// If the unit/leader syntax is used, we first need to resolve it into
 	// the unit name that corresponds to the current leader.
-	resolvedTargetName, err := maybeResolveLeaderUnit(
+	resolvedTargetName, err := c.provider.maybeResolveLeaderUnit(
 		c.leaderAPIGetter,
 		func() (StatusAPI, error) {
 			return c.ModelCommandBase.NewAPIClient()
@@ -248,7 +262,7 @@ func (c *debugHooksCommand) commonRun(
 	debugctx := unitdebug.NewHooksContext(resolvedTargetName)
 	clientScript := unitdebug.ClientScript(debugctx, hooks, debugAt)
 	b64Script := base64.StdEncoding.EncodeToString([]byte(clientScript))
-	innercmd := fmt.Sprintf(`F=$(mktemp); echo %s | base64 -d > $F; . $F`, b64Script)
+	innercmd := fmt.Sprintf(`F=$(mktemp); echo %s | base64 -d > $F; chmod +x $F; exec $F`, b64Script)
 	args := []string{fmt.Sprintf(c.decideEntryPoint(ctx), innercmd)}
 	c.provider.setArgs(args)
 	return c.sshCommand.Run(ctx)

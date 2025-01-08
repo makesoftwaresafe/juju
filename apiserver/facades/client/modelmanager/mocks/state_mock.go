@@ -7,8 +7,10 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	modelmanager "github.com/juju/juju/apiserver/facades/client/modelmanager"
+	names "github.com/juju/names/v4"
+	version "github.com/juju/version/v2"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockStatePool is a mock of StatePool interface.
@@ -139,6 +141,21 @@ func (m *MockModel) EXPECT() *MockModelMockRecorder {
 	return m.recorder
 }
 
+// AgentVersion mocks base method.
+func (m *MockModel) AgentVersion() (version.Number, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AgentVersion")
+	ret0, _ := ret[0].(version.Number)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AgentVersion indicates an expected call of AgentVersion.
+func (mr *MockModelMockRecorder) AgentVersion() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AgentVersion", reflect.TypeOf((*MockModel)(nil).AgentVersion))
+}
+
 // IsControllerModel mocks base method.
 func (m *MockModel) IsControllerModel() bool {
 	m.ctrl.T.Helper()
@@ -151,4 +168,32 @@ func (m *MockModel) IsControllerModel() bool {
 func (mr *MockModelMockRecorder) IsControllerModel() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsControllerModel", reflect.TypeOf((*MockModel)(nil).IsControllerModel))
+}
+
+// Name mocks base method.
+func (m *MockModel) Name() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Name")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Name indicates an expected call of Name.
+func (mr *MockModelMockRecorder) Name() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Name", reflect.TypeOf((*MockModel)(nil).Name))
+}
+
+// Owner mocks base method.
+func (m *MockModel) Owner() names.UserTag {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Owner")
+	ret0, _ := ret[0].(names.UserTag)
+	return ret0
+}
+
+// Owner indicates an expected call of Owner.
+func (mr *MockModelMockRecorder) Owner() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Owner", reflect.TypeOf((*MockModel)(nil).Owner))
 }

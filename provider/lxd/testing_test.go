@@ -9,14 +9,14 @@ import (
 	"strconv"
 	"time"
 
+	lxdclient "github.com/canonical/lxd/client"
+	"github.com/canonical/lxd/shared/api"
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	jujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3/arch"
 	"github.com/juju/version/v2"
-	lxdclient "github.com/lxc/lxd/client"
-	"github.com/lxc/lxd/shared/api"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/cloud"
@@ -151,7 +151,8 @@ func (s *BaseSuiteUnpatched) initInst(c *gc.C) {
 
 	cons := constraints.Value{}
 
-	instanceConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons, "trusty", "", nil)
+	instanceConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons,
+		coreseries.MakeDefaultBase("ubuntu", "14.04"), "", nil)
 	c.Assert(err, jc.ErrorIsNil)
 
 	err = instanceConfig.SetTools(coretools.List{
@@ -245,13 +246,12 @@ func (s *BaseSuiteUnpatched) NewContainer(c *gc.C, name string) *containerlxd.Co
 	}
 
 	return &containerlxd.Container{
-		Container: api.Container{
+		Instance: api.Instance{
 			Name:       name,
 			StatusCode: api.Running,
 			Status:     api.Running.String(),
-			ContainerPut: api.ContainerPut{
-				Config: metadata,
-			},
+			Config:     metadata,
+			Type:       "container",
 		},
 	}
 }
@@ -694,11 +694,11 @@ func (*StubClient) GetNetworkState(string) (*api.NetworkState, error) {
 	panic("this stub is deprecated; use mocks instead")
 }
 
-func (*StubClient) GetContainer(string) (*api.Container, string, error) {
+func (*StubClient) GetInstance(string) (*api.Instance, string, error) {
 	panic("this stub is deprecated; use mocks instead")
 }
 
-func (*StubClient) GetContainerState(string) (*api.ContainerState, string, error) {
+func (*StubClient) GetInstanceState(string) (*api.InstanceState, string, error) {
 	panic("this stub is deprecated; use mocks instead")
 }
 
@@ -800,7 +800,9 @@ func (s *EnvironSuite) GetStartInstanceArgs(c *gc.C, series string) environs.Sta
 	}
 
 	cons := constraints.Value{}
-	iConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons, series, "", nil)
+	base, err := coreseries.GetBaseFromSeries(series)
+	c.Assert(err, jc.ErrorIsNil)
+	iConfig, err := instancecfg.NewBootstrapInstanceConfig(testing.FakeControllerConfig(), cons, cons, base, "", nil)
 	c.Assert(err, jc.ErrorIsNil)
 
 	return environs.StartInstanceParams{

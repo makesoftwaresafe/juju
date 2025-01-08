@@ -6,10 +6,10 @@ package provider_test
 import (
 	"strings"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	core "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -481,6 +481,14 @@ func (s *K8sMetadataSuite) TestCheckDefaultWorkloadStorageUnknownCluster(c *gc.C
 
 	err := s.broker.CheckDefaultWorkloadStorage("foo", nil)
 	c.Assert(err, jc.Satisfies, errors.IsNotFound)
+}
+
+func (s *K8sMetadataSuite) TestCheckDefaultWorkloadStorageUnknownDefault(c *gc.C) {
+	ctrl := s.setupController(c)
+	defer ctrl.Finish()
+
+	err := s.broker.CheckDefaultWorkloadStorage("gce", nil)
+	c.Assert(err, jc.Satisfies, caas.IsNonPreferredStorageError)
 }
 
 func (s *K8sMetadataSuite) TestCheckDefaultWorkloadStorageNonpreferred(c *gc.C) {

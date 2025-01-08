@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/hashicorp/raft"
 	"github.com/juju/clock"
 	"github.com/juju/cmd/v3"
@@ -25,7 +24,7 @@ import (
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/lumberjack"
+	"github.com/juju/lumberjack/v2"
 	"github.com/juju/mgo/v2"
 	"github.com/juju/names/v4"
 	"github.com/juju/pubsub/v2"
@@ -42,6 +41,7 @@ import (
 	"github.com/juju/worker/v3"
 	"github.com/juju/worker/v3/dependency"
 	"github.com/juju/worker/v3/workertest"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/agent"
@@ -357,7 +357,11 @@ func (s *MachineSuite) TestManageModelRunsInstancePoller(c *gc.C) {
 	}
 	dummy.SetInstanceStatus(insts[0], "running")
 
-	for attempt := coretesting.LongAttempt.Start(); attempt.Next(); {
+	strategy := &utils.AttemptStrategy{
+		Total: 60 * time.Second,
+		Delay: testing.ShortWait,
+	}
+	for attempt := strategy.Start(); attempt.Next(); {
 		if !attempt.HasNext() {
 			c.Logf("final machine addresses: %#v", m.Addresses())
 			c.Fatalf("timed out waiting for machine to get address")
@@ -422,7 +426,7 @@ func (s *MachineSuite) waitProvisioned(c *gc.C, unit *state.Unit) (*state.Machin
 }
 
 func (s *MachineSuite) testUpgradeRequest(c *gc.C, agent runner, tag string, currentTools *tools.Tools) {
-	newVers := coretesting.CurrentVersion(c)
+	newVers := coretesting.CurrentVersion()
 	newVers.Patch++
 	newTools := envtesting.AssertUploadFakeToolsVersions(
 		c, s.DefaultToolsStorage, s.Environ.Config().AgentStream(), s.Environ.Config().AgentStream(), newVers)[0]
@@ -569,6 +573,13 @@ func (s *MachineSuite) TestManageModelServesAPI(c *gc.C) {
 	})
 }
 
+type noOpLogger struct{}
+
+func (noOpLogger) Warningf(string, ...interface{})  {}
+func (noOpLogger) Criticalf(string, ...interface{}) {}
+func (noOpLogger) Debugf(string, ...interface{})    {}
+func (noOpLogger) Tracef(string, ...interface{})    {}
+
 func (s *MachineSuite) TestIAASControllerPatchUpdateManagerFile(c *gc.C) {
 	s.assertJobWithState(c, state.JobManageModel,
 		func() {
@@ -581,8 +592,8 @@ func (s *MachineSuite) TestIAASControllerPatchUpdateManagerFile(c *gc.C) {
 			c.Assert(ok, jc.IsTrue)
 			st, err := api.Open(apiInfo, fastDialOpts)
 			c.Assert(err, jc.ErrorIsNil)
-			defer st.Close()
-			_, err = a.startAPIWorkers(st)
+			defer func() { _ = st.Close() }()
+			err = a.machineStartup(st, noOpLogger{})
 			c.Assert(err, jc.ErrorIsNil)
 		},
 	)
@@ -600,8 +611,8 @@ func (s *MachineSuite) TestIAASControllerPatchUpdateManagerFileErrored(c *gc.C) 
 			c.Assert(ok, jc.IsTrue)
 			st, err := api.Open(apiInfo, fastDialOpts)
 			c.Assert(err, jc.ErrorIsNil)
-			defer st.Close()
-			_, err = a.startAPIWorkers(st)
+			defer func() { _ = st.Close() }()
+			err = a.machineStartup(st, noOpLogger{})
 			c.Assert(err, gc.ErrorMatches, `unknown error`)
 		},
 	)
@@ -619,8 +630,8 @@ func (s *MachineSuite) TestIAASControllerPatchUpdateManagerFileNonZeroExitCode(c
 			c.Assert(ok, jc.IsTrue)
 			st, err := api.Open(apiInfo, fastDialOpts)
 			c.Assert(err, jc.ErrorIsNil)
-			defer st.Close()
-			_, err = a.startAPIWorkers(st)
+			defer func() { _ = st.Close() }()
+			err = a.machineStartup(st, noOpLogger{})
 			c.Assert(err, gc.ErrorMatches, `cannot patch /etc/update-manager/release-upgrades: unknown error`)
 		},
 	)
@@ -648,7 +659,7 @@ func (s *MachineSuite) TestManageModelAuditsAPI(c *gc.C) {
 			st, err := api.Open(apiInfo, fastDialOpts)
 			c.Assert(err, jc.ErrorIsNil)
 			defer st.Close()
-			doRequest(apiclient.NewClient(st))
+			doRequest(apiclient.NewClient(st, coretesting.NoopLogger{}))
 		}
 
 		// Make requests in separate API connections so they're separate conversations.
@@ -726,7 +737,7 @@ func (s *MachineSuite) assertAgentSetsToolsVersion(c *gc.C, job state.MachineJob
 		}
 		return false, nil
 	})
-	vers := coretesting.CurrentVersion(c)
+	vers := coretesting.CurrentVersion()
 	vers.Minor--
 	m, _, _ := s.primeAgentVersion(c, vers, job)
 	ctrl, a := s.newAgent(c, m)
@@ -1136,7 +1147,7 @@ func (s *MachineSuite) TestMachineAgentIgnoreAddressesContainer(c *gc.C) {
 	)
 	c.Assert(err, jc.ErrorIsNil)
 
-	vers := coretesting.CurrentVersion(c)
+	vers := coretesting.CurrentVersion()
 	s.primeAgentWithMachine(c, m, vers)
 	ctrl, a := s.newAgent(c, m)
 	defer ctrl.Finish()
@@ -1173,6 +1184,9 @@ func (s *MachineSuite) TestMachineWorkers(c *gc.C) {
 	// Wait for it to stabilise, running as normal.
 	matcher := agenttest.NewWorkerMatcher(c, tracker, a.Tag().String(),
 		append(alwaysMachineWorkers, notMigratingMachineWorkers...))
+	// kvm-container-provisioner only runs where the hardware the
+	// test is run on supports kvm. This is not optimal.
+	matcher.AddOptionalWorkers([]string{"kvm-container-provisioner"})
 	agenttest.WaitMatch(c, matcher.Check, coretesting.LongWait, s.BackingState.StartSync)
 }
 
