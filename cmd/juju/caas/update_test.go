@@ -4,7 +4,6 @@
 package caas_test
 
 import (
-	"os"
 	"strings"
 
 	"github.com/juju/cmd/v3"
@@ -18,27 +17,23 @@ import (
 	"gopkg.in/yaml.v2"
 
 	jujucaas "github.com/juju/juju/caas"
-	"github.com/juju/juju/caas/kubernetes/clientconfig"
 	"github.com/juju/juju/caas/kubernetes/provider/proxy"
 	"github.com/juju/juju/cloud"
 	jujucloud "github.com/juju/juju/cloud"
 	"github.com/juju/juju/cmd/juju/caas"
 	"github.com/juju/juju/jujuclient"
-	"github.com/juju/juju/rpc/params"
-
 	// To allow a maas cloud type to be parsed in the test data.
 	_ "github.com/juju/juju/provider/maas"
+	"github.com/juju/juju/rpc/params"
 )
 
 type updateCAASSuite struct {
 	jujutesting.IsolationSuite
 	dir                           string
-	cloudFile                     *os.File
 	fakeCloudAPI                  *fakeUpdateCloudAPI
 	fakeK8sClusterMetadataChecker *fakeK8sClusterMetadataChecker
 	cloudMetadataStore            *fakeCloudMetadataStore
 	clientStore                   *jujuclient.MemStore
-	fakeK8SConfigFunc             *clientconfig.ClientConfigFunc
 }
 
 var _ = gc.Suite(&updateCAASSuite{})

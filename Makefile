@@ -1,4 +1,4 @@
-#
+
 # Makefile for juju-core.
 #
 PROJECT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
@@ -8,18 +8,46 @@ GOOS=$(shell go env GOOS)
 GOARCH=$(shell go env GOARCH)
 GOHOSTOS=$(shell go env GOHOSTOS)
 GOHOSTARCH=$(shell go env GOHOSTARCH)
-export CGO_ENABLED=0
+GO_MOD_VERSION=$(shell grep "^go" go.mod | awk '{print $$2}')
+GO_INSTALLED_VERSION=$(shell go version | awk '{print $$3}' | sed -e /.*go/s///)
 
+# Build number passed in must be a monotonic int representing
+# the build.
+JUJU_BUILD_NUMBER ?=
+
+# JUJU_VERSION is the JUJU version currently being represented in this
+# repository.
+JUJU_VERSION=$(shell go run -ldflags "-X $(PROJECT)/version.build=$(JUJU_BUILD_NUMBER)" version/helper/main.go)
+
+# BUILD_DIR is the directory relative to this project where we place build
+# artifacts created by this Makefile.
 BUILD_DIR ?= $(PROJECT_DIR)/_build
+
 BIN_DIR = ${BUILD_DIR}/${GOOS}_${GOARCH}/bin
+
+# JUJU_METADATA_SOURCE is the directory where we place simple streams archives
+# for built juju binaries.
+JUJU_METADATA_SOURCE ?= ${BUILD_DIR}/simplestreams
 
 # TEST_PACKAGE_LIST is the path to a file that is a newline delimited list of
 # packages to test. This file must be sorted.
 TEST_PACKAGE_LIST ?=
 
-# bin_platform_paths takes a juju binary to be built and the platform that it
+# Explicitly tell GO that we don't want CGO in our builds
+export CGO_ENABLED ?= 0
+
+# bin_platform_path calculates the bin directory path for build artifacts for
+# the list of Go style platforms passed to this macro. For example
+# linux/amd64 linux/arm64
+bin_platform_paths = $(addprefix ${BUILD_DIR}/, $(addsuffix /bin, $(subst /,_,${1})))
+
+# tool_platform_paths takes a juju binary to be built and the platform that it
 # is to be built for and returns a list of paths for that binary to be output.
-bin_platform_paths = $(addprefix ${BUILD_DIR}/, $(addsuffix /bin/${1}, $(subst /,_,${2})))
+tool_platform_paths = $(addsuffix /${1},$(call bin_platform_paths,${2}))
+
+# simplestream_paths takes a list of Go style platforms to calculate the
+# paths to their respective simplestreams agent binary archives.
+simplestream_paths = $(addprefix ${JUJU_METADATA_SOURCE}/, $(addprefix tools/released/juju-${JUJU_VERSION}-, $(addsuffix .tgz,$(subst /,-,${1}))))
 
 # CLIENT_PACKAGE_PLATFORMS defines a white space seperated list of platforms
 # to build the Juju client binaries for. Platforms are defined as GO style
@@ -36,6 +64,22 @@ AGENT_PACKAGE_PLATFORMS ?= $(GOOS)/$(GOARCH)
 # OS_ARCH.
 OCI_IMAGE_PLATFORMS ?= linux/$(GOARCH)
 
+# Build tags passed to go install/build.
+# Example: BUILD_TAGS="minimal provider_kubernetes"
+BUILD_TAGS ?=
+
+# GIT_COMMIT the current git commit of this repository
+GIT_COMMIT ?= $(shell git -C $(PROJECT_DIR) rev-parse HEAD 2>/dev/null)
+
+
+# Build flag passed to go -mod defaults to readonly to support go workspaces.
+# CI should set this to vendor
+JUJU_GOMOD_MODE ?= readonly
+
+# If .git directory is missing, we are building out of an archive, otherwise report
+# if the tree that is checked out is dirty (modified) or clean.
+GIT_TREE_STATE = $(if $(shell git -C $(PROJECT_DIR) rev-parse --is-inside-work-tree 2>/dev/null | grep -e 'true'),$(if $(shell git -C $(PROJECT_DIR) status --porcelain),dirty,clean),archive)
+
 # BUILD_AGENT_TARGETS is a list of make targets the get built that fall under
 # the category of Juju agents. These targets are also the ones we are more then
 # likely wanting to cross compile.
@@ -43,19 +87,27 @@ OCI_IMAGE_PLATFORMS ?= linux/$(GOARCH)
 # - We filter pebble here for only linux builds as that is only what it will
 #   compile for at the moment.
 define BUILD_AGENT_TARGETS
-	$(call bin_platform_paths,jujuc,${AGENT_PACKAGE_PLATFORMS}) \
-	$(call bin_platform_paths,jujud,${AGENT_PACKAGE_PLATFORMS}) \
-	$(call bin_platform_paths,containeragent,${AGENT_PACKAGE_PLATFORMS}) \
-	$(call bin_platform_paths,pebble,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
+	$(call tool_platform_paths,jujuc,${AGENT_PACKAGE_PLATFORMS}) \
+	$(call tool_platform_paths,jujud,${AGENT_PACKAGE_PLATFORMS}) \
+	$(call tool_platform_paths,containeragent,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
+	$(call tool_platform_paths,pebble,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
 endef
 
 # BUILD_CLIENT_TARGETS is a list of make targets that get built that fall under
 # the category of Juju clients. These targets are also less likely to be cross
 # compiled
 define BUILD_CLIENT_TARGETS
-	$(call bin_platform_paths,juju,${CLIENT_PACKAGE_PLATFORMS}) \
-	$(call bin_platform_paths,juju-metadata,${CLIENT_PACKAGE_PLATFORMS}) \
-	$(call bin_platform_paths,juju-wait-for,${CLIENT_PACKAGE_PLATFORMS})
+	$(call tool_platform_paths,juju,${CLIENT_PACKAGE_PLATFORMS}) \
+	$(call tool_platform_paths,juju-metadata,${CLIENT_PACKAGE_PLATFORMS}) \
+	$(call tool_platform_paths,juju-wait-for,${CLIENT_PACKAGE_PLATFORMS})
+endef
+
+# SIMPLESTREAMS_TARGETS is a list of make targets that get built when a
+# user asks for simplestreams to be built. Because simplestreams are mainly
+# mainly concerned with that of packaging juju agent binaries we work off of
+# the Go style platforms.
+define SIMPLESTREAMS_TARGETS
+	$(call simplestream_paths,${AGENT_PACKAGE_PLATFORMS})
 endef
 
 # INSTALL_TARGETS is a list of make targets that get installed when make
@@ -64,7 +116,6 @@ define INSTALL_TARGETS
 	juju \
 	jujuc \
 	jujud \
-	containeragent \
 	juju-metadata \
 	juju-wait-for
 endef
@@ -72,6 +123,10 @@ endef
 # We only add pebble to the list of install targets if we are building for linux
 ifeq ($(GOOS), linux)
 	INSTALL_TARGETS += pebble
+endif
+
+ifneq ($(GOOS), windows)
+	INSTALL_TARGETS += containeragent
 endif
 
 # Allow the tests to take longer on restricted platforms.
@@ -82,11 +137,10 @@ else
 endif
 TEST_TIMEOUT:=$(TEST_TIMEOUT)
 
+TEST_ARGS ?=
 # Limit concurrency on s390x.
 ifeq ($(shell echo "${GOARCH}" | sed -E 's/.*(s390x).*/golang/'), golang)
-	TEST_ARGS := -p 4
-else
-	TEST_ARGS :=
+	TEST_ARGS += -p 4
 endif
 
 # Enable coverage testing.
@@ -99,29 +153,17 @@ ifeq ($(VERBOSE_CHECK), 1)
 	CHECK_ARGS = -v
 endif
 
-GIT_COMMIT ?= $(shell git -C $(PROJECT_DIR) rev-parse HEAD 2>/dev/null)
-# If .git directory is missing, we are building out of an archive, otherwise report
-# if the tree that is checked out is dirty (modified) or clean.
-GIT_TREE_STATE = $(if $(shell git -C $(PROJECT_DIR) rev-parse --is-inside-work-tree 2>/dev/null | grep -e 'true'),$(if $(shell git -C $(PROJECT_DIR) status --porcelain),dirty,clean),archive)
-
-# Build tags passed to go install/build.
-# Example: BUILD_TAGS="minimal provider_kubernetes"
-BUILD_TAGS ?=
-
-# Build number passed in must be a monotonic int representing
-# the build.
-JUJU_BUILD_NUMBER ?=
-
-# Build flag passed to go -mod
-# CI should set this to vendor
-JUJU_GOMOD_MODE ?= mod
-
 # Compile with debug flags if requested.
 ifeq ($(DEBUG_JUJU), 1)
     COMPILE_FLAGS = -gcflags "all=-N -l"
+    CGO_ENABLED = 0
     LINK_FLAGS = -ldflags "-X $(PROJECT)/version.GitCommit=$(GIT_COMMIT) -X $(PROJECT)/version.GitTreeState=$(GIT_TREE_STATE) -X $(PROJECT)/version.build=$(JUJU_BUILD_NUMBER)"
 else
-    LINK_FLAGS = -ldflags "-s -w -extldflags '-static' -X $(PROJECT)/version.GitCommit=$(GIT_COMMIT) -X $(PROJECT)/version.GitTreeState=$(GIT_TREE_STATE) -X $(PROJECT)/version.build=$(JUJU_BUILD_NUMBER)"
+    EXTRA_LD_FLAGS=-extldflags '-static'
+    ifeq ($(CGO_ENABLED), 1)
+        EXTRA_LD_FLAGS=
+    endif
+    LINK_FLAGS = -ldflags "-s -w $(EXTRA_LD_FLAGS) -X $(PROJECT)/version.GitCommit=$(GIT_COMMIT) -X $(PROJECT)/version.GitTreeState=$(GIT_TREE_STATE) -X $(PROJECT)/version.build=$(JUJU_BUILD_NUMBER)"
 endif
 
 define DEPENDENCIES
@@ -246,10 +288,23 @@ ${BUILD_DIR}/%/bin/pebble: phony_explicit
 # build for pebble
 	$(run_go_build)
 
+${JUJU_METADATA_SOURCE}/tools/released/juju-${JUJU_VERSION}-%.tgz: phony_explicit juju $(BUILD_AGENT_TARGETS)
+	@echo "Packaging simplestream tools for juju ${JUJU_VERSION} on $*"
+	@mkdir -p ${JUJU_METADATA_SOURCE}/tools/released
+	@tar czf "$@" -C $(call bin_platform_paths,$(subst -,/,$*)) jujud jujuc
+
+.PHONY: simplestreams
+simplestreams: juju juju-metadata ${SIMPLESTREAMS_TARGETS}
+	@juju metadata generate-agents -d ${JUJU_METADATA_SOURCE} --clean --prevent-fallback ;
+	@echo "\nRun export JUJU_METADATA_SOURCE=\"${JUJU_METADATA_SOURCE}\" if not defined in your env"
+
 .PHONY: build
 build: rebuild-schema go-build
 ## build builds all the targets specified by BUILD_AGENT_TARGETS and
 ## BUILD_CLIENT_TARGETS while also rebuilding a new schema.
+
+.PHONY: go-client-build
+go-client-build: $(BUILD_CLIENT_TARGETS)
 
 .PHONY: go-build
 go-build: $(BUILD_AGENT_TARGETS) $(BUILD_CLIENT_TARGETS)
@@ -278,6 +333,11 @@ check: pre-check run-tests
 test: run-tests
 ## test: Verify Juju code using unit tests
 
+.PHONY: race-test
+race-test:
+## race-test: Verify Juju code using unit tests with the race detector enabled
+	+make run-tests CGO_ENABLED=1 TEST_ARGS="$(TEST_ARGS) -race"
+
 .PHONY: run-tests
 # Can't make the length of the TMP dir too long or it hits socket name length issues.
 run-tests:
@@ -299,7 +359,8 @@ go-install: $(INSTALL_TARGETS)
 .PHONY: clean
 clean:
 ## clean: Clean the cache and test caches
-	go clean -n -r --cache --testcache $(PROJECT)/...
+	go clean -x --cache --testcache
+	go clean -x -r $(PROJECT)/...
 
 .PHONY: vendor-dependencies
 vendor-dependencies:
@@ -335,15 +396,22 @@ endif
 # PPA includes the required mongodb-server binaries.
 install-snap-dependencies:
 ## install-snap-dependencies: Install the supported snap dependencies
-ifeq ($(shell go version | grep -o "go1.18" || true),go1.18)
-	@echo Using installed go-1.18
+ifeq ($(shell if [ "$(GO_INSTALLED_VERSION)" \> "$(GO_MOD_VERSION)" -o "$(GO_INSTALLED_VERSION)" = "$(GO_MOD_VERSION)" ]; then echo 1; fi),1)
+	@echo 'Using installed go-$(GO_MOD_VERSION)'
+endif
+ifeq ("$(GO_INSTALLED_VERSION)","")
+	@echo 'Installing go-$(GO_MOD_VERSION) snap'
+	@sudo snap install go --channel=$(GO_MOD_VERSION)/stable --classic
 else
-	@echo Installing go-1.18 snap
-	@sudo snap install go --channel=1.18/stable --classic
+ifeq ($(shell if [ "$(GO_INSTALLED_VERSION)" \< "$(GO_MOD_VERSION)" ]; then echo 1; fi),1)
+	$(warning "warning: version of go too low: use 'snap refresh go --channel=$(GO_MOD_VERSION)'")
+	$(error "error Installed go version '$(GO_INSTALLED_VERSION)' less than required go version '$(GO_MOD_VERSION)'")
+endif
 endif
 
 WAIT_FOR_DPKG=bash -c '. "${PROJECT_DIR}/make_functions.sh"; wait_for_dpkg "$$@"' wait_for_dpkg
-JUJU_DB_CHANNEL=4.4/stable
+JUJU_DB_VERSION=4.4
+JUJU_DB_CHANNEL=${JUJU_DB_VERSION}/stable
 
 .PHONY: install-mongo-dependencies
 install-mongo-dependencies:
@@ -386,7 +454,8 @@ check-deps:
 
 
 # CAAS related targets
-DOCKER_USERNAME            ?= jujusolutions
+export OCI_BUILDER         ?= $(shell (which podman 2>&1 > /dev/null && echo podman) || echo docker )
+DOCKER_USERNAME            ?= docker.io/jujusolutions
 DOCKER_BUILDX_CONTEXT      ?= juju-make
 DOCKER_STAGING_DIR         ?= ${BUILD_DIR}/docker-staging
 JUJUD_STAGING_DIR          ?= ${DOCKER_STAGING_DIR}/jujud-operator
@@ -399,6 +468,7 @@ BUILD_OPERATOR_IMAGE=bash -c '. "${PROJECT_DIR}/make_functions.sh"; build_push_o
 OPERATOR_IMAGE_PATH=bash -c '. "${PROJECT_DIR}/make_functions.sh"; operator_image_path "$$@"' operator_image_path
 OPERATOR_IMAGE_RELEASE_PATH=bash -c '. "${PROJECT_DIR}/make_functions.sh"; operator_image_release_path "$$@"' operator_image_release_path
 UPDATE_MICROK8S_OPERATOR=bash -c '. "${PROJECT_DIR}/make_functions.sh"; microk8s_operator_update "$$@"' microk8s_operator_update
+SEED_REPOSITORY=bash -c '. "${PROJECT_DIR}/make_functions.sh"; seed_repository "$$@"' seed_repository
 
 image_check_prereq=image-check-build
 ifneq ($(OPERATOR_IMAGE_BUILD_SRC),true)
@@ -420,7 +490,9 @@ image-check-build-skip:
 docker-builder:
 ## docker-builder: Makes sure that there is a buildx context for building the
 ## oci images
+ifeq ($(OCI_BUILDER),docker)
 	-@docker buildx create --name ${DOCKER_BUILDX_CONTEXT}
+endif
 
 .PHONY: image-check
 operator-image: image-check docker-builder
@@ -444,11 +516,15 @@ push-operator-image-undefined:
 push-operator-image: $(push_operator_image_prereq)
 ## push-operator-image: Push up the newly built operator image via docker
 
-
 .PHONY: push-release-operator-image
 push-release-operator-image: PUSH_IMAGE=true
 push-release-operator-image: operator-image
 ## push-release-operator-image: Push up the newly built release operator image via docker
+
+.PHONY: seed-repository
+seed-repository:
+## seed-repository: Copy required juju images from docker.io/jujusolutions
+	JUJU_DB_VERSION=$(JUJU_DB_VERSION) $(SEED_REPOSITORY)
 
 
 .PHONY: host-install
@@ -458,13 +534,19 @@ host-install:
 
 .PHONY: minikube-operator-update
 minikube-operator-update: host-install operator-image
-## minikube-operator-update: Push up the newly built operator image for use with minikube
-	docker save "$(shell ${OPERATOR_IMAGE_PATH})" | minikube image load --overwrite=true -
+## minikube-operator-update: Inject the newly built operator image into minikube
+	$(OCI_BUILDER) save "$(shell ${OPERATOR_IMAGE_PATH})" | minikube image load --overwrite=true -
 
 .PHONY: microk8s-operator-update
 microk8s-operator-update: host-install operator-image
-## microk8s-operator-update: Push up the newly built operator image for use with microk8s
+## microk8s-operator-update: Inject the newly built operator image into microk8s
 	@${UPDATE_MICROK8S_OPERATOR}
+
+.PHONY: k3s-operator-update
+k3s-operator-update: host-install operator-image
+## k3s-operator-update: Inject the newly built operator image into k3s
+	$(OCI_BUILDER) save "$(shell ${OPERATOR_IMAGE_PATH})" | sudo k3s ctr images import -
+
 
 .PHONY: check-k8s-model
 check-k8s-model:
@@ -476,7 +558,7 @@ check-k8s-model:
 local-operator-update: check-k8s-model operator-image
 ## local-operator-update: Build then update local operator image
 	$(eval kubeworkers != juju status -m ${JUJU_K8S_MODEL} kubernetes-worker --format json | jq -c '.machines | keys' | tr  -c '[:digit:]' ' ' 2>&1)
-	docker save "$(shell ${OPERATOR_IMAGE_PATH})" | gzip > ${DOCKER_STAGING_DIR}/jujud-operator-image.tar.gz
+	$(OCI_BUILDER) save "$(shell ${OPERATOR_IMAGE_PATH})" | gzip > ${DOCKER_STAGING_DIR}/jujud-operator-image.tar.gz
 	$(foreach wm,$(kubeworkers), juju scp -m ${JUJU_K8S_MODEL} ${DOCKER_STAGING_DIR}/jujud-operator-image.tar.gz $(wm):/tmp/jujud-operator-image.tar.gz ; )
 	$(foreach wm,$(kubeworkers), juju ssh -m ${JUJU_K8S_MODEL} $(wm) -- "zcat /tmp/jujud-operator-image.tar.gz | docker load" ; )
 

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/uniter"
@@ -32,7 +32,6 @@ import (
 
 type InterfaceSuite struct {
 	HookContextSuite
-	stub testing.Stub
 }
 
 var _ = gc.Suite(&InterfaceSuite{})
@@ -47,14 +46,6 @@ func (s *InterfaceSuite) TestHookRelation(c *gc.C) {
 	r, err := ctx.HookRelation()
 	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	c.Assert(r, gc.IsNil)
-}
-
-func (s *InterfaceSuite) TestHookStorage(c *gc.C) {
-	ctx := s.GetContext(c, -1, "", names.NewStorageTag("data/0"))
-	storage, err := ctx.HookStorage()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(storage, gc.NotNil)
-	c.Assert(storage.Tag().Id(), gc.Equals, "data/0")
 }
 
 func (s *InterfaceSuite) TestRemoteUnitName(c *gc.C) {
@@ -845,6 +836,54 @@ func (s *mockHookContextSuite) TestActionAbort(c *gc.C) {
 	}
 }
 
+func (s *mockHookContextSuite) TestActionFlushError(c *gc.C) {
+	mocks := s.setupMocks(c)
+	defer mocks.Finish()
+
+	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
+		c.Assert(objType, gc.Equals, "Uniter")
+		c.Assert(version, gc.Equals, 0)
+		c.Assert(id, gc.Equals, "")
+		c.Assert(request, gc.Equals, "FinishActions")
+		c.Assert(arg, gc.DeepEquals, params.ActionExecutionResults{
+			Results: []params.ActionExecutionResult{{
+				ActionTag: "action-2",
+				Status:    "failed",
+				Message:   "committing requested changes failed",
+				Results: map[string]interface{}{
+					"Stderr": "cannot apply changes: flush failed",
+					"Code":   "1",
+				},
+			}}})
+		c.Assert(result, gc.FitsTypeOf, &params.ErrorResults{})
+		*(result.(*params.ErrorResults)) = params.ErrorResults{
+			Results: []params.ErrorResult{{}},
+		}
+		return nil
+	})
+	s.mockUnit.EXPECT().Tag().Return(names.NewUnitTag("wordpress/0")).AnyTimes()
+	s.mockUnit.EXPECT().CommitHookChanges(params.CommitHookChangesArgs{
+		Args: []params.CommitHookChangesArg{{
+			Tag: "unit-wordpress-0",
+			OpenPorts: []params.EntityPortRange{{
+				Tag:      "unit-wordpress-0",
+				Protocol: "tcp",
+				FromPort: 666,
+				ToPort:   666,
+				Endpoint: "ep",
+			}},
+		}},
+	}).Return(errors.New("flush failed"))
+	st := uniter.NewState(apiCaller, names.NewUnitTag("mysql/0"))
+	hookContext := context.NewMockUnitHookContextWithState("wordpress/0", s.mockUnit, st)
+	err := hookContext.OpenPortRange("ep", network.PortRange{Protocol: "tcp", FromPort: 666, ToPort: 666})
+	c.Assert(err, jc.ErrorIsNil)
+	cancel := make(chan struct{})
+	context.WithActionContext(hookContext, nil, cancel)
+	err = hookContext.Flush("", nil)
+	c.Assert(err, jc.ErrorIsNil)
+}
+
 func (s *mockHookContextSuite) TestMissingAction(c *gc.C) {
 	defer s.setupMocks(c).Finish()
 	apiCaller := basetesting.APICallerFunc(func(objType string, version int, id, request string, arg, result interface{}) error {
@@ -871,4 +910,21 @@ func (s *mockHookContextSuite) TestMissingAction(c *gc.C) {
 	context.WithActionContext(hookContext, nil, nil)
 	err := hookContext.Flush("action", charmrunner.NewMissingHookError("noaction"))
 	c.Assert(err, jc.ErrorIsNil)
+}
+
+func (s *mockHookContextSuite) TestHookStorage(c *gc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	st := mocks.NewMockState(ctrl)
+	st.EXPECT().StorageAttachment(names.NewStorageTag("data/0"), names.NewUnitTag("wordpress/0")).Return(params.StorageAttachment{
+		StorageTag: "data/0",
+	}, nil)
+	s.mockUnit.EXPECT().Tag().Return(names.NewUnitTag("wordpress/0")).AnyTimes()
+	ctx := context.NewMockUnitHookContextWithStateAndStorage("wordpress/0", s.mockUnit, st, names.NewStorageTag("data/0"))
+
+	storage, err := ctx.HookStorage()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(storage, gc.NotNil)
+	c.Assert(storage.Tag().Id(), gc.Equals, "data/0")
 }

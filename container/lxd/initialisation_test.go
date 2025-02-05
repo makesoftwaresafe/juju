@@ -14,14 +14,14 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/golang/mock/gomock"
+	lxd "github.com/canonical/lxd/client"
+	"github.com/canonical/lxd/shared/api"
 	"github.com/juju/packaging/v2/commands"
 	"github.com/juju/packaging/v2/manager"
 	"github.com/juju/proxy"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
-	lxd "github.com/lxc/lxd/client"
-	"github.com/lxc/lxd/shared/api"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/container/lxd/mocks"
@@ -114,7 +114,7 @@ func getMockRunCommandWithRetry(calledCmds *[]string) func(string, manager.Retry
 	}
 }
 
-func (s *initialiserTestSuite) containerInitialiser(svr lxd.ContainerServer, lxdIsRunning bool) *containerInitialiser {
+func (s *initialiserTestSuite) containerInitialiser(svr lxd.InstanceServer, lxdIsRunning bool) *containerInitialiser {
 	result := NewContainerInitialiser(lxdSnapChannel).(*containerInitialiser)
 	result.configureLxdBridge = func() error { return nil }
 	result.configureLxdProxies = func(proxy.Settings, func() (bool, error), func() (*Server, error)) error { return nil }
@@ -282,7 +282,7 @@ func (s *InitialiserSuite) TestInitializeSetsProxies(c *gc.C) {
 
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	s.PatchEnvironment("http_proxy", "http://test.local/http/proxy")
 	s.PatchEnvironment("https_proxy", "http://test.local/https/proxy")
@@ -307,7 +307,7 @@ func (s *InitialiserSuite) TestInitializeSetsProxies(c *gc.C) {
 func (s *InitialiserSuite) TestConfigureProxiesLXDNotRunning(c *gc.C) {
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	s.PatchEnvironment("http_proxy", "http://test.local/http/proxy")
 	s.PatchEnvironment("https_proxy", "http://test.local/https/proxy")
@@ -593,7 +593,7 @@ func (s *ConfigureInitialiserSuite) TestConfigureLXDBridge(c *gc.C) {
 
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	mgr := mocks.NewMockSnapManager(ctrl)
 	mgr.EXPECT().InstalledChannel("lxd").Return("latest/stable")
@@ -602,13 +602,11 @@ func (s *ConfigureInitialiserSuite) TestConfigureLXDBridge(c *gc.C) {
 	// The following nic is found, so we don't create a default nic and so
 	// don't update the profile with the nic.
 	profile := &api.Profile{
-		ProfilePut: api.ProfilePut{
-			Devices: map[string]map[string]string{
-				"eth0": {
-					"type":    "nic",
-					"nictype": "bridged",
-					"parent":  "lxdbr1",
-				},
+		Devices: map[string]map[string]string{
+			"eth0": {
+				"type":    "nic",
+				"nictype": "bridged",
+				"parent":  "lxdbr1",
 			},
 		},
 	}
@@ -642,7 +640,7 @@ func (s *ConfigureInitialiserSuite) TestConfigureLXDBridgeWithoutNicsCreatesANew
 
 	ctrl := gomock.NewController(c)
 	defer ctrl.Finish()
-	cSvr := lxdtesting.NewMockContainerServer(ctrl)
+	cSvr := lxdtesting.NewMockInstanceServer(ctrl)
 
 	mgr := mocks.NewMockSnapManager(ctrl)
 	mgr.EXPECT().InstalledChannel("lxd").Return("latest/stable")
@@ -651,10 +649,8 @@ func (s *ConfigureInitialiserSuite) TestConfigureLXDBridgeWithoutNicsCreatesANew
 	// If no nics are found in the profile, then the configureLXDBridge will
 	// create a default nic for you.
 	profile := &api.Profile{
-		Name: lxdDefaultProfileName,
-		ProfilePut: api.ProfilePut{
-			Devices: map[string]map[string]string{},
-		},
+		Name:    lxdDefaultProfileName,
+		Devices: map[string]map[string]string{},
 	}
 	network := &api.Network{
 		Managed: false,

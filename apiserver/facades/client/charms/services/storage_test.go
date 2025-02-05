@@ -1,22 +1,24 @@
 // Copyright 2021 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-package services
+package services_test
 
 import (
 	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/loggo"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/macaroon.v2"
 
+	"github.com/juju/juju/apiserver/facades/client/charms/services"
+	"github.com/juju/juju/apiserver/facades/client/charms/services/mocks"
 	"github.com/juju/juju/core/charm/downloader"
 	"github.com/juju/juju/state"
 	stateerrors "github.com/juju/juju/state/errors"
@@ -27,10 +29,10 @@ var _ = gc.Suite(&storageTestSuite{})
 type storageTestSuite struct {
 	testing.IsolationSuite
 
-	stateBackend   *MockStateBackend
-	uploadedCharm  *MockUploadedCharm
-	storageBackend *MockStorage
-	storage        *CharmStorage
+	stateBackend   *mocks.MockStateBackend
+	uploadedCharm  *mocks.MockUploadedCharm
+	storageBackend *mocks.MockStorage
+	storage        *services.CharmStorage
 	uuid           utils.UUID
 }
 
@@ -114,24 +116,24 @@ func (s *storageTestSuite) TestStoreBlobAlreadyStored(c *gc.C) {
 
 func (s *storageTestSuite) setupMocks(c *gc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
-	s.stateBackend = NewMockStateBackend(ctrl)
-	s.uploadedCharm = NewMockUploadedCharm(ctrl)
-	s.storageBackend = NewMockStorage(ctrl)
+	s.stateBackend = mocks.NewMockStateBackend(ctrl)
+	s.uploadedCharm = mocks.NewMockUploadedCharm(ctrl)
+	s.storageBackend = mocks.NewMockStorage(ctrl)
 
 	var err error
 	s.uuid, err = utils.NewUUID()
 	c.Assert(err, jc.ErrorIsNil)
 
-	s.storage = NewCharmStorage(CharmStorageConfig{
+	s.storage = services.NewCharmStorage(services.CharmStorageConfig{
 		Logger:       loggo.GetLogger("test"),
 		StateBackend: s.stateBackend,
-		StorageFactory: func(_ string) Storage {
+		StorageFactory: func(_ string) services.Storage {
 			return s.storageBackend
 		},
 	})
-	s.storage.uuidGenerator = func() (utils.UUID, error) {
+	s.storage.SetUUIDGenerator(func() (utils.UUID, error) {
 		return s.uuid, nil
-	}
+	})
 
 	return ctrl
 }

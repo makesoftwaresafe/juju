@@ -77,9 +77,13 @@ func normalizeRepoDetailsCommon(repoDetails *docker.ImageRepoDetails) {
 	}
 }
 
+func (c *baseClient) String() string {
+	return "generic"
+}
+
 // ShouldRefreshAuth checks if the repoDetails should be refreshed.
-func (c *baseClient) ShouldRefreshAuth() (bool, *time.Duration) {
-	return false, nil
+func (c *baseClient) ShouldRefreshAuth() (bool, time.Duration) {
+	return false, time.Duration(0)
 }
 
 // RefreshAuth refreshes the repoDetails.
@@ -109,8 +113,8 @@ func transportCommon(transport http.RoundTripper, repoDetails *docker.ImageRepoD
 			),
 		)
 	}
-	return newTokenTransport(
-		transport, repoDetails.Username, repoDetails.Password, repoDetails.Auth.Content(), "", false,
+	return newChallengeTransport(
+		transport, repoDetails.Username, repoDetails.Password, repoDetails.Auth.Content(),
 	), nil
 }
 

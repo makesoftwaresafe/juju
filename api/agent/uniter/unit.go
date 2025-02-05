@@ -10,6 +10,7 @@ import (
 
 	"github.com/juju/juju/api/common"
 	apiwatcher "github.com/juju/juju/api/watcher"
+	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
@@ -462,83 +463,41 @@ func (u *Unit) AvailabilityZone() (string, error) {
 	return result.Result, nil
 }
 
-// OpenPorts sets the policy of the port range with protocol to be
-// opened.
-func (u *Unit) OpenPorts(protocol string, fromPort, toPort int) error {
-	var result params.ErrorResults
-	args := params.EntitiesPortRanges{
-		Entities: []params.EntityPortRange{{
-			Tag:      u.tag.String(),
-			Protocol: protocol,
-			FromPort: fromPort,
-			ToPort:   toPort,
-		}},
-	}
-	err := u.st.facade.FacadeCall("OpenPorts", args, &result)
-	if err != nil {
-		return err
-	}
-	return result.OneError()
-}
-
-// ClosePorts sets the policy of the port range with protocol to be
-// closed.
-func (u *Unit) ClosePorts(protocol string, fromPort, toPort int) error {
-	var result params.ErrorResults
-	args := params.EntitiesPortRanges{
-		Entities: []params.EntityPortRange{{
-			Tag:      u.tag.String(),
-			Protocol: protocol,
-			FromPort: fromPort,
-			ToPort:   toPort,
-		}},
-	}
-	err := u.st.facade.FacadeCall("ClosePorts", args, &result)
-	if err != nil {
-		return err
-	}
-	return result.OneError()
-}
-
 var ErrNoCharmURLSet = errors.New("unit has no charm url set")
 
 // CharmURL returns the charm URL this unit is currently using.
-func (u *Unit) CharmURL() (*charm.URL, error) {
+func (u *Unit) CharmURL() (string, error) {
 	var results params.StringBoolResults
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: u.tag.String()}},
 	}
 	err := u.st.facade.FacadeCall("CharmURL", args, &results)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(results.Results) != 1 {
-		return nil, errors.Errorf("expected 1 result, got %d", len(results.Results))
+		return "", errors.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
-		return nil, result.Error
+		return "", result.Error
 	}
 	if result.Result != "" {
-		curl, err := charm.ParseURL(result.Result)
-		if err != nil {
-			return nil, err
-		}
-		return curl, nil
+		return result.Result, nil
 	}
-	return nil, ErrNoCharmURLSet
+	return "", ErrNoCharmURLSet
 }
 
 // SetCharmURL marks the unit as currently using the supplied charm URL.
 // An error will be returned if the unit is dead, or the charm URL not known.
-func (u *Unit) SetCharmURL(curl *charm.URL) error {
-	if curl == nil {
+func (u *Unit) SetCharmURL(curl string) error {
+	if curl == "" {
 		return errors.Errorf("charm URL cannot be nil")
 	}
 	var result params.ErrorResults
 	args := params.EntitiesCharmURL{
 		Entities: []params.EntityCharmURL{
-			{Tag: u.tag.String(), CharmURL: curl.String()},
+			{Tag: u.tag.String(), CharmURL: curl},
 		},
 	}
 	err := u.st.facade.FacadeCall("SetCharmURL", args, &result)
@@ -842,33 +801,6 @@ func (u *Unit) CanApplyLXDProfile() (bool, error) {
 	return result.Result, nil
 }
 
-// AddStorage adds desired storage instances to a unit.
-func (u *Unit) AddStorage(constraints map[string][]params.StorageConstraints) error {
-	if u.st.facade.BestAPIVersion() < 2 {
-		return errors.NotImplementedf("AddStorage() (need V2+)")
-	}
-
-	all := make([]params.StorageAddParams, 0, len(constraints))
-	for storage, cons := range constraints {
-		for _, one := range cons {
-			all = append(all, params.StorageAddParams{
-				UnitTag:     u.Tag().String(),
-				StorageName: storage,
-				Constraints: one,
-			})
-		}
-	}
-
-	args := params.StoragesAddParams{Storages: all}
-	var results params.ErrorResults
-	err := u.st.facade.FacadeCall("AddUnitStorage", args, &results)
-	if err != nil {
-		return err
-	}
-
-	return results.Combine()
-}
-
 // NetworkInfo returns network interfaces/addresses for specified bindings.
 func (u *Unit) NetworkInfo(bindings []string, relationId *int) (map[string]params.NetworkInfoResult, error) {
 	var results params.NetworkInfoResults
@@ -907,8 +839,7 @@ func (u *Unit) CommitHookChanges(req params.CommitHookChangesArgs) error {
 	if err != nil {
 		return err
 	}
-	// Make sure we correctly decode quota-related errors.
-	return maybeRestoreQuotaLimitError(results.OneError())
+	return apiservererrors.RestoreError(results.OneError())
 }
 
 // CommitHookParamsBuilder is a helper type for populating the set of
@@ -1044,16 +975,4 @@ func (b *CommitHookParamsBuilder) changeCount() int {
 	count += len(b.arg.ClosePorts)
 	count += len(b.arg.AddStorage)
 	return count
-}
-
-// maybeRestoreQuotaLimitError checks if the server emitted a quota limit
-// exceeded error and restores it back to a typed error from juju/errors.
-// Ideally, we would use apiserver/common.RestoreError but apparently, that
-// package imports worker/uniter/{operation, remotestate} causing an import
-// cycle.
-func maybeRestoreQuotaLimitError(err error) error {
-	if params.IsCodeQuotaLimitExceeded(err) {
-		return errors.NewQuotaLimitExceeded(nil, err.Error())
-	}
-	return err
 }

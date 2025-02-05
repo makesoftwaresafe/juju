@@ -18,7 +18,7 @@ import (
 	"github.com/juju/juju/rpc/params"
 )
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/machine_mock.go github.com/juju/juju/api/agent/provisioner MachineProvisioner
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/machine_mock.go github.com/juju/juju/api/agent/provisioner MachineProvisioner
 
 // MachineProvisioner defines what provisioner needs to provision a machine.
 type MachineProvisioner interface {
@@ -43,9 +43,6 @@ type MachineProvisioner interface {
 
 	// Refresh updates the cached local copy of the machine's data.
 	Refresh() error
-
-	// ProvisioningInfo returns the information required to provision a machine.
-	ProvisioningInfo() (*params.ProvisioningInfoV10, error)
 
 	// SetInstanceStatus sets the status for the provider instance.
 	SetInstanceStatus(status status.Status, message string, data map[string]interface{}) error
@@ -107,10 +104,6 @@ type MachineProvisioner interface {
 	// WatchContainers returns a StringsWatcher that notifies of changes
 	// to the lifecycles of containers of the specified type on the machine.
 	WatchContainers(ctype instance.ContainerType) (watcher.StringsWatcher, error)
-
-	// WatchAllContainers returns a StringsWatcher that notifies of changes
-	// to the lifecycles of all containers on the machine.
-	WatchAllContainers() (watcher.StringsWatcher, error)
 
 	// SetSupportedContainers updates the list of containers supported by this machine.
 	SetSupportedContainers(containerTypes ...instance.ContainerType) error
@@ -179,24 +172,6 @@ func (m *Machine) Refresh() error {
 	}
 	m.life = life
 	return nil
-}
-
-// ProvisioningInfo implements MachineProvisioner.ProvisioningInfo.
-func (m *Machine) ProvisioningInfo() (*params.ProvisioningInfoV10, error) {
-	var results params.ProvisioningInfoResultsV10
-	args := params.Entities{Entities: []params.Entity{{m.tag.String()}}}
-	err := m.st.facade.FacadeCall("ProvisioningInfo", args, &results)
-	if err != nil {
-		return nil, err
-	}
-	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
-	}
-	result := results.Results[0]
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	return result.Result, nil
 }
 
 // SetInstanceStatus implements MachineProvisioner.SetInstanceStatus.
@@ -467,29 +442,6 @@ func (m *Machine) WatchContainers(ctype instance.ContainerType) (watcher.Strings
 	args := params.WatchContainers{
 		Params: []params.WatchContainer{
 			{MachineTag: m.tag.String(), ContainerType: string(ctype)},
-		},
-	}
-	err := m.st.facade.FacadeCall("WatchContainers", args, &results)
-	if err != nil {
-		return nil, err
-	}
-	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
-	}
-	result := results.Results[0]
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	w := apiwatcher.NewStringsWatcher(m.st.facade.RawAPICaller(), result)
-	return w, nil
-}
-
-// WatchAllContainers implements MachineProvisioner.WatchAllContainers.
-func (m *Machine) WatchAllContainers() (watcher.StringsWatcher, error) {
-	var results params.StringsWatchResults
-	args := params.WatchContainers{
-		Params: []params.WatchContainer{
-			{MachineTag: m.tag.String()},
 		},
 	}
 	err := m.st.facade.FacadeCall("WatchContainers", args, &results)

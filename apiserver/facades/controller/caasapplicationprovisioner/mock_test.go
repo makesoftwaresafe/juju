@@ -38,11 +38,13 @@ type mockState struct {
 	testing.Stub
 
 	common.APIAddressAccessor
-	model              *mockModel
-	applicationWatcher *mockStringsWatcher
-	app                *mockApplication
-	resource           *mockResources
-	operatorRepo       string
+	model                        *mockModel
+	applicationWatcher           *mockStringsWatcher
+	app                          *mockApplication
+	resource                     *mockResources
+	operatorRepo                 string
+	controllerConfigWatcher      *statetesting.MockNotifyWatcher
+	apiHostPortsForAgentsWatcher *statetesting.MockNotifyWatcher
 }
 
 func newMockState() *mockState {
@@ -51,6 +53,21 @@ func newMockState() *mockState {
 	}
 	st.model = &mockModel{state: st}
 	return st
+}
+
+func (st *mockState) ApplyOperation(op state.ModelOperation) error {
+	st.MethodCall(st, "AppyOperation")
+	return nil
+}
+
+func (st *mockState) Unit(unit string) (caasapplicationprovisioner.Unit, error) {
+	st.MethodCall(st, "Unit")
+	return nil, nil
+}
+
+func (st *mockState) WatchControllerConfig() state.NotifyWatcher {
+	st.MethodCall(st, "WatchControllerConfig")
+	return st.controllerConfigWatcher
 }
 
 func (st *mockState) WatchApplications() state.StringsWatcher {
@@ -105,6 +122,11 @@ func (st *mockState) Resources() caasapplicationprovisioner.Resources {
 	return st.resource
 }
 
+func (st *mockState) WatchAPIHostPortsForAgents() state.NotifyWatcher {
+	st.MethodCall(st, "WatchAPIHostPortsForAgents")
+	return st.apiHostPortsForAgentsWatcher
+}
+
 type mockResources struct {
 	caasapplicationprovisioner.Resources
 	resource *resources.DockerImageDetails
@@ -138,7 +160,8 @@ func (m *mockStoragePoolManager) Get(name string) (*storage.Config, error) {
 
 type mockModel struct {
 	testing.Stub
-	state *mockState
+	state              *mockState
+	modelConfigChanges *statetesting.MockNotifyWatcher
 }
 
 func (m *mockModel) UUID() string {
@@ -179,6 +202,11 @@ func (m *mockModel) Containers(providerIds ...string) ([]state.CloudContainer, e
 	return containers, nil
 }
 
+func (m *mockModel) WatchForModelConfigChanges() state.NotifyWatcher {
+	m.MethodCall(m, "WatchForModelConfigChanges")
+	return m.modelConfigChanges
+}
+
 type mockApplication struct {
 	testing.Stub
 	state.Authenticator
@@ -196,6 +224,8 @@ type mockApplication struct {
 	scale                int
 	unitsWatcher         *statetesting.MockStringsWatcher
 	unitsChanges         chan []string
+	watcher              *statetesting.MockNotifyWatcher
+	provisioningState    *state.ApplicationProvisioningState
 }
 
 func (a *mockApplication) Tag() names.Tag {
@@ -315,6 +345,25 @@ func (a *mockApplication) ClearResources() error {
 func (a *mockApplication) WatchUnits() state.StringsWatcher {
 	a.MethodCall(a, "WatchUnits")
 	return a.unitsWatcher
+}
+
+func (a *mockApplication) Watch() state.NotifyWatcher {
+	a.MethodCall(a, "Watch")
+	return a.watcher
+}
+
+func (a *mockApplication) SetProvisioningState(ps state.ApplicationProvisioningState) error {
+	a.MethodCall(a, "SetProvisioningState", ps)
+	err := a.NextErr()
+	if err == nil {
+		a.provisioningState = &ps
+	}
+	return err
+}
+
+func (a *mockApplication) ProvisioningState() *state.ApplicationProvisioningState {
+	a.MethodCall(a, "ProvisioningState")
+	return a.provisioningState
 }
 
 type mockCharm struct {

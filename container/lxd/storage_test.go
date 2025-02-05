@@ -4,9 +4,9 @@
 package lxd_test
 
 import (
-	"github.com/golang/mock/gomock"
+	lxdapi "github.com/canonical/lxd/shared/api"
 	jc "github.com/juju/testing/checkers"
-	lxdapi "github.com/lxc/lxd/shared/api"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/container/lxd"
@@ -22,13 +22,11 @@ var _ = gc.Suite(&storageSuite{})
 func defaultProfileWithDisk() *lxdapi.Profile {
 	return &lxdapi.Profile{
 		Name: "default",
-		ProfilePut: lxdapi.ProfilePut{
-			Devices: map[string]map[string]string{
-				"root": {
-					"type": "disk",
-					"path": "/",
-					"pool": "default",
-				},
+		Devices: map[string]map[string]string{
+			"root": {
+				"type": "disk",
+				"path": "/",
+				"pool": "default",
 			},
 		},
 	}

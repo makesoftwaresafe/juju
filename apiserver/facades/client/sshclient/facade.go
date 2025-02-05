@@ -1,23 +1,30 @@
 // Copyright 2016 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package sshclient implements the API endpoint required for Juju
-// clients that wish to make SSH connections to Juju managed machines.
 package sshclient
 
 import (
+	stdcontext "context"
+	"sort"
+
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facade"
+	k8scloud "github.com/juju/juju/caas/kubernetes/cloud"
+	k8sprovider "github.com/juju/juju/caas/kubernetes/provider"
 	"github.com/juju/juju/core/leadership"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/environs"
+	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/context"
 	"github.com/juju/juju/rpc/params"
+	"github.com/juju/juju/state"
 )
+
+type newCaasBrokerFunc func(_ stdcontext.Context, args environs.OpenParams) (Broker, error)
 
 // Facade implements the API required by the sshclient worker.
 type Facade struct {
@@ -26,26 +33,45 @@ type Facade struct {
 	callContext context.ProviderCallContext
 
 	leadershipReader leadership.Reader
+	getBroker        newCaasBrokerFunc
 }
 
-type FacadeV2 struct {
+type FacadeV3 struct {
 	*Facade
 }
 
-func internalFacade(backend Backend, leadershipReader leadership.Reader, auth facade.Authorizer, callCtx context.ProviderCallContext) (*Facade, error) {
+type FacadeV2 struct {
+	*FacadeV3
+}
+
+func internalFacade(
+	backend Backend, leadershipReader leadership.Reader, auth facade.Authorizer, callCtx context.ProviderCallContext,
+	getBroker newCaasBrokerFunc,
+) (*Facade, error) {
 	if !auth.AuthClient() {
 		return nil, apiservererrors.ErrPerm
 	}
 
-	return &Facade{backend: backend, authorizer: auth, callContext: callCtx, leadershipReader: leadershipReader}, nil
+	return &Facade{
+		backend:          backend,
+		authorizer:       auth,
+		callContext:      callCtx,
+		leadershipReader: leadershipReader,
+		getBroker:        getBroker,
+	}, nil
 }
 
 func (facade *Facade) checkIsModelAdmin() error {
+	isSuperUser, err := facade.authorizer.HasPermission(permission.SuperuserAccess, facade.backend.ControllerTag())
+	if err != nil {
+		return errors.Trace(err)
+	}
+
 	isModelAdmin, err := facade.authorizer.HasPermission(permission.AdminAccess, facade.backend.ModelTag())
 	if err != nil {
 		return errors.Trace(err)
 	}
-	if !isModelAdmin {
+	if !isModelAdmin && !isSuperUser {
 		return apiservererrors.ErrPerm
 	}
 	return nil
@@ -73,21 +99,14 @@ func (facade *Facade) PrivateAddress(args params.Entities) (params.SSHAddressRes
 	return facade.getAddressPerEntity(args, getter)
 }
 
-// AllAddresses reports all addresses that might have SSH listening for each given
-// entity in args. Machines and units are supported as entity types.
-// TODO(wpk): 2017-05-17 This is a temporary solution, we should not fetch environ here
-// but get the addresses from state. We will be changing it since we want to have space-aware
-// SSH settings.
+// AllAddresses reports all addresses that might have SSH listening for each
+// entity in args. The result is sorted with public addresses first.
+// Machines and units are supported as entity types.
 func (facade *Facade) AllAddresses(args params.Entities) (params.SSHAddressesResults, error) {
 	if err := facade.checkIsModelAdmin(); err != nil {
 		return params.SSHAddressesResults{}, errors.Trace(err)
 	}
-	env, err := environs.GetEnviron(facade.backend, environs.New)
-	if err != nil {
-		return params.SSHAddressesResults{}, errors.Annotate(err, "opening environment")
-	}
 
-	environ, supportsNetworking := environs.SupportsNetworking(env)
 	getter := func(m SSHMachine) ([]network.SpaceAddress, error) {
 		devicesAddresses, err := m.AllDeviceSpaceAddresses()
 		if err != nil {
@@ -98,7 +117,7 @@ func (facade *Facade) AllAddresses(args params.Entities) (params.SSHAddressesRes
 
 		// Make the list unique
 		addressMap := make(map[string]bool)
-		var uniqueAddresses []network.SpaceAddress
+		var uniqueAddresses network.SpaceAddresses
 		for _, address := range devicesAddresses {
 			if !addressMap[address.Value] {
 				addressMap[address.Value] = true
@@ -106,11 +125,8 @@ func (facade *Facade) AllAddresses(args params.Entities) (params.SSHAddressesRes
 			}
 		}
 
-		if supportsNetworking {
-			return environ.SSHAddresses(facade.callContext, uniqueAddresses)
-		} else {
-			return uniqueAddresses, nil
-		}
+		sort.Sort(uniqueAddresses)
+		return uniqueAddresses, nil
 	}
 
 	return facade.getAllEntityAddresses(args, getter)
@@ -216,6 +232,7 @@ func (facade *Facade) Proxy() (params.SSHProxyResult, error) {
 func (a *FacadeV2) Leader(_ struct{}) {}
 
 // Leader returns the unit name of the leader for the given application.
+// TODO(juju3) - remove
 func (facade *Facade) Leader(entity params.Entity) (params.StringResult, error) {
 	result := params.StringResult{}
 	application, err := names.ParseApplicationTag(entity.Tag)
@@ -232,4 +249,90 @@ func (facade *Facade) Leader(entity params.Entity) (params.StringResult, error) 
 		result.Error = apiservererrors.ServerError(errors.NotFoundf("leader for %s", entity.Tag))
 	}
 	return result, nil
+}
+
+// ModelCredentialForSSH did not exist prior to v4.
+func (*FacadeV3) ModelCredentialForSSH(_, _ struct{}) {}
+
+// ModelCredentialForSSH returns a cloud spec for ssh purpose.
+// This facade call is only used for k8s model.
+func (facade *Facade) ModelCredentialForSSH() (params.CloudSpecResult, error) {
+	var result params.CloudSpecResult
+
+	isModelAdmin, err := facade.authorizer.HasPermission(permission.AdminAccess, facade.backend.ModelTag())
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+	isSuperUser, err := facade.authorizer.HasPermission(permission.SuperuserAccess, facade.backend.ControllerTag())
+	if err != nil {
+		return result, errors.Trace(err)
+	}
+	if !isModelAdmin && !isSuperUser {
+		return result, apiservererrors.ErrPerm
+	}
+
+	model, err := facade.backend.Model()
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+	if model.Type() != state.ModelTypeCAAS {
+		result.Error = apiservererrors.ServerError(errors.NotSupportedf("facade ModelCredentialForSSH for non %q model", state.ModelTypeCAAS))
+		return result, nil
+	}
+
+	spec, err := facade.backend.CloudSpec()
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+	if spec.Credential == nil {
+		result.Error = apiservererrors.ServerError(errors.NotValidf("cloud spec %q has empty credential", spec.Name))
+		return result, nil
+	}
+
+	token, err := facade.getExecSecretToken(spec, model)
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+
+	cred, err := k8scloud.UpdateCredentialWithToken(*spec.Credential, token)
+	if err != nil {
+		result.Error = apiservererrors.ServerError(err)
+		return result, nil
+	}
+	result.Result = &params.CloudSpec{
+		Type:             spec.Type,
+		Name:             spec.Name,
+		Region:           spec.Region,
+		Endpoint:         spec.Endpoint,
+		IdentityEndpoint: spec.IdentityEndpoint,
+		StorageEndpoint:  spec.StorageEndpoint,
+		Credential: &params.CloudCredential{
+			AuthType:   string(cred.AuthType()),
+			Attributes: cred.Attributes(),
+		},
+		CACertificates:    spec.CACertificates,
+		SkipTLSVerify:     spec.SkipTLSVerify,
+		IsControllerCloud: spec.IsControllerCloud,
+	}
+	return result, nil
+}
+
+func (facade *Facade) getExecSecretToken(cloudSpec environscloudspec.CloudSpec, model Model) (string, error) {
+	cfg, err := model.Config()
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+
+	broker, err := facade.getBroker(stdcontext.TODO(), environs.OpenParams{
+		ControllerUUID: model.ControllerUUID(),
+		Cloud:          cloudSpec,
+		Config:         cfg,
+	})
+	if err != nil {
+		return "", errors.Annotate(err, "failed to open kubernetes client")
+	}
+	return broker.GetSecretToken(k8sprovider.ExecRBACResourceName)
 }

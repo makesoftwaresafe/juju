@@ -55,11 +55,11 @@ exec_simplestream_metadata() {
 
 	# 2.8 or older needs series based agent metadata.
 	if [ "${stable_version}" == "2.8" ]; then
-		local focal_version bionic_version
+		local focal_version jammy_version
 		focal_version=$(series_version "${version}" "focal")
-		bionic_version=$(series_version "${version}" "bionic")
+		jammy_version=$(series_version "${version}" "jammy")
 		add_upgrade_tools "${focal_version}"
-		add_upgrade_tools "${bionic_version}"
+		add_upgrade_tools "${jammy_version}"
 
 		/snap/bin/juju metadata generate-agents \
 			--clean \
@@ -90,7 +90,7 @@ exec_simplestream_metadata() {
 	echo "${name}" >>"${TEST_DIR}/jujus"
 
 	juju add-model test-upgrade-"${test_name}"
-	juju deploy ./tests/suites/upgrade/charms/ubuntu
+	juju deploy ubuntu
 	wait_for "ubuntu" "$(idle_condition "ubuntu")"
 
 	local CURRENT UPDATED
@@ -132,7 +132,7 @@ exec_simplestream_metadata() {
 		fi
 	done
 
-	juju upgrade-charm ubuntu --path=./tests/suites/upgrade/charms/ubuntu
+	juju upgrade-charm ubuntu
 
 	sleep 10
 	wait_for "ubuntu" "$(idle_condition "ubuntu")"

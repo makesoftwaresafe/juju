@@ -1,13 +1,22 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package charms provides a client for accessing the charms API.
 package charms
 
 import (
+	"archive/zip"
+	"io"
+	"io/ioutil"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+
 	"github.com/juju/charm/v8"
 	charmresource "github.com/juju/charm/v8/resource"
 	"github.com/juju/errors"
+	"github.com/juju/version/v2"
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/api/base"
@@ -15,7 +24,10 @@ import (
 	apicharm "github.com/juju/juju/api/common/charm"
 	commoncharms "github.com/juju/juju/api/common/charms"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
+	"github.com/juju/juju/core/lxdprofile"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/rpc/params"
+	jujuversion "github.com/juju/juju/version"
 )
 
 // Client allows access to the charms API end point.
@@ -72,7 +84,7 @@ func (c *Client) ResolveCharms(charms []CharmToResolve) ([]ResolvedCharm, error)
 	for i, ch := range charms {
 		args.Resolve[i] = params.ResolveCharmWithChannel{
 			Reference:   ch.URL.String(),
-			Origin:      ch.Origin.ParamsCharmOrigin(),
+			Origin:      c.paramsCharmOrigin(ch.Origin),
 			SwitchCharm: ch.SwitchCharm,
 		}
 	}
@@ -89,8 +101,13 @@ func (c *Client) ResolveCharms(charms []CharmToResolve) ([]ResolvedCharm, error)
 		curl, err := charm.ParseURL(r.URL)
 		if err != nil {
 			resolvedCharms[i] = ResolvedCharm{Error: err}
+			continue
 		}
-		origin := apicharm.APICharmOrigin(r.Origin)
+		origin, err := apicharm.APICharmOrigin(r.Origin)
+		if err != nil {
+			resolvedCharms[i] = ResolvedCharm{Error: err}
+			continue
+		}
 		resolvedCharms[i] = ResolvedCharm{
 			URL:             curl,
 			Origin:          origin,
@@ -118,7 +135,7 @@ func (c *Client) GetDownloadInfo(curl *charm.URL, origin apicharm.Origin, mac *m
 	args := params.CharmURLAndOrigins{
 		Entities: []params.CharmURLAndOrigin{{
 			CharmURL: curl.String(),
-			Origin:   origin.ParamsCharmOrigin(),
+			Origin:   c.paramsCharmOrigin(origin),
 			Macaroon: mac,
 		}},
 	}
@@ -130,16 +147,30 @@ func (c *Client) GetDownloadInfo(curl *charm.URL, origin apicharm.Origin, mac *m
 		return DownloadInfo{}, errors.Errorf("expected one result, received %d", num)
 	}
 	result := results.Results[0]
+	origin, err := apicharm.APICharmOrigin(result.Origin)
+	if err != nil {
+		return DownloadInfo{}, errors.Trace(err)
+	}
 	return DownloadInfo{
 		URL:    result.URL,
-		Origin: apicharm.APICharmOrigin(result.Origin),
+		Origin: origin,
 	}, nil
+}
+
+func (c *Client) paramsCharmOrigin(origin apicharm.Origin) params.CharmOrigin {
+	if origin.Base.Name == "centos" {
+		if c.BestAPIVersion() < 5 {
+			origin.Base.Channel.Track = series.ToLegacyCentosChannel(origin.Base.Channel.Track)
+		} else {
+			origin.Base.Channel.Track = series.FromLegacyCentosChannel(origin.Base.Channel.Track)
+		}
+	}
+	return origin.ParamsCharmOrigin()
 }
 
 // AddCharm adds the given charm URL (which must include revision) to
 // the model, if it does not exist yet. Local charms are not
-// supported, only charm store and charm hub URLs. See also AddLocalCharm()
-// in the client-side API.
+// supported, only charm store and charm hub URLs. See also AddLocalCharm().
 //
 // If the AddCharm API call fails because of an authorization error
 // when retrieving the charm from the charm store, an error
@@ -147,7 +178,7 @@ func (c *Client) GetDownloadInfo(curl *charm.URL, origin apicharm.Origin, mac *m
 func (c *Client) AddCharm(curl *charm.URL, origin apicharm.Origin, force bool) (apicharm.Origin, error) {
 	args := params.AddCharmWithOrigin{
 		URL:    curl.String(),
-		Origin: origin.ParamsCharmOrigin(),
+		Origin: c.paramsCharmOrigin(origin),
 		Force:  force,
 		// Deprecated: Series is used here to communicate with older
 		// controllers and instead we use Origin to describe the platform.
@@ -157,7 +188,7 @@ func (c *Client) AddCharm(curl *charm.URL, origin apicharm.Origin, force bool) (
 	if err := c.facade.FacadeCall("AddCharm", args, &result); err != nil {
 		return apicharm.Origin{}, errors.Trace(err)
 	}
-	return apicharm.APICharmOrigin(result.Origin), nil
+	return apicharm.APICharmOrigin(result.Origin)
 }
 
 // AddCharmWithAuthorization is like AddCharm except it also provides
@@ -174,7 +205,7 @@ func (c *Client) AddCharm(curl *charm.URL, origin apicharm.Origin, force bool) (
 func (c *Client) AddCharmWithAuthorization(curl *charm.URL, origin apicharm.Origin, csMac *macaroon.Macaroon, force bool) (apicharm.Origin, error) {
 	args := params.AddCharmWithAuth{
 		URL:                curl.String(),
-		Origin:             origin.ParamsCharmOrigin(),
+		Origin:             c.paramsCharmOrigin(origin),
 		CharmStoreMacaroon: csMac,
 		Force:              force,
 		// Deprecated: Series is used here to communicate with older
@@ -185,7 +216,169 @@ func (c *Client) AddCharmWithAuthorization(curl *charm.URL, origin apicharm.Orig
 	if err := c.facade.FacadeCall("AddCharmWithAuthorization", args, &result); err != nil {
 		return apicharm.Origin{}, errors.Trace(err)
 	}
-	return apicharm.APICharmOrigin(result.Origin), nil
+	return apicharm.APICharmOrigin(result.Origin)
+}
+
+// AddLocalCharm prepares the given charm with a local: schema in its
+// URL, and uploads it via the API server, returning the assigned
+// charm URL.
+func (c *Client) AddLocalCharm(curl *charm.URL, ch charm.Charm, force bool, agentVersion version.Number) (*charm.URL, error) {
+	if curl.Schema != "local" {
+		return nil, errors.Errorf("expected charm URL with local: schema, got %q", curl.String())
+	}
+
+	if err := c.validateCharmVersion(ch, agentVersion); err != nil {
+		return nil, errors.Trace(err)
+	}
+	if err := lxdprofile.ValidateLXDProfile(lxdCharmProfiler{Charm: ch}); err != nil {
+		if !force {
+			return nil, errors.Trace(err)
+		}
+	}
+
+	// Package the charm for uploading.
+	var archive *os.File
+	switch ch := ch.(type) {
+	case *charm.CharmDir:
+		var err error
+		if archive, err = ioutil.TempFile("", "charm"); err != nil {
+			return nil, errors.Annotate(err, "cannot create temp file")
+		}
+		defer os.Remove(archive.Name())
+		defer archive.Close()
+		if err := ch.ArchiveTo(archive); err != nil {
+			return nil, errors.Annotate(err, "cannot repackage charm")
+		}
+		if _, err := archive.Seek(0, 0); err != nil {
+			return nil, errors.Annotate(err, "cannot rewind packaged charm")
+		}
+	case *charm.CharmArchive:
+		var err error
+		if archive, err = os.Open(ch.Path); err != nil {
+			return nil, errors.Annotate(err, "cannot read charm archive")
+		}
+		defer archive.Close()
+	default:
+		return nil, errors.Errorf("unknown charm type %T", ch)
+	}
+
+	anyHooksOrDispatch, err := hasHooksOrDispatch(archive.Name())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	if !anyHooksOrDispatch {
+		return nil, errors.Errorf("invalid charm %q: has no hooks nor dispatch file", curl.Name)
+	}
+
+	curl, err = c.uploadCharm(curl, archive)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return curl, nil
+}
+
+// uploadCharm sends the content to the API server using an HTTP post.
+func (c *Client) uploadCharm(curl *charm.URL, content io.ReadSeekCloser) (*charm.URL, error) {
+	args := url.Values{}
+	args.Add("series", curl.Series)
+	args.Add("schema", curl.Schema)
+	args.Add("revision", strconv.Itoa(curl.Revision))
+	apiURI := url.URL{Path: "/charms", RawQuery: args.Encode()}
+
+	contentType := "application/zip"
+	var resp params.CharmsResponse
+	if err := c.httpPost(content, apiURI.String(), contentType, &resp); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	curl, err := charm.ParseURL(resp.CharmURL)
+	if err != nil {
+		return nil, errors.Annotatef(err, "bad charm URL in response")
+	}
+	return curl, nil
+}
+
+func (c *Client) httpPost(content io.ReadSeeker, endpoint, contentType string, response interface{}) error {
+	req, err := http.NewRequest("POST", endpoint, content)
+	if err != nil {
+		return errors.Annotate(err, "cannot create upload request")
+	}
+	req.Header.Set("Content-Type", contentType)
+
+	// The returned httpClient sets the base url to /model/<uuid> if it can.
+	httpClient, err := c.facade.RawAPICaller().HTTPClient()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if err := httpClient.Do(c.facade.RawAPICaller().Context(), req, response); err != nil {
+		return errors.Trace(err)
+	}
+	return nil
+}
+
+// lxdCharmProfiler massages a charm.Charm into a LXDProfiler inside of the
+// core package.
+type lxdCharmProfiler struct {
+	Charm charm.Charm
+}
+
+// LXDProfile implements core.lxdprofile.LXDProfiler
+func (p lxdCharmProfiler) LXDProfile() lxdprofile.LXDProfile {
+	if p.Charm == nil {
+		return nil
+	}
+	if profiler, ok := p.Charm.(charm.LXDProfiler); ok {
+		profile := profiler.LXDProfile()
+		if profile == nil {
+			return nil
+		}
+		return profile
+	}
+	return nil
+}
+
+var hasHooksOrDispatch = hasHooksFolderOrDispatchFile
+
+func hasHooksFolderOrDispatchFile(name string) (bool, error) {
+	zipr, err := zip.OpenReader(name)
+	if err != nil {
+		return false, err
+	}
+	defer zipr.Close()
+	count := 0
+	// zip file spec 4.4.17.1 says that separators are always "/" even on Windows.
+	hooksPath := "hooks/"
+	dispatchPath := "dispatch"
+	for _, f := range zipr.File {
+		if strings.Contains(f.Name, hooksPath) {
+			count++
+		}
+		if count > 1 {
+			// 1 is the magic number here.
+			// Charm zip archive is expected to contain several files and folders.
+			// All properly built charms will have a non-empty "hooks" folders OR
+			// a dispatch file.
+			// File names in the archive will be of the form "hooks/" - for hooks folder; and
+			// "hooks/*" for the actual charm hooks implementations.
+			// For example, install hook may have a file with a name "hooks/install".
+			// Once we know that there are, at least, 2 files that have names that start with "hooks/", we
+			// know for sure that the charm has a non-empty hooks folder.
+			return true, nil
+		}
+		if strings.Contains(f.Name, dispatchPath) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) validateCharmVersion(ch charm.Charm, agentVersion version.Number) error {
+	minver := ch.Meta().MinJujuVersion
+	if minver != version.Zero {
+		return jujuversion.CheckJujuMinVersion(minver, agentVersion)
+	}
+	return nil
 }
 
 // CheckCharmPlacement checks to see if a charm can be placed into the
@@ -214,7 +407,7 @@ func (c *Client) ListCharmResources(curl *charm.URL, origin apicharm.Origin) ([]
 	args := params.CharmURLAndOrigins{
 		Entities: []params.CharmURLAndOrigin{{
 			CharmURL: curl.String(),
-			Origin:   origin.ParamsCharmOrigin(),
+			Origin:   c.paramsCharmOrigin(origin),
 		}},
 	}
 	var results params.CharmResourcesResults

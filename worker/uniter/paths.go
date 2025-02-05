@@ -1,5 +1,4 @@
 // Copyright 2012-2014 Canonical Ltd.
-
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package uniter
@@ -191,8 +190,8 @@ func NewWorkerPaths(dataDir string, unitTag names.UnitTag, worker string, socket
 		Runtime: RuntimePaths{
 			RemoteJujuRunSocket:     newSocket("run"),
 			RemoteJujucServerSocket: newSocket("agent"),
-			LocalJujuRunSocket:      newUnixSocket(baseDir, unitTag, worker, "run", false),
-			LocalJujucServerSocket:  newUnixSocket(baseDir, unitTag, worker, "agent", true),
+			LocalJujuRunSocket:      newUnixSocket(baseDir, unitTag, worker, "run"),
+			LocalJujucServerSocket:  newUnixSocket(baseDir, unitTag, worker, "agent"),
 		},
 		State: StatePaths{
 			BaseDir:         baseDir,
@@ -205,7 +204,7 @@ func NewWorkerPaths(dataDir string, unitTag names.UnitTag, worker string, socket
 	}
 }
 
-func newUnixSocket(baseDir string, unitTag names.UnitTag, worker string, name string, abstract bool) SocketPair {
+func newUnixSocket(baseDir string, unitTag names.UnitTag, worker string, name string) SocketPair {
 	socket := sockets.Socket{Network: "unix"}
 	if jujuos.HostOS() == jujuos.Windows {
 		base := fmt.Sprintf("%s", unitTag)
@@ -218,9 +217,6 @@ func newUnixSocket(baseDir string, unitTag names.UnitTag, worker string, name st
 	path := filepath.Join(baseDir, name+".socket")
 	if worker != "" {
 		path = filepath.Join(baseDir, fmt.Sprintf("%s-%s.socket", worker, name))
-	}
-	if abstract {
-		path = "@" + path
 	}
 	socket.Address = path
 	return SocketPair{socket, socket}

@@ -54,6 +54,7 @@ var _ = gc.Suite(&Suite{})
 
 var (
 	fakeModelBytes      = []byte("model")
+	sourceControllerTag = names.NewControllerTag("source-controller-uuid")
 	targetControllerTag = names.NewControllerTag("controller-uuid")
 	modelUUID           = "model-uuid"
 	modelTag            = names.NewModelTag(modelUUID)
@@ -83,7 +84,14 @@ var (
 	activateCall = jujutesting.StubCall{
 		FuncName: "MigrationTarget.Activate",
 		Args: []interface{}{
-			params.ModelArgs{ModelTag: modelTag.String()},
+			params.ActivateModelArgs{
+				ModelTag:        modelTag.String(),
+				ControllerTag:   sourceControllerTag.String(),
+				ControllerAlias: "mycontroller",
+				SourceAPIAddrs:  []string{"source-addr"},
+				SourceCACert:    "cacert",
+				CrossModelUUIDs: []string{"related-model-uuid"},
+			},
 		},
 	}
 	checkMachinesCall = jujutesting.StubCall{
@@ -120,9 +128,10 @@ var (
 		{"guard.Lockdown", nil},
 	}
 	prechecksCalls = []jujutesting.StubCall{
-		{"facade.Prechecks", nil},
 		{"facade.ModelInfo", nil},
 		apiOpenControllerCall,
+		{"Controller.ControllerVersion", []interface{}{nil}},
+		{"facade.Prechecks", []interface{}{version.MustParse("2.9.99")}},
 		{"MigrationTarget.Prechecks", []interface{}{params.MigrationModelInfo{
 			UUID:         modelUUID,
 			Name:         modelName,
@@ -153,9 +162,14 @@ func (s *Suite) SetUpTest(c *gc.C) {
 	s.clock = testclock.NewClock(time.Now())
 	s.stub = new(jujutesting.Stub)
 	s.connection = &stubConnection{
+		c:             c,
 		stub:          s.stub,
 		controllerTag: targetControllerTag,
 		logStream:     &mockStream{},
+		controllerVersion: params.ControllerVersionResults{
+			Version: "2.9.99",
+		},
+		facadeVersion: 2,
 	}
 	s.connectionErr = nil
 
@@ -258,6 +272,7 @@ func (s *Suite) TestSuccessfulMigration(c *gc.C) {
 			{"facade.MinionReports", nil},
 			apiOpenControllerCall,
 			checkMachinesCall,
+			{"facade.SourceControllerInfo", nil},
 			activateCall,
 			apiCloseCall,
 			{"facade.SetPhase", []interface{}{coremigration.SUCCESS}},
@@ -282,6 +297,43 @@ func (s *Suite) TestSuccessfulMigration(c *gc.C) {
 			{"facade.SetPhase", []interface{}{coremigration.DONE}},
 		}),
 	)
+}
+
+func (s *Suite) TestIncompatibleTarget(c *gc.C) {
+	s.connection.facadeVersion = 1
+	s.facade.exportedResources = []coremigration.SerializedModelResource{{
+		ApplicationRevision: resourcetesting.NewResource(c, nil, "blob", "app", "").Resource,
+	}}
+
+	s.facade.queueStatus(s.makeStatus(coremigration.QUIESCE))
+	s.facade.queueMinionReports(makeMinionReports(coremigration.QUIESCE))
+	s.facade.queueMinionReports(makeMinionReports(coremigration.VALIDATION))
+	s.facade.queueMinionReports(makeMinionReports(coremigration.SUCCESS))
+	s.config.UploadBinaries = makeStubUploadBinaries(s.stub)
+
+	s.checkWorkerReturns(c, migrationmaster.ErrInactive)
+
+	// Observe that the migration was seen, the model exported, an API
+	// connection to the target controller was made, the model was
+	// imported and then the migration completed.
+	s.stub.CheckCalls(c, joinCalls(
+		// Wait for migration to start.
+		watchStatusLockdownCalls,
+		[]jujutesting.StubCall{
+			{"facade.MinionReportTimeout", nil},
+		},
+
+		// QUIESCE
+		[]jujutesting.StubCall{
+			{"facade.ModelInfo", nil},
+			apiOpenControllerCall,
+			{"Controller.ControllerVersion", []interface{}{nil}},
+			{"facade.Prechecks", []interface{}{version.MustParse("2.9.99")}},
+			{"facade.SourceControllerInfo", nil},
+			apiCloseCall,
+		},
+		abortCalls,
+	))
 }
 
 func (s *Suite) TestMigrationResume(c *gc.C) {
@@ -430,9 +482,10 @@ func (s *Suite) TestQUIESCEWrongController(c *gc.C) {
 		watchStatusLockdownCalls,
 		[]jujutesting.StubCall{
 			{"facade.MinionReportTimeout", nil},
-			{"facade.Prechecks", nil},
 			{"facade.ModelInfo", nil},
 			apiOpenControllerCall,
+			{"Controller.ControllerVersion", []interface{}{nil}},
+			{"facade.Prechecks", []interface{}{version.MustParse("2.9.99")}},
 			apiCloseCall,
 		},
 		abortCalls,
@@ -448,7 +501,11 @@ func (s *Suite) TestQUIESCESourceChecksFail(c *gc.C) {
 		watchStatusLockdownCalls,
 		[]jujutesting.StubCall{
 			{"facade.MinionReportTimeout", nil},
-			{"facade.Prechecks", nil},
+			{"facade.ModelInfo", nil},
+			apiOpenControllerCall,
+			{"Controller.ControllerVersion", []interface{}{nil}},
+			{"facade.Prechecks", []interface{}{version.MustParse("2.9.99")}},
+			apiCloseCall,
 		},
 		abortCalls,
 	))
@@ -463,7 +520,6 @@ func (s *Suite) TestQUIESCEModelInfoFail(c *gc.C) {
 		watchStatusLockdownCalls,
 		[]jujutesting.StubCall{
 			{"facade.MinionReportTimeout", nil},
-			{"facade.Prechecks", nil},
 			{"facade.ModelInfo", nil},
 		},
 		abortCalls,
@@ -800,10 +856,11 @@ func (s *Suite) TestMinionWaitMigrationIdChanged(c *gc.C) {
 		"unexpected migration id in minion reports, got blah, expected model-uuid:2")
 }
 
-func (s *Suite) TestAPIConnectWithMacaroon(c *gc.C) {
+func (s *Suite) assertAPIConnectWithMacaroon(c *gc.C, authUser names.UserTag) {
 	// Use ABORT because it involves an API connection to the target
 	// and is convenient.
 	status := s.makeStatus(coremigration.ABORT)
+	status.TargetInfo.AuthTag = authUser
 
 	// Set up macaroon based auth to the target.
 	mac, err := macaroon.New([]byte("secret"), []byte("id"), "location", macaroon.LatestVersion)
@@ -815,6 +872,10 @@ func (s *Suite) TestAPIConnectWithMacaroon(c *gc.C) {
 	s.facade.queueStatus(status)
 
 	s.checkWorkerReturns(c, migrationmaster.ErrInactive)
+	var apiUser names.Tag
+	if authUser.IsLocal() {
+		apiUser = authUser
+	}
 	s.stub.CheckCalls(c, joinCalls(
 		watchStatusLockdownCalls,
 		[]jujutesting.StubCall{
@@ -825,7 +886,7 @@ func (s *Suite) TestAPIConnectWithMacaroon(c *gc.C) {
 					&api.Info{
 						Addrs:     []string{"1.2.3.4:5"},
 						CACert:    "cert",
-						Tag:       names.NewUserTag("admin"),
+						Tag:       apiUser,
 						Macaroons: macs, // <---
 					},
 					migration.ControllerDialOpts(),
@@ -836,6 +897,14 @@ func (s *Suite) TestAPIConnectWithMacaroon(c *gc.C) {
 			{"facade.SetPhase", []interface{}{coremigration.ABORTDONE}},
 		},
 	))
+}
+
+func (s *Suite) TestAPIConnectWithMacaroonLocalUser(c *gc.C) {
+	s.assertAPIConnectWithMacaroon(c, names.NewUserTag("admin"))
+}
+
+func (s *Suite) TestAPIConnectWithMacaroonExternalUser(c *gc.C) {
+	s.assertAPIConnectWithMacaroon(c, names.NewUserTag("fred@external"))
 }
 
 func (s *Suite) TestLogTransferErrorOpeningTargetAPI(c *gc.C) {
@@ -1221,8 +1290,8 @@ func (f *stubMasterFacade) MinionReportTimeout() (time.Duration, error) {
 	return f.minionReportTimeout, nil
 }
 
-func (f *stubMasterFacade) Prechecks() error {
-	f.stub.AddCall("facade.Prechecks")
+func (f *stubMasterFacade) Prechecks(targetControllerVersion version.Number) error {
+	f.stub.AddCall("facade.Prechecks", targetControllerVersion)
 	return f.prechecksErr
 }
 
@@ -1237,6 +1306,16 @@ func (f *stubMasterFacade) ModelInfo() (coremigration.ModelInfo, error) {
 		Owner:        ownerTag,
 		AgentVersion: modelVersion,
 	}, nil
+}
+
+func (f *stubMasterFacade) SourceControllerInfo() (coremigration.SourceControllerInfo, []string, error) {
+	f.stub.AddCall("facade.SourceControllerInfo")
+	return coremigration.SourceControllerInfo{
+		ControllerTag:   sourceControllerTag,
+		ControllerAlias: "mycontroller",
+		Addrs:           []string{"source-addr"},
+		CACert:          "cacert",
+	}, []string{"related-model-uuid"}, nil
 }
 
 func (f *stubMasterFacade) Export() (coremigration.SerializedModel, error) {
@@ -1311,6 +1390,7 @@ func (w *mockWatcher) Changes() watcher.NotifyChannel {
 }
 
 type stubConnection struct {
+	c *gc.C
 	api.Connection
 	stub                *jujutesting.Stub
 	prechecksErr        error
@@ -1326,10 +1406,14 @@ type stubConnection struct {
 
 	machineErrs     []string
 	checkMachineErr error
+
+	facadeVersion int
+
+	controllerVersion params.ControllerVersionResults
 }
 
 func (c *stubConnection) BestFacadeVersion(string) int {
-	return 1
+	return c.facadeVersion
 }
 
 func (c *stubConnection) APICall(objType string, _ int, _, request string, args, response interface{}) error {
@@ -1359,6 +1443,14 @@ func (c *stubConnection) APICall(objType string, _ int, _, request string, args,
 				})
 			}
 			return c.checkMachineErr
+		}
+	} else if objType == "Controller" {
+		switch request {
+		case "ControllerVersion":
+			c.c.Logf("objType %q request %q, args %#v", objType, request, args)
+			controllerVersion := response.(*params.ControllerVersionResults)
+			*controllerVersion = c.controllerVersion
+			return nil
 		}
 	}
 	return errors.New("unexpected API call")

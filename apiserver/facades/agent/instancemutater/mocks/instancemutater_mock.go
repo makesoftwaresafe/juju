@@ -8,7 +8,6 @@ import (
 	reflect "reflect"
 	time "time"
 
-	gomock "github.com/golang/mock/gomock"
 	charm "github.com/juju/charm/v8"
 	instancemutater "github.com/juju/juju/apiserver/facades/agent/instancemutater"
 	instance "github.com/juju/juju/core/instance"
@@ -16,6 +15,7 @@ import (
 	status "github.com/juju/juju/core/status"
 	state "github.com/juju/juju/state"
 	names "github.com/juju/names/v4"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockInstanceMutatorWatcher is a mock of InstanceMutatorWatcher interface.
@@ -489,12 +489,11 @@ func (mr *MockUnitMockRecorder) AssignedMachineId() *gomock.Call {
 }
 
 // CharmURL mocks base method.
-func (m *MockUnit) CharmURL() (*charm.URL, error) {
+func (m *MockUnit) CharmURL() *string {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CharmURL")
-	ret0, _ := ret[0].(*charm.URL)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret0, _ := ret[0].(*string)
+	return ret0
 }
 
 // CharmURL indicates an expected call of CharmURL.

@@ -250,6 +250,9 @@ const (
 	Hirsute SeriesName = "hirsute"
 	Impish  SeriesName = "impish"
 	Jammy   SeriesName = "jammy"
+	Kinetic SeriesName = "kinetic"
+	Lunar   SeriesName = "lunar"
+	Mantic  SeriesName = "mantic"
 )
 
 var ubuntuSeries = map[SeriesName]seriesVersion{
@@ -291,7 +294,6 @@ var ubuntuSeries = map[SeriesName]seriesVersion{
 		WorkloadType: ControllerWorkloadType,
 		Version:      "16.04",
 		LTS:          true,
-		Supported:    true,
 		ESMSupported: true,
 	},
 	Yakkety: {
@@ -310,7 +312,6 @@ var ubuntuSeries = map[SeriesName]seriesVersion{
 		WorkloadType: ControllerWorkloadType,
 		Version:      "18.04",
 		LTS:          true,
-		Supported:    true,
 		ESMSupported: true,
 	},
 	Cosmic: {
@@ -350,6 +351,18 @@ var ubuntuSeries = map[SeriesName]seriesVersion{
 		LTS:          true,
 		Supported:    true,
 		ESMSupported: true,
+	},
+	Kinetic: {
+		WorkloadType: ControllerWorkloadType,
+		Version:      "22.10",
+	},
+	Lunar: {
+		WorkloadType: ControllerWorkloadType,
+		Version:      "23.04",
+	},
+	Mantic: {
+		WorkloadType: ControllerWorkloadType,
+		Version:      "23.10",
 	},
 }
 

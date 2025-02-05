@@ -6,13 +6,12 @@ package relation_test
 import (
 	"fmt"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	jc "github.com/juju/testing/checkers"
-
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	apiuniter "github.com/juju/juju/api/agent/uniter"
@@ -253,9 +252,7 @@ func endpoint() apiuniter.Endpoint {
 		}}
 }
 
-//
 // RelationUnit
-//
 func (s *relationerSuite) expectEndpoint(ep apiuniter.Endpoint) {
 	s.relationUnit.EXPECT().Endpoint().Return(ep)
 }
@@ -272,16 +269,12 @@ func (s *relationerSuite) expectRelationUnitRelation() {
 	s.relationUnit.EXPECT().Relation().Return(s.relation)
 }
 
-//
 // Relation
-//
 func (s *relationerSuite) expectRelationId() {
 	s.relation.EXPECT().Id().Return(1)
 }
 
-//
 // StateManager
-//
 func (s *relationerSuite) expectRemoveRelation() {
 	s.stateManager.EXPECT().RemoveRelation(1, s.unitGetter, map[string]bool{}).Return(nil)
 }

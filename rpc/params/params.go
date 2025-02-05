@@ -189,7 +189,8 @@ type AddCharmWithOrigin struct {
 
 	// Deprecated, series has moved into Origin and this should only be used
 	// to talk to older controllers.
-	Series string `json:"series"`
+	// TODO(juju3) - remove series
+	Series string `json:"series,omitempty"`
 }
 
 // AddCharmWithAuthorization holds the arguments for making an
@@ -211,7 +212,8 @@ type AddCharmWithAuth struct {
 
 	// Deprecated, series has moved into Origin and this should only be used
 	// to talk to older controllers.
-	Series string `json:"series"`
+	// TODO(juju3) - remove series
+	Series string `json:"series,omitempty"`
 }
 
 // CharmOriginResult holds the results of AddCharms calls where
@@ -228,11 +230,20 @@ type CharmURLOriginResult struct {
 	Error  *Error      `json:"error,omitempty"`
 }
 
+// Base holds the name of an OS and its version.
+type Base struct {
+	Name    string `json:"name"`
+	Channel string `json:"channel"`
+}
+
 // AddMachineParams encapsulates the parameters used to create a new machine.
 type AddMachineParams struct {
 	// The following fields hold attributes that will be given to the
 	// new machine when it is created.
-	Series      string             `json:"series"`
+	// Series is deprecated and replaced by Base.
+	// TODO(juju3) - remove series
+	Series      string             `json:"series,omitempty"`
+	Base        *Base              `json:"base,omitempty"`
 	Constraints constraints.Value  `json:"constraints"`
 	Jobs        []model.MachineJob `json:"jobs"`
 
@@ -319,22 +330,24 @@ type RecordAgentStartInformationArg struct {
 	Hostname string `json:"hostname,omitempty"`
 }
 
-// UpdateSeriesArg holds the parameters for updating the series for the
+// UpdateChannelArg holds the parameters for updating the series for the
 // specified application or machine. For Application, only known by facade
 // version 5 and greater. For MachineManger, only known by facade version
 // 4 or greater.
-type UpdateSeriesArg struct {
+type UpdateChannelArg struct {
 	Entity Entity `json:"tag"`
 	Force  bool   `json:"force"`
-	Series string `json:"series"`
+	// TODO(juju3) - remove series
+	Series  string `json:"series"`
+	Channel string `json:"channel"`
 }
 
-// UpdateSeriesArgs holds the parameters for updating the series
+// UpdateChannelArgs holds the parameters for updating the series
 // of one or more applications or machines. For Application, only known
 // by facade version 5 and greater. For MachineManger, only known by facade
 // version 4 or greater.
-type UpdateSeriesArgs struct {
-	Args []UpdateSeriesArg `json:"args"`
+type UpdateChannelArgs struct {
+	Args []UpdateChannelArg `json:"args"`
 }
 
 // LXDProfileUpgrade holds the parameters for an application
@@ -357,13 +370,13 @@ type UpgradeCharmProfileStatusResults struct {
 	Results []UpgradeCharmProfileStatusResult `json:"results,omitempty"`
 }
 
-// ConfigResults holds configuration values for an entity.
+// ConfigResult holds configuration values for an entity.
 type ConfigResult struct {
 	Config map[string]interface{} `json:"config"`
 	Error  *Error                 `json:"error,omitempty"`
 }
 
-// ModelOperatorInfo
+// ModelOperatorInfo holds infor needed for a model operator.
 type ModelOperatorInfo struct {
 	APIAddresses []string        `json:"api-addresses"`
 	ImageDetails DockerImageInfo `json:"image-details"`
@@ -937,19 +950,20 @@ type LoginResult struct {
 	ServerVersion string `json:"server-version,omitempty"`
 }
 
-// ControllersServersSpec contains arguments for
+// ControllersSpec contains arguments for
 // the EnableHA client API call.
 type ControllersSpec struct {
 	NumControllers int               `json:"num-controllers"`
 	Constraints    constraints.Value `json:"constraints,omitempty"`
 	// Series is the series to associate with new controller machines.
 	// If this is empty, then the model's default series is used.
+	// TODO(juju3) - remove - this have never been set
 	Series string `json:"series,omitempty"`
 	// Placement defines specific machines to become new controller machines.
 	Placement []string `json:"placement,omitempty"`
 }
 
-// ControllersServersSpecs contains all the arguments
+// ControllersSpecs contains all the arguments
 // for the EnableHA API call.
 type ControllersSpecs struct {
 	Specs []ControllersSpec `json:"specs"`
@@ -1231,6 +1245,9 @@ type DestroyMachineResult struct {
 // DestroyMachineInfo contains information related to the removal of
 // a machine.
 type DestroyMachineInfo struct {
+	// MachineId is the ID if the machine that will be destroyed
+	MachineId string `json:"machine-id"`
+
 	// DetachedStorage is the tags of storage instances that will be
 	// detached from the machine (assigned units) as a result of
 	// destroying the machine, and will remain in the model after
@@ -1241,9 +1258,13 @@ type DestroyMachineInfo struct {
 	// destroyed as a result of destroying the machine.
 	DestroyedStorage []Entity `json:"destroyed-storage,omitempty"`
 
-	// DestroyedStorage is the tags of units that will be destroyed
+	// DestroyedUnits are the tags of units that will be destroyed
 	// as a result of destroying the machine.
 	DestroyedUnits []Entity `json:"destroyed-units,omitempty"`
+
+	// DestroyedContainers are the results of the destroyed containers hosted
+	// on a machine, destroyed as a result of destroying the machine
+	DestroyedContainers []DestroyMachineResult `json:"destroyed-containers,omitempty"`
 }
 
 // DestroyUnitResults contains the results of a DestroyUnit API request.
@@ -1329,7 +1350,7 @@ type UpgradeSeriesUnitsResults struct {
 	Results []UpgradeSeriesUnitsResult
 }
 
-// UpgradeSeriesUnitsResults contains the units affected by a series for
+// UpgradeSeriesUnitsResult contains the units affected by a series for
 // a given machine.
 type UpgradeSeriesUnitsResult struct {
 	Error     *Error   `json:"error,omitempty"`

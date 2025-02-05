@@ -107,7 +107,7 @@ func (s *environBrokerSuite) TestStartInstanceAvailabilityZoneIndependentError(c
 
 	_, err := s.Env.StartInstance(s.CallCtx, s.StartInstArgs)
 	c.Assert(err, gc.ErrorMatches, "blargh")
-	c.Assert(err, jc.Satisfies, environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsTrue)
 }
 
 func (s *environBrokerSuite) TestStartInstanceVolumeAvailabilityZone(c *gc.C) {
@@ -189,7 +189,7 @@ func (s *environBrokerSuite) TestNewRawInstanceZoneInvalidCredentialError(c *gc.
 	_, err := gce.NewRawInstance(s.Env, s.CallCtx, s.StartInstArgs, s.spec)
 	c.Check(err, gc.NotNil)
 	c.Assert(s.InvalidatedCredentials, jc.IsTrue)
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 }
 
 func (s *environBrokerSuite) TestNewRawInstanceZoneSpecificError(c *gc.C) {
@@ -197,7 +197,7 @@ func (s *environBrokerSuite) TestNewRawInstanceZoneSpecificError(c *gc.C) {
 
 	_, err := gce.NewRawInstance(s.Env, s.CallCtx, s.StartInstArgs, s.spec)
 	c.Assert(err, gc.ErrorMatches, "blargh")
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 }
 
 func (s *environBrokerSuite) TestGetMetadataUbuntu(c *gc.C) {
@@ -282,6 +282,15 @@ func (s *environBrokerSuite) TestSettingImageStreamsViaConfigToDaily(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(result, gc.NotNil)
 	c.Check(c.GetTestLog(), jc.Contains, gce.UbuntuDailyImageBasePath)
+}
+
+func (s *environBrokerSuite) TestSettingImageStreamsViaConfigToPro(c *gc.C) {
+	s.FakeConn.Inst = s.BaseInstance
+	s.UpdateConfig(c, map[string]interface{}{"image-stream": "pro"})
+	result, err := gce.NewRawInstance(s.Env, s.CallCtx, s.StartInstArgs, s.spec)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(result, gc.NotNil)
+	c.Check(c.GetTestLog(), jc.Contains, gce.UbuntuProImageBasePath)
 }
 
 func (s *environBrokerSuite) TestSettingBaseImagePathOverwritesImageStreams(c *gc.C) {

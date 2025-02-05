@@ -4,9 +4,9 @@
 package upgradesteps_test
 
 import (
-	"github.com/golang/mock/gomock"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/upgradesteps"
@@ -17,8 +17,6 @@ import (
 
 type upgradeStepsSuite struct {
 	jujutesting.BaseSuite
-
-	writeArgs []params.SetUnitStateArg
 
 	fCaller *mocks.MockFacadeCaller
 }

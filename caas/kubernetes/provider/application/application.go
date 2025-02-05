@@ -17,7 +17,6 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/featureflag"
 	"github.com/juju/loggo"
-	"github.com/juju/utils/v3/arch"
 	"github.com/juju/version/v2"
 	"github.com/kr/pretty"
 	appsv1 "k8s.io/api/apps/v1"
@@ -41,7 +40,6 @@ import (
 	"github.com/juju/juju/caas/kubernetes/provider/storage"
 	"github.com/juju/juju/caas/kubernetes/provider/utils"
 	k8swatcher "github.com/juju/juju/caas/kubernetes/provider/watcher"
-	"github.com/juju/juju/cloudconfig/podcfg"
 	"github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/core/status"
@@ -53,19 +51,25 @@ import (
 var logger = loggo.GetLogger("juju.kubernetes.provider.application")
 
 const (
-	unitContainerName            = "charm"
-	charmVolumeName              = "charm-data"
-	agentProbeInitialDelay int32 = 30
-	agentProbePeriod       int32 = 10
-	agentProbeSuccess      int32 = 1
-	agentProbeFailure      int32 = 2
+	unitContainerName = "charm"
+	charmVolumeName   = "charm-data"
 
-	containerPebblePortStart   = 38813 // Arbitrary, but PEBBLE -> P38813 -> Port 38813
+	containerAgentPebblePort = "38812"
+	containerPebblePortStart = 38813 // Arbitrary, but PEBBLE -> P38813 -> Port 38813
+	// containerProbeInitialDelay is the initial delay in seconds before the probe starts.
 	containerProbeInitialDelay = 30
-	containerProbeTimeout      = 1
-	containerProbePeriod       = 5
-	containerProbeSuccess      = 1
-	containerProbeFailure      = 1
+	// containerProbeTimeout is the timeout for the probe to complete in seconds.
+	containerProbeTimeout = 1
+	// containerProbePeriod is the number of seconds between each probe.
+	containerProbePeriod = 5
+	// containerProbeSuccess is the number of successful probes to mark the check as healthy.
+	containerProbeSuccess = 1
+	// containerProbeFailure is the number of failed probes to mark the check as unhealthy.
+	containerProbeFailure = 1
+)
+
+var (
+	containerAgentPebbleVersion = version.MustParse("2.9.37")
 )
 
 type app struct {
@@ -492,87 +496,10 @@ func (a *app) Ensure(config caas.ApplicationConfig) (err error) {
 	return applier.Run(context.Background(), a.client, false)
 }
 
-// Upgrade upgrades the app to the specified version.
-func (a *app) Upgrade(ver version.Number) error {
-	// TODO(sidecar): Unify this with Ensure
-	applier := a.newApplier()
-
-	if err := a.upgradeMainResource(applier, ver); err != nil {
-		return errors.Trace(err)
-	}
-
-	// TODO(sidecar):  we could query the cluster for all resources with the `app.juju.is/created-by` and `app.kubernetes.io/name` labels instead
-	// (so longer as the resource also does have the juju version annotation already).
-	// Then we don't have to worry about missing anything if something is added later and not also updated here.
-	for _, r := range []annotationUpdater{
-		resources.NewSecret(a.secretName(), a.namespace, nil),
-		resources.NewServiceAccount(a.serviceAccountName(), a.namespace, nil),
-		resources.NewRole(a.serviceAccountName(), a.namespace, nil),
-		resources.NewRoleBinding(a.serviceAccountName(), a.namespace, nil),
-		resources.NewClusterRole(a.qualifiedClusterName(), nil),
-		resources.NewClusterRoleBinding(a.qualifiedClusterName(), nil),
-		resources.NewService(a.name, a.namespace, nil),
-	} {
-		if err := r.Get(context.Background(), a.client); err != nil {
-			return errors.Trace(err)
-		}
-		existingAnnotations := annotations.New(r.GetAnnotations())
-		r.SetAnnotations(a.upgradeAnnotations(existingAnnotations, ver))
-		applier.Apply(r)
-	}
-
-	return applier.Run(context.Background(), a.client, false)
-}
-
 type annotationUpdater interface {
 	resources.Resource
 	GetAnnotations() map[string]string
 	SetAnnotations(annotations map[string]string)
-}
-
-func (a *app) upgradeHeadlessService(applier resources.Applier, ver version.Number) error {
-	r := resources.NewService(headlessServiceName(a.name), a.namespace, nil)
-	if err := r.Get(context.Background(), a.client); err != nil {
-		return errors.Trace(err)
-	}
-	r.SetAnnotations(a.upgradeAnnotations(annotations.New(r.GetAnnotations()), ver))
-	applier.Apply(r)
-	return nil
-}
-
-func (a *app) upgradeMainResource(applier resources.Applier, ver version.Number) error {
-	switch a.deploymentType {
-	case caas.DeploymentStateful:
-		if err := a.upgradeHeadlessService(applier, ver); err != nil {
-			return errors.Trace(err)
-		}
-
-		ss := resources.NewStatefulSet(a.name, a.namespace, nil)
-		if err := ss.Get(context.Background(), a.client); err != nil {
-			return errors.Trace(err)
-		}
-		initContainers := ss.Spec.Template.Spec.InitContainers
-		if len(initContainers) != 1 {
-			return errors.NotValidf("init container of %q", a.name)
-		}
-		initContainer := initContainers[0]
-		var err error
-		initContainer.Image, err = podcfg.RebuildOldOperatorImagePath(initContainer.Image, ver)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		ss.Spec.Template.Spec.InitContainers = []corev1.Container{initContainer}
-		ss.Spec.Template.SetAnnotations(a.upgradeAnnotations(annotations.New(ss.Spec.Template.GetAnnotations()), ver))
-		ss.SetAnnotations(a.upgradeAnnotations(annotations.New(ss.GetAnnotations()), ver))
-		applier.Apply(ss)
-		return nil
-	case caas.DeploymentStateless:
-		return errors.NotSupportedf("upgrade for deployment type %q", a.deploymentType)
-	case caas.DeploymentDaemon:
-		return errors.NotSupportedf("upgrade for deployment type %q", a.deploymentType)
-	default:
-		return errors.NotSupportedf("unknown deployment type %q", a.deploymentType)
-	}
 }
 
 // Exists indicates if the application for the specified
@@ -664,10 +591,7 @@ func (a *app) configureDefaultService(annotation annotations.Annotation) (err er
 			}},
 		},
 	})
-	if err = svc.Get(context.Background(), a.client); errors.IsNotFound(err) {
-		return svc.Apply(context.Background(), a.client)
-	}
-	return errors.Trace(err)
+	return svc.Apply(context.Background(), a.client)
 }
 
 // UpdateService updates the default service with specific service type and port mappings.
@@ -1238,27 +1162,6 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 		return containers[i].Name < containers[j].Name
 	})
 
-	resourceRequests := corev1.ResourceList(nil)
-	millicores := 0
-	// TODO(allow resource limits to be applied to each container).
-	// For now we only do resource requests, one container is sufficient for
-	// scheduling purposes.
-	if config.Constraints.HasCpuPower() {
-		if resourceRequests == nil {
-			resourceRequests = corev1.ResourceList{}
-		}
-		// 100 cpu power is 100 millicores.
-		millicores = int(*config.Constraints.CpuPower)
-		resourceRequests[corev1.ResourceCPU] = *resource.NewMilliQuantity(int64(millicores), resource.DecimalSI)
-	}
-	if config.Constraints.HasMem() {
-		if resourceRequests == nil {
-			resourceRequests = corev1.ResourceList{}
-		}
-		bytes := *config.Constraints.Mem * 1024 * 1024
-		resourceRequests[corev1.ResourceMemory] = *resource.NewQuantity(int64(bytes), resource.BinarySI)
-	}
-
 	env := []corev1.EnvVar{
 		{
 			Name:  "JUJU_CONTAINER_NAMES",
@@ -1275,61 +1178,115 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 			Value: features,
 		})
 	}
-	containerSpecs := []corev1.Container{{
-		Name:            unitContainerName,
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		Image:           config.CharmBaseImagePath,
-		WorkingDir:      jujuDataDir,
-		Command:         []string{"/charm/bin/containeragent"},
-		Args: []string{
-			"unit",
-			"--data-dir", jujuDataDir,
-			"--charm-modified-version", strconv.Itoa(config.CharmModifiedVersion),
-			"--append-env", "PATH=$PATH:/charm/bin",
-			"--show-log",
+	charmContainerCommand := []string{"/charm/bin/pebble"}
+	charmContainerArgs := []string{
+		"run",
+		"--http", fmt.Sprintf(":%s", containerAgentPebblePort),
+		"--verbose",
+	}
+	charmContainerLivenessProbe := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/v1/health?level=alive",
+				Port: intstr.Parse(containerAgentPebblePort),
+			},
 		},
-		Env: env,
-		SecurityContext: &corev1.SecurityContext{
-			RunAsUser:  pointer.Int64Ptr(0),
-			RunAsGroup: pointer.Int64Ptr(0),
+		InitialDelaySeconds: containerProbeInitialDelay,
+		TimeoutSeconds:      containerProbeTimeout,
+		PeriodSeconds:       containerProbePeriod,
+		SuccessThreshold:    containerProbeSuccess,
+		FailureThreshold:    containerProbeFailure,
+	}
+	charmContainerReadinessProbe := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/v1/health?level=ready",
+				Port: intstr.Parse(containerAgentPebblePort),
+			},
 		},
-		LivenessProbe: &corev1.Probe{
+		InitialDelaySeconds: containerProbeInitialDelay,
+		TimeoutSeconds:      containerProbeTimeout,
+		PeriodSeconds:       containerProbePeriod,
+		SuccessThreshold:    containerProbeSuccess,
+		FailureThreshold:    containerProbeFailure,
+	}
+	charmContainerStartupProbe := charmContainerLivenessProbe
+	charmContainerExtraVolumeMounts := []corev1.VolumeMount{
+		{
+			Name:      charmVolumeName,
+			MountPath: constants.DefaultPebbleDir,
+			SubPath:   "containeragent/pebble",
+		},
+	}
+
+	// (tlm) lp1997253. If the agent version is less than
+	// containerAgentPebbleVersion we need to keep still using the old args
+	// supported by the init command and the associated probes. By not doing
+	// this we will have full container restarts.
+	if config.AgentVersion.Compare(containerAgentPebbleVersion) < 0 {
+		charmContainerExtraVolumeMounts = []corev1.VolumeMount{}
+		charmContainerLivenessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: constants.AgentHTTPPathLiveness,
 					Port: intstr.Parse(constants.AgentHTTPProbePort),
 				},
 			},
-			InitialDelaySeconds: agentProbeInitialDelay,
-			PeriodSeconds:       agentProbePeriod,
-			SuccessThreshold:    agentProbeSuccess,
-			FailureThreshold:    agentProbeFailure,
-		},
-		ReadinessProbe: &corev1.Probe{
+			InitialDelaySeconds: 30,
+			PeriodSeconds:       10,
+			SuccessThreshold:    1,
+			FailureThreshold:    2,
+		}
+		charmContainerReadinessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: constants.AgentHTTPPathReadiness,
 					Port: intstr.Parse(constants.AgentHTTPProbePort),
 				},
 			},
-			InitialDelaySeconds: agentProbeInitialDelay,
-			PeriodSeconds:       agentProbePeriod,
-			SuccessThreshold:    agentProbeSuccess,
-			FailureThreshold:    agentProbeFailure,
-		},
-		StartupProbe: &corev1.Probe{
+			InitialDelaySeconds: 30,
+			PeriodSeconds:       10,
+			SuccessThreshold:    1,
+			FailureThreshold:    2,
+		}
+		charmContainerStartupProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: constants.AgentHTTPPathStartup,
 					Port: intstr.Parse(constants.AgentHTTPProbePort),
 				},
 			},
-			InitialDelaySeconds: agentProbeInitialDelay,
-			PeriodSeconds:       agentProbePeriod,
-			SuccessThreshold:    agentProbeSuccess,
-			FailureThreshold:    agentProbeFailure,
+			InitialDelaySeconds: 30,
+			PeriodSeconds:       10,
+			SuccessThreshold:    1,
+			FailureThreshold:    2,
+		}
+		charmContainerCommand = []string{"/charm/bin/containeragent"}
+		charmContainerArgs = []string{
+			"unit",
+			"--data-dir", jujuDataDir,
+			"--charm-modified-version", strconv.Itoa(config.CharmModifiedVersion),
+			"--append-env", "PATH=$PATH:/charm/bin",
+			"--show-log",
+		}
+	}
+
+	containerSpecs := []corev1.Container{{
+		Name:            unitContainerName,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Image:           config.CharmBaseImagePath,
+		WorkingDir:      jujuDataDir,
+		Command:         charmContainerCommand,
+		Args:            charmContainerArgs,
+		Env:             env,
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:  pointer.Int64Ptr(0),
+			RunAsGroup: pointer.Int64Ptr(0),
 		},
-		VolumeMounts: []corev1.VolumeMount{
+		LivenessProbe:  charmContainerLivenessProbe,
+		ReadinessProbe: charmContainerReadinessProbe,
+		StartupProbe:   charmContainerStartupProbe,
+		VolumeMounts: append([]corev1.VolumeMount{
 			{
 				Name:      charmVolumeName,
 				MountPath: "/charm/bin",
@@ -1346,10 +1303,7 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 				MountPath: "/charm/containers",
 				SubPath:   "charm/containers",
 			},
-		},
-		Resources: corev1.ResourceRequirements{
-			Requests: resourceRequests,
-		},
+		}, charmContainerExtraVolumeMounts...),
 	}}
 
 	imagePullSecrets := []corev1.LocalObjectReference(nil)
@@ -1430,31 +1384,35 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 		containerSpecs = append(containerSpecs, container)
 	}
 
-	nodeSelector := map[string]string(nil)
-	if config.Constraints.HasArch() {
-		cpuArch := *config.Constraints.Arch
-		cpuArch = arch.NormaliseArch(cpuArch)
-		// Convert to Golang arch string
-		switch cpuArch {
-		case arch.AMD64:
-			cpuArch = "amd64"
-		case arch.ARM64:
-			cpuArch = "arm64"
-		case arch.PPC64EL:
-			cpuArch = "ppc64le"
-		case arch.S390X:
-			cpuArch = "s390x"
-		default:
-			return nil, errors.NotSupportedf("architecture %q", cpuArch)
+	containerAgentArgs := []string{
+		"init",
+		"--containeragent-pebble-dir", "/containeragent/pebble",
+		"--charm-modified-version", strconv.Itoa(config.CharmModifiedVersion),
+		"--data-dir", jujuDataDir,
+		"--bin-dir", "/charm/bin",
+	}
+	charmInitAdditionalMounts := []corev1.VolumeMount{
+		{
+			Name:      charmVolumeName,
+			MountPath: "/containeragent/pebble",
+			SubPath:   "containeragent/pebble",
+		},
+	}
+	// (tlm) lp1997253. If the agent version is less then containerAgentPebbleVersion
+	// we need to keep still using the old args supported by the init command
+	if config.AgentVersion.Compare(containerAgentPebbleVersion) < 0 {
+		charmInitAdditionalMounts = []corev1.VolumeMount{}
+		containerAgentArgs = []string{
+			"init",
+			"--data-dir", jujuDataDir,
+			"--bin-dir", "/charm/bin",
 		}
-		nodeSelector = map[string]string{"kubernetes.io/arch": cpuArch}
 	}
 
 	automountToken := true
-	return &corev1.PodSpec{
+	spec := &corev1.PodSpec{
 		AutomountServiceAccountToken:  &automountToken,
 		ServiceAccountName:            a.serviceAccountName(),
-		NodeSelector:                  nodeSelector,
 		ImagePullSecrets:              imagePullSecrets,
 		TerminationGracePeriodSeconds: pointer.Int64Ptr(300),
 		InitContainers: []corev1.Container{{
@@ -1463,7 +1421,7 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 			Image:           config.AgentImagePath,
 			WorkingDir:      jujuDataDir,
 			Command:         []string{"/opt/containeragent"},
-			Args:            []string{"init", "--data-dir", jujuDataDir, "--bin-dir", "/charm/bin"},
+			Args:            containerAgentArgs,
 			Env: []corev1.EnvVar{
 				{
 					Name:  "JUJU_CONTAINER_NAMES",
@@ -1495,7 +1453,7 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 					},
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{
+			VolumeMounts: append([]corev1.VolumeMount{
 				{
 					Name:      charmVolumeName,
 					MountPath: jujuDataDir,
@@ -1511,7 +1469,7 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 					MountPath: "/charm/containers",
 					SubPath:   "charm/containers",
 				},
-			},
+			}, charmInitAdditionalMounts...),
 		}},
 		Containers: containerSpecs,
 		Volumes: []corev1.Volume{
@@ -1522,7 +1480,12 @@ func (a *app) applicationPodSpec(config caas.ApplicationConfig) (*corev1.PodSpec
 				},
 			},
 		},
-	}, nil
+	}
+	err := ApplyConstraints(spec, a.name, config.Constraints, ConfigureConstraint)
+	if err != nil {
+		return nil, errors.Annotate(err, "processing constraints")
+	}
+	return spec, nil
 }
 
 func (a *app) ensureImagePullSecrets(applier resources.Applier, config caas.ApplicationConfig) error {
@@ -1574,10 +1537,6 @@ func (a *app) ensureImagePullSecrets(applier resources.Applier, config caas.Appl
 func (a *app) annotations(config caas.ApplicationConfig) annotations.Annotation {
 	return utils.ResourceTagsToAnnotations(config.ResourceTags, a.legacyLabels).
 		Merge(utils.AnnotationsForVersion(config.AgentVersion.String(), a.legacyLabels))
-}
-
-func (a *app) upgradeAnnotations(anns annotations.Annotation, ver version.Number) annotations.Annotation {
-	return anns.Merge(utils.AnnotationsForVersion(ver.String(), a.legacyLabels))
 }
 
 func (a *app) labels() labels.Set {

@@ -1151,7 +1151,7 @@ type DestroyModelParams struct {
 	//
 	// If this is false when destroying the controller model,
 	// there must be no hosted models, or an error satisfying
-	// IsHasHostedModelsError will be returned.
+	// HasHostedModelsError will be returned.
 	//
 	// TODO(axw) this should be moved to the Controller type.
 	DestroyHostedModels bool
@@ -1162,7 +1162,7 @@ type DestroyModelParams struct {
 	//
 	// This is ternary: nil, false, or true. If nil and
 	// there is persistent storage in the model (or hosted
-	// models), an error satisfying IsHasPersistentStorageError
+	// models), an error satisfying PersistentStorageError
 	// will be returned.
 	DestroyStorage *bool
 
@@ -1235,11 +1235,28 @@ func (m *Model) destroyOps(
 	ensureEmpty bool,
 	destroyingController bool,
 ) ([]txn.Op, error) {
+	modelUUID := m.UUID()
 	force := args.Force != nil && *args.Force
-	if m.Life() != Alive {
-		if !force {
-			return nil, errModelNotAlive
+	if m.Life() != Alive && !force {
+		currentTimeout := m.DestroyTimeout()
+		if !destroyingController && ((currentTimeout == nil && args.Timeout != nil) ||
+			(currentTimeout != nil && args.Timeout != nil && *currentTimeout != *args.Timeout)) {
+			var ops []txn.Op
+			modelOp := txn.Op{
+				C:      modelsC,
+				Id:     modelUUID,
+				Assert: bson.D{{"life", m.Life()}},
+			}
+			modelOp.Update = bson.D{{
+				"$set",
+				bson.D{
+					{"destroy-timeout", args.Timeout},
+				},
+			}}
+			ops = append(ops, modelOp)
+			return ops, nil
 		}
+		return nil, errModelNotAlive
 	}
 
 	// Check if the model is empty. If it is, we can advance the model's
@@ -1252,7 +1269,6 @@ func (m *Model) destroyOps(
 		logger.Warningf("getting model %v entity refs: %v", m.UUID(), err)
 	}
 	isEmpty := true
-	modelUUID := m.UUID()
 	nextLife := Dying
 
 	prereqOps, err := checkModelEntityRefsEmpty(modelEntityRefs)
@@ -1351,7 +1367,7 @@ func (m *Model) destroyOps(
 				prereqOps = append(prereqOps, ops...)
 				aliveEmpty++
 			default:
-				if !IsModelNotEmptyError(err) {
+				if !errors.Is(err, stateerrors.ModelNotEmptyError) {
 					// TODO (force 2019-4-24) we should not break out here but
 					// continue with other models.
 					return nil, errors.Trace(err)
@@ -1365,7 +1381,7 @@ func (m *Model) destroyOps(
 			// destroying the models and waiting for them to
 			// become Dead.
 			return nil, errors.Trace(
-				newHasHostedModelsError(dying + aliveNonEmpty + aliveEmpty),
+				stateerrors.NewHasHostedModelsError(dying + aliveNonEmpty + aliveEmpty),
 			)
 		}
 		// Ensure that the number of active models has not changed
@@ -1478,7 +1494,7 @@ func (model *Model) State() *State {
 func checkModelEntityRefsEmpty(doc *modelEntityRefsDoc) ([]txn.Op, error) {
 	// These errors could be potentially swallowed as we re-try to destroy model.
 	// Let's, at least, log them for observation.
-	err := newModelNotEmptyError(
+	err := stateerrors.NewModelNotEmptyError(
 		len(doc.Machines),
 		len(doc.Applications),
 		len(doc.Volumes),
@@ -1525,7 +1541,7 @@ func checkModelEntityRefsNoPersistentStorage(
 			return nil, errors.Trace(err)
 		}
 		if detachable {
-			return nil, newHasPersistentStorageError()
+			return nil, stateerrors.PersistentStorageError
 		}
 	}
 	for _, filesystemId := range doc.Filesystems {
@@ -1535,7 +1551,7 @@ func checkModelEntityRefsNoPersistentStorage(
 			return nil, errors.Trace(err)
 		}
 		if detachable {
-			return nil, newHasPersistentStorageError()
+			return nil, stateerrors.PersistentStorageError
 		}
 	}
 	return noNewStorageModelEntityRefs(doc), nil
@@ -1647,7 +1663,7 @@ func removeModelFilesystemRefOp(mb modelBackend, filesystemId string) txn.Op {
 func addModelEntityRefOp(mb modelBackend, entityField, entityId string) txn.Op {
 	return txn.Op{
 		C:      modelEntityRefsC,
-		Id:     mb.modelUUID(),
+		Id:     mb.ModelUUID(),
 		Assert: txn.DocExists,
 		Update: bson.D{{"$addToSet", bson.D{{entityField, entityId}}}},
 	}
@@ -1656,7 +1672,7 @@ func addModelEntityRefOp(mb modelBackend, entityField, entityId string) txn.Op {
 func removeModelEntityRefOp(mb modelBackend, entityField, entityId string) txn.Op {
 	return txn.Op{
 		C:      modelEntityRefsC,
-		Id:     mb.modelUUID(),
+		Id:     mb.ModelUUID(),
 		Update: bson.D{{"$pull", bson.D{{entityField, entityId}}}},
 	}
 }

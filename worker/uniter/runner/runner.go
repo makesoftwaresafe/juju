@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -107,11 +108,41 @@ type Runner interface {
 }
 
 // NewRunnerFunc returns a func used to create a Runner backed by the supplied context and paths.
-type NewRunnerFunc func(context context.Context, paths context.Paths, remoteExecutor ExecFunc) Runner
+type NewRunnerFunc func(context context.Context, paths context.Paths, remoteExecutor ExecFunc, options ...Option) Runner
+
+// Option is a functional option for NewRunner.
+type Option func(*options)
+
+type options struct {
+	tokenGenerator TokenGenerator
+}
+
+// WithTokenGenerator returns an Option that sets the token generator for the
+// runner.
+func WithTokenGenerator(tg TokenGenerator) Option {
+	return func(o *options) {
+		o.tokenGenerator = tg
+	}
+}
+
+func newOptions() *options {
+	return &options{
+		tokenGenerator: &tokenGenerator{},
+	}
+}
 
 // NewRunner returns a Runner backed by the supplied context and paths.
-func NewRunner(context context.Context, paths context.Paths, remoteExecutor ExecFunc) Runner {
-	return &runner{context, paths, remoteExecutor}
+func NewRunner(context context.Context, paths context.Paths, remoteExecutor ExecFunc, options ...Option) Runner {
+	opts := newOptions()
+	for _, option := range options {
+		option(opts)
+	}
+	return &runner{
+		context:        context,
+		paths:          paths,
+		remoteExecutor: remoteExecutor,
+		tokenGenerator: opts.tokenGenerator,
+	}
 }
 
 // ExecParams holds all the necessary parameters for ExecFunc.
@@ -151,12 +182,21 @@ func execOnMachine(params ExecParams) (*utilexec.ExecResponse, error) {
 // ExecFunc is the exec func type.
 type ExecFunc func(ExecParams) (*utilexec.ExecResponse, error)
 
+// TokenGenerator is the interface for generating tokens.
+type TokenGenerator interface {
+	// Generate generates a token based on the remote flag.
+	// If remote is false, it returns an empty string. Otherwise, it returns a
+	// random token.
+	Generate(remote bool) (string, error)
+}
+
 // runner implements Runner.
 type runner struct {
 	context context.Context
 	paths   context.Paths
 	// remoteExecutor executes commands on a remote workload pod for CAAS.
 	remoteExecutor ExecFunc
+	tokenGenerator TokenGenerator
 }
 
 func (runner *runner) logger() loggo.Logger {
@@ -206,14 +246,11 @@ func (runner *runner) RunCommands(commands string, runLocation RunLocation) (*ut
 // runCommandsWithTimeout is a helper to abstract common code between run commands and
 // juju-run as an action
 func (runner *runner) runCommandsWithTimeout(commands string, timeout time.Duration, clock clock.Clock, rMode runMode, abort <-chan struct{}) (*utilexec.ExecResponse, error) {
-	var err error
-	token := ""
-	if rMode == runOnRemote {
-		token, err = utils.RandomPassword()
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
+	token, err := runner.tokenGenerator.Generate(rMode == runOnRemote)
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
+
 	srv, err := runner.startJujucServer(token, rMode)
 	if err != nil {
 		return nil, err
@@ -386,13 +423,11 @@ func (runner *runner) RunHook(hookName string) (HookHandlerType, error) {
 }
 
 func (runner *runner) runCharmHookWithLocation(hookName, charmLocation string, rMode runMode) (hookHandlerType HookHandlerType, err error) {
-	token := ""
-	if rMode == runOnRemote {
-		token, err = utils.RandomPassword()
-		if err != nil {
-			return InvalidHookHandler, errors.Trace(err)
-		}
+	token, err := runner.tokenGenerator.Generate(rMode == runOnRemote)
+	if err != nil {
+		return InvalidHookHandler, errors.Trace(err)
 	}
+
 	srv, err := runner.startJujucServer(token, rMode)
 	if err != nil {
 		return InvalidHookHandler, errors.Trace(err)
@@ -595,6 +630,11 @@ func (runner *runner) runCharmProcessOnRemote(hook, hookName, charmDir string, e
 	return errors.Trace(err)
 }
 
+const (
+	// ErrTerminated indicate the hook or action exited due to a SIGTERM or SIGKILL signal.
+	ErrTerminated = errors.ConstError("terminated")
+)
+
 // Check still tested
 func (runner *runner) runCharmProcessOnLocal(hook, hookName, charmDir string, env []string) error {
 	hookCmd := hookCommand(hook)
@@ -678,6 +718,12 @@ func (runner *runner) runCharmProcessOnLocal(hook, hookName, charmDir string, en
 			return errors.Trace(err)
 		}
 	}
+	if exitError, ok := exitErr.(*exec.ExitError); ok && exitError != nil {
+		waitStatus := exitError.ProcessState.Sys().(syscall.WaitStatus)
+		if waitStatus.Signal() == syscall.SIGTERM || waitStatus.Signal() == syscall.SIGKILL {
+			return errors.Trace(ErrTerminated)
+		}
+	}
 
 	return errors.Trace(exitErr)
 }
@@ -707,7 +753,7 @@ func (runner *runner) startJujucServer(token string, rMode runMode) (*jujuc.Serv
 	// Prepare server.
 	getCmd := func(ctxId, cmdName string) (cmd.Command, error) {
 		if ctxId != runner.context.Id() {
-			return nil, errors.Errorf("expected context id %q, got %q", runner.context.Id(), ctxId)
+			return nil, errors.Errorf("wrong context ID; got %q", ctxId)
 		}
 		return jujuc.NewCommand(runner.context, cmdName)
 	}
@@ -776,4 +822,20 @@ type hookProcess struct {
 
 func (p hookProcess) Pid() int {
 	return p.Process.Pid
+}
+
+type tokenGenerator struct{}
+
+// Generate generates a token based on the remote flag.
+// If remote is false, it returns an empty string. Otherwise, it returns a
+// random token.
+func (t *tokenGenerator) Generate(remote bool) (string, error) {
+	if !remote {
+		return "", nil
+	}
+	token, err := utils.RandomPassword()
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	return token, nil
 }

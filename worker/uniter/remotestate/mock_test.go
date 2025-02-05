@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/juju/charm/v8"
-
+	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 
 	"github.com/juju/juju/core/leadership"
@@ -140,17 +140,17 @@ func (st *mockState) StorageAttachment(
 	storageTag names.StorageTag, unitTag names.UnitTag,
 ) (params.StorageAttachment, error) {
 	if unitTag != st.unit.tag {
-		return params.StorageAttachment{}, &params.Error{Code: params.CodeNotFound}
+		return params.StorageAttachment{}, errors.NewNotFound(&params.Error{Code: params.CodeNotFound}, "")
 	}
 	attachment, ok := st.storageAttachment[params.StorageAttachmentId{
 		UnitTag:    unitTag.String(),
 		StorageTag: storageTag.String(),
 	}]
 	if !ok {
-		return params.StorageAttachment{}, &params.Error{Code: params.CodeNotFound}
+		return params.StorageAttachment{}, errors.NewNotFound(&params.Error{Code: params.CodeNotFound}, "")
 	}
 	if attachment.Kind == params.StorageKindUnknown {
-		return params.StorageAttachment{}, &params.Error{Code: params.CodeNotProvisioned}
+		return params.StorageAttachment{}, errors.NewNotProvisioned(&params.Error{Code: params.CodeNotProvisioned}, "")
 	}
 	return attachment, nil
 }
@@ -306,7 +306,7 @@ func (u *mockUnit) SetUpgradeSeriesStatus(status model.UpgradeSeriesStatus) erro
 type mockApplication struct {
 	tag                   names.ApplicationTag
 	life                  life.Value
-	curl                  *charm.URL
+	curl                  string
 	charmModifiedVersion  int
 	forceUpgrade          bool
 	applicationWatcher    *mockNotifyWatcher
@@ -317,7 +317,7 @@ func (s *mockApplication) CharmModifiedVersion() (int, error) {
 	return s.charmModifiedVersion, nil
 }
 
-func (s *mockApplication) CharmURL() (*charm.URL, bool, error) {
+func (s *mockApplication) CharmURL() (string, bool, error) {
 	return s.curl, s.forceUpgrade, nil
 }
 

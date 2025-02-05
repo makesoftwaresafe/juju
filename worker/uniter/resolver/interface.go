@@ -4,7 +4,6 @@
 package resolver
 
 import (
-	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
 
 	"github.com/juju/juju/core/model"
@@ -12,23 +11,24 @@ import (
 	"github.com/juju/juju/worker/uniter/remotestate"
 )
 
-// ErrNoOperation is used to indicate that there are no
-// currently pending operations to run.
-var ErrNoOperation = errors.New("no operations")
+const (
+	// ErrNoOperation is used to indicate that there are no
+	// currently pending operations to run.
+	ErrNoOperation = errors.ConstError("no operations")
 
-// ErrWaiting indicates that the resolver loop should
-// not execute any more operations until a remote state
-// event has occurred.
-var ErrWaiting = errors.New("waiting for remote state change")
+	// ErrRestart indicates that the resolver loop should
+	// be restarted with a new remote state watcher.
+	ErrRestart = errors.ConstError("restarting resolver")
 
-// ErrRestart indicates that the resolver loop should
-// be restarted with a new remote state watcher.
-var ErrRestart = errors.New("restarting resolver")
+	// ErrUnitDead indicates that the unit has been marked as dead and there
+	// will be no more units to run after that.
+	ErrUnitDead = errors.ConstError("unit dead")
 
-// ErrTerminate is used when the unit has been marked
-// as dead and so there will never be any more
-// operations to run for that unit.
-var ErrTerminate = errors.New("terminate resolver")
+	// ErrWaiting indicates that the resolver loop should
+	// not execute any more operations until a remote state
+	// event has occurred.
+	ErrWaiting = errors.ConstError("waiting for remote state change")
+)
 
 // Resolver instances use local (as is) and remote (to be) state
 // to provide operations to run in order to progress towards
@@ -62,9 +62,9 @@ type LocalState struct {
 	// or any part of it, is changed in some way.
 	CharmModifiedVersion int
 
-	// CharmURL reports the currently installed charm URL. This is set
-	// by the committing of deploy (install/upgrade) ops.
-	CharmURL *charm.URL
+	// CharmURL reports the currently installed charm URL as a string.
+	// This is set by the committing of deploy (install/upgrade) ops.
+	CharmURL string
 
 	// Conflicted indicates that the uniter is in a conflicted state,
 	// and needs either resolution or a forced upgrade to continue.
@@ -102,4 +102,7 @@ type LocalState struct {
 	// OutdatedRemoteCharm is true when an upgrade has happened but the remotestate
 	// needs an update.
 	OutdatedRemoteCharm bool
+
+	// HookWasShutdown is true if the hook exited due to a SIGTERM.
+	HookWasShutdown bool
 }

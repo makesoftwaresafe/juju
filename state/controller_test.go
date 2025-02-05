@@ -4,10 +4,12 @@
 package state_test
 
 import (
+	"time"
+
 	"github.com/juju/clock"
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
-	gitjujutesting "github.com/juju/testing"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 
@@ -93,7 +95,7 @@ func (s *ControllerSuite) TestControllerConfig(c *gc.C) {
 
 func (s *ControllerSuite) TestPing(c *gc.C) {
 	c.Assert(s.Controller.Ping(), gc.IsNil)
-	gitjujutesting.MgoServer.Restart()
+	mgotesting.MgoServer.Restart()
 	c.Assert(s.Controller.Ping(), gc.NotNil)
 }
 
@@ -108,7 +110,9 @@ func (s *ControllerSuite) TestUpdateControllerConfig(c *gc.C) {
 	err = s.State.UpdateControllerConfig(map[string]interface{}{
 		controller.AuditingEnabled:     true,
 		controller.AuditLogCaptureArgs: false,
+		controller.AuditLogMaxBackups:  "10",
 		controller.PublicDNSAddress:    "controller.test.com:1234",
+		controller.APIPortOpenDelay:    "100ms",
 	}, nil)
 	c.Assert(err, jc.ErrorIsNil)
 
@@ -117,7 +121,9 @@ func (s *ControllerSuite) TestUpdateControllerConfig(c *gc.C) {
 
 	c.Assert(newCfg.AuditingEnabled(), gc.Equals, true)
 	c.Assert(newCfg.AuditLogCaptureArgs(), gc.Equals, false)
+	c.Assert(newCfg.AuditLogMaxBackups(), gc.Equals, 10)
 	c.Assert(newCfg.PublicDNSAddress(), gc.Equals, "controller.test.com:1234")
+	c.Assert(newCfg.APIPortOpenDelay(), gc.Equals, 100*time.Millisecond)
 }
 
 func (s *ControllerSuite) TestUpdateControllerConfigRemoveYieldsDefaults(c *gc.C) {

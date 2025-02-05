@@ -7,10 +7,10 @@ import (
 	"errors"
 	"net"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/collections/set"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/common"
@@ -175,10 +175,14 @@ func (s *networkConfigSuite) TestGetObservedNetworkConfigDefaultGatewayWithAddre
 					Value:      "1.2.3.4",
 					CIDR:       "1.2.3.0/24",
 					ConfigType: "static",
+					Type:       "ipv4",
+					Scope:      "public",
 				}, {
 					Value:       "559c:f8c5:812a:fa1f:21fe:5613:3f20:b081",
 					ConfigType:  "static",
 					IsSecondary: true,
+					Type:        "ipv6",
+					Scope:       "public",
 				},
 			},
 		},

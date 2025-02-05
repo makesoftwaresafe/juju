@@ -29,10 +29,8 @@ import (
 	apiclient "github.com/juju/juju/api/client/client"
 	machineclient "github.com/juju/juju/api/client/machinemanager"
 	apitesting "github.com/juju/juju/api/testing"
-	"github.com/juju/juju/apiserver"
 	"github.com/juju/juju/apiserver/common"
 	"github.com/juju/juju/apiserver/facades/client/controller"
-	"github.com/juju/juju/apiserver/httpcontext"
 	servertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/apiserver/testserver"
 	corecontroller "github.com/juju/juju/controller"
@@ -53,7 +51,6 @@ import (
 
 type baseLoginSuite struct {
 	jujutesting.JujuConnSuite
-
 	mgmtSpace *state.Space
 }
 
@@ -71,17 +68,6 @@ func (s *baseLoginSuite) SetUpTest(c *gc.C) {
 
 	err = s.State.UpdateControllerConfig(map[string]interface{}{corecontroller.JujuManagementSpace: "mgmt01"}, nil)
 	c.Assert(err, jc.ErrorIsNil)
-}
-
-func (s *baseLoginSuite) newServer(c *gc.C) (*api.Info, *apiserver.Server) {
-	return s.newServerWithConfig(c, testserver.DefaultServerConfig(c, nil))
-}
-
-func (s *baseLoginSuite) newServerWithConfig(c *gc.C, cfg apiserver.ServerConfig) (*api.Info, *apiserver.Server) {
-	cfg.Controller = s.JujuConnSuite.Controller
-	server := testserver.NewServerWithConfig(c, s.StatePool, cfg)
-	s.AddCleanup(func(c *gc.C) { assertStop(c, server) })
-	return server.Info, server.APIServer
 }
 
 // loginSuite is built on statetesting.StateSuite not JujuConnSuite.
@@ -164,7 +150,7 @@ func (s *loginSuite) TestLoginAsDeactivatedUser(c *gc.C) {
 	password := "password"
 	u := s.Factory.MakeUser(c, &factory.UserParams{Password: password, Disabled: true})
 
-	_, err := apiclient.NewClient(st).Status([]string{})
+	_, err := apiclient.NewClient(st, coretesting.NoopLogger{}).Status([]string{})
 	c.Assert(errors.Cause(err), gc.DeepEquals, &rpc.RequestError{
 		Message: `unknown object type "Client"`,
 		Code:    "not implemented",
@@ -177,7 +163,7 @@ func (s *loginSuite) TestLoginAsDeactivatedUser(c *gc.C) {
 		Code:    "unauthorized access",
 	})
 
-	_, err = apiclient.NewClient(st).Status([]string{})
+	_, err = apiclient.NewClient(st, coretesting.NoopLogger{}).Status([]string{})
 	c.Assert(errors.Cause(err), gc.DeepEquals, &rpc.RequestError{
 		Message: `unknown object type "Client"`,
 		Code:    "not implemented",
@@ -191,7 +177,7 @@ func (s *loginSuite) TestLoginAsDeletedUser(c *gc.C) {
 	password := "password"
 	u := s.Factory.MakeUser(c, &factory.UserParams{Password: password})
 
-	_, err := apiclient.NewClient(st).Status([]string{})
+	_, err := apiclient.NewClient(st, coretesting.NoopLogger{}).Status([]string{})
 	c.Assert(errors.Cause(err), gc.DeepEquals, &rpc.RequestError{
 		Message: `unknown object type "Client"`,
 		Code:    "not implemented",
@@ -207,7 +193,7 @@ func (s *loginSuite) TestLoginAsDeletedUser(c *gc.C) {
 		Code:    "unauthorized access",
 	})
 
-	_, err = apiclient.NewClient(st).Status([]string{})
+	_, err = apiclient.NewClient(st, coretesting.NoopLogger{}).Status([]string{})
 	c.Assert(errors.Cause(err), gc.DeepEquals, &rpc.RequestError{
 		Message: `unknown object type "Client"`,
 		Code:    "not implemented",
@@ -366,7 +352,7 @@ func (s *loginSuite) setupRateLimiting(c *gc.C) {
 	err := s.State.UpdateControllerConfig(
 		map[string]interface{}{
 			corecontroller.AgentRateLimitMax:  1,
-			corecontroller.AgentRateLimitRate: time.Second,
+			corecontroller.AgentRateLimitRate: time.Second.String(),
 		}, nil)
 	c.Assert(err, jc.ErrorIsNil)
 }
@@ -949,7 +935,7 @@ func (s *loginSuite) assertRemoteModel(c *gc.C, conn api.Connection, expected na
 	c.Assert(ok, jc.IsTrue)
 	c.Assert(tag, gc.Equals, expected)
 	// Look at what the api Client thinks it has.
-	client := apiclient.NewClient(conn)
+	client := apiclient.NewClient(conn, coretesting.NoopLogger{})
 
 	// ModelUUID looks at the model tag on the api state connection.
 	uuid, ok := client.ModelUUID()
@@ -1457,7 +1443,7 @@ func (s *migrationSuite) TestImportingModel(c *gc.C) {
 	info := s.APIInfo(c)
 	userConn := s.OpenAPIAs(c, info.Tag, info.Password)
 	defer userConn.Close()
-	_, err = apiclient.NewClient(userConn).Status(nil)
+	_, err = apiclient.NewClient(userConn, coretesting.NoopLogger{}).Status(nil)
 	c.Check(err, gc.ErrorMatches, "migration in progress, model is importing")
 
 	// Machines should be able to use the API.
@@ -1479,7 +1465,7 @@ func (s *migrationSuite) TestExportingModel(c *gc.C) {
 	defer userConn.Close()
 
 	// Status is fine.
-	_, err = apiclient.NewClient(userConn).Status(nil)
+	_, err = apiclient.NewClient(userConn, coretesting.NoopLogger{}).Status(nil)
 	c.Check(err, jc.ErrorIsNil)
 
 	// Modifying commands like destroy machines are not.
@@ -1499,7 +1485,7 @@ func (s *loginV3Suite) TestClientLoginToModel(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	defer apiState.Close()
 
-	client := apiclient.NewClient(apiState)
+	client := apiclient.NewClient(apiState, coretesting.NoopLogger{})
 	_, err = client.GetModelConstraints()
 	c.Assert(err, jc.ErrorIsNil)
 }
@@ -1511,7 +1497,7 @@ func (s *loginV3Suite) TestClientLoginToController(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 	defer apiState.Close()
 
-	client := apiclient.NewClient(apiState)
+	client := apiclient.NewClient(apiState, coretesting.NoopLogger{})
 	_, err = client.GetModelConstraints()
 	c.Assert(errors.Cause(err), gc.DeepEquals, &rpc.RequestError{
 		Message: `facade "Client" not supported for controller API connection`,
@@ -1582,26 +1568,4 @@ func (t errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}, nil
 	}
 	return t.fallback.RoundTrip(req)
-}
-
-type mockDelayAuthenticator struct {
-	httpcontext.LocalMacaroonAuthenticator
-	delay chan struct{}
-}
-
-func (a *mockDelayAuthenticator) AuthenticateLoginRequest(
-	serverHost string,
-	modelUUID string,
-	req params.LoginRequest,
-) (httpcontext.AuthInfo, error) {
-	select {
-	case <-time.After(coretesting.LongWait):
-		panic("timed out delaying login")
-	case <-a.delay:
-	}
-	tag, err := names.ParseTag(req.AuthTag)
-	if err != nil {
-		return httpcontext.AuthInfo{}, errors.Trace(err)
-	}
-	return httpcontext.AuthInfo{Entity: &mockEntity{tag: tag}}, nil
 }

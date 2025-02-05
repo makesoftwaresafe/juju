@@ -6,9 +6,8 @@ package state
 import (
 	"github.com/juju/mgo/v2"
 
-	"github.com/juju/juju/state/cloudimagemetadata"
-
 	"github.com/juju/juju/state/bakerystorage"
+	"github.com/juju/juju/state/cloudimagemetadata"
 )
 
 // The capped collection used for transaction logs defaults to 10MB.
@@ -22,25 +21,25 @@ var (
 // allCollections should be the single source of truth for information about
 // any collection we use. It's broken up into 4 main sections:
 //
-//  * infrastructure: we really don't have any business touching these once
-//    we've created them. They should have the rawAccess attribute set, so that
-//    multiModelRunner will consider them forbidden.
+//   - infrastructure: we really don't have any business touching these once
+//     we've created them. They should have the rawAccess attribute set, so that
+//     multiModelRunner will consider them forbidden.
 //
-//  * global: these hold information external to models. They may include
-//    model metadata, or references; but they're generally not relevant
-//    from the perspective of a given model.
+//   - global: these hold information external to models. They may include
+//     model metadata, or references; but they're generally not relevant
+//     from the perspective of a given model.
 //
-//  * local (in opposition to global; and for want of a better term): these
-//    hold information relevant *within* specific models (machines,
-//    applications, relations, settings, bookkeeping, etc) and should generally be
-//    read via an modelStateCollection, and written via a multiModelRunner. This is
-//    the most common form of collection, and the above access should usually
-//    be automatic via Database.Collection and Database.Runner.
+//   - local (in opposition to global; and for want of a better term): these
+//     hold information relevant *within* specific models (machines,
+//     applications, relations, settings, bookkeeping, etc) and should generally be
+//     read via an modelStateCollection, and written via a multiModelRunner. This is
+//     the most common form of collection, and the above access should usually
+//     be automatic via Database.Collection and Database.Runner.
 //
-//  * raw-access: there's certainly data that's a poor fit for mgo/txn. Most
-//    forms of logs, for example, will benefit both from the speedy insert and
-//    worry-free bulk deletion; so raw-access collections are fine. Just don't
-//    try to run transactions that reference them.
+//   - raw-access: there's certainly data that's a poor fit for mgo/txn. Most
+//     forms of logs, for example, will benefit both from the speedy insert and
+//     worry-free bulk deletion; so raw-access collections are fine. Just don't
+//     try to run transactions that reference them.
 //
 // Please do not use collections not referenced here; and when adding new
 // collections, please document them, and make an effort to put them in an
@@ -262,7 +261,11 @@ func allCollections() CollectionSchema {
 
 		// This collection contains incrementing integers, subdivided by name,
 		// to ensure various IDs aren't reused.
-		sequenceC: {},
+		sequenceC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// -----
 
@@ -301,7 +304,11 @@ func allCollections() CollectionSchema {
 		assignUnitC: {},
 
 		// meterStatusC is the collection used to store meter status information.
-		meterStatusC: {},
+		meterStatusC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// These collections hold reference counts which are used
 		// by the nsRefcounts struct.
@@ -312,9 +319,9 @@ func allCollections() CollectionSchema {
 
 		relationsC: {
 			indexes: []mgo.Index{{
-				Key: []string{"model-uuid", "endpoints.relationname"},
+				Key: []string{"model-uuid", "endpoints.applicationname", "endpoints.relation.name"},
 			}, {
-				Key: []string{"model-uuid", "endpoints.applicationname"},
+				Key: []string{"model-uuid", "id"}, // id here is the relation id not the doc _id
 			}},
 		},
 		relationScopesC: {
@@ -329,7 +336,11 @@ func allCollections() CollectionSchema {
 		// -----
 
 		// These collections hold information associated with machines.
-		containerRefsC: {},
+		containerRefsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 		instanceDataC: {
 			indexes: []mgo.Index{{
 				Key: []string{"model-uuid", "machineid"},
@@ -342,12 +353,20 @@ func allCollections() CollectionSchema {
 				Key: []string{"model-uuid", "machineid"},
 			}},
 		},
-		rebootC:      {},
+		rebootC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid", "machineid"},
+			}},
+		},
 		sshHostKeysC: {},
 
 		// This collection contains information from removed machines
 		// that needs to be cleaned up in the provider.
-		machineRemovalsC: {},
+		machineRemovalsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// this collection contains machine update locks whose existence indicates
 		// that a particular machine in the process of performing a series upgrade.
@@ -399,18 +418,30 @@ func allCollections() CollectionSchema {
 				Key: []string{"model-uuid", "volumeid"},
 			}},
 		},
-		volumeAttachmentPlanC: {},
+		volumeAttachmentPlanC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// -----
 
-		providerIDsC: {},
+		providerIDsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 		spacesC: {
 			indexes: []mgo.Index{
 				{Key: []string{"model-uuid", "spaceid"}},
 				{Key: []string{"model-uuid", "name"}},
 			},
 		},
-		subnetsC: {},
+		subnetsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 		linkLayerDevicesC: {
 			indexes: []mgo.Index{{
 				Key: []string{"model-uuid", "machine-id"},
@@ -442,7 +473,11 @@ func allCollections() CollectionSchema {
 				Key: []string{"model-uuid", "operation"},
 			}},
 		},
-		actionNotificationsC: {},
+		actionNotificationsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 		operationsC: {
 			indexes: []mgo.Index{{
 				Key: []string{"model-uuid", "_id"},
@@ -479,12 +514,20 @@ func allCollections() CollectionSchema {
 
 		// This collection holds user annotations for various entities. They
 		// shouldn't be written or interpreted by juju.
-		annotationsC: {},
+		annotationsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// This collection in particular holds an astounding number of
 		// different sorts of data: application config settings by charm version,
 		// unit relation settings, model config, etc etc etc.
-		settingsC: {},
+		settingsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// The generations collection holds data about
 		// active and completed "next" model generations.
@@ -499,8 +542,12 @@ func allCollections() CollectionSchema {
 				Key: []string{"model-uuid"},
 			}},
 		},
-		storageConstraintsC: {},
-		deviceConstraintsC:  {},
+		storageConstraintsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
+		deviceConstraintsC: {},
 		statusesC: {
 			indexes: []mgo.Index{{
 				Key: []string{"model-uuid", "_id"},
@@ -535,9 +582,14 @@ func allCollections() CollectionSchema {
 		offerConnectionsC: {
 			indexes: []mgo.Index{
 				{Key: []string{"model-uuid", "offer-uuid"}},
+				{Key: []string{"model-uuid", "username"}},
 			},
 		},
-		remoteApplicationsC: {},
+		remoteApplicationsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 		// remoteEntitiesC holds information about entities involved in
 		// cross-model relations.
 		remoteEntitiesC: {
@@ -551,7 +603,11 @@ func allCollections() CollectionSchema {
 			global: true,
 		},
 		// relationNetworksC holds required ingress or egress cidrs for remote relations.
-		relationNetworksC: {},
+		relationNetworksC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// firewallRulesC holds firewall rules for defined service types.
 		firewallRulesC: {
@@ -562,15 +618,27 @@ func allCollections() CollectionSchema {
 
 		// podSpecsC holds the CAAS pod specifications,
 		// for applications.
-		podSpecsC: {},
+		podSpecsC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// cloudContainersC holds the CAAS container (pod) information
 		// for units, eg address, ports.
-		cloudContainersC: {},
+		cloudContainersC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid", "provider-id"},
+			}},
+		},
 
 		// cloudServicesC holds the CAAS service information
 		// eg addresses.
-		cloudServicesC: {},
+		cloudServicesC: {
+			indexes: []mgo.Index{{
+				Key: []string{"model-uuid"},
+			}},
+		},
 
 		// Raw-access collections
 		// ======================

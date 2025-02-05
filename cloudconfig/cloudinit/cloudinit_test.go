@@ -147,7 +147,7 @@ var ctests = []struct {
 			map[string]any{
 				"name":        "auser",
 				"lock_passwd": true,
-				"ssh-authorized-keys": []string{
+				"ssh_authorized_keys": []string{
 					fmt.Sprintf("%s Juju:user@host", sshtesting.ValidKeyOne.Key),
 					fmt.Sprintf("%s Juju:another@host", sshtesting.ValidKeyTwo.Key),
 				},
@@ -190,10 +190,10 @@ var ctests = []struct {
 				"lock_passwd": true,
 				"groups":      []string{"agroup", "bgroup"},
 				"shell":       "/bin/sh",
-				"ssh-authorized-keys": []string{
+				"ssh_authorized_keys": []string{
 					sshtesting.ValidKeyOne.Key + " Juju:sshkey",
 				},
-				"sudo": []string{"ALL=(ALL) ALL"},
+				"sudo": "ALL=(ALL) ALL",
 			},
 		},
 	},
@@ -203,7 +203,7 @@ var ctests = []struct {
 			Groups:            []string{"agroup", "bgroup"},
 			Shell:             "/bin/sh",
 			SSHAuthorizedKeys: sshtesting.ValidKeyOne.Key + "\n",
-			Sudo:              []string{"ALL=(ALL) ALL"},
+			Sudo:              "ALL=(ALL) ALL",
 		})
 		return nil
 	},
@@ -270,7 +270,7 @@ var ctests = []struct {
 		},
 		"bootcmd": []string{
 			"install -D -m 644 /dev/null '/some/path'",
-			"printf '%s\\n' 'Explanation: test\n" +
+			"echo 'Explanation: test\n" +
 				"Package: *\n" +
 				"Pin: release n=series\n" +
 				"Pin-Priority: 123\n" +
@@ -382,7 +382,7 @@ var ctests = []struct {
 	map[string]any{
 		"runcmd": []string{
 			"install -D -m 644 /dev/null '/etc/apt/apt.conf.d/99proxy'",
-			"printf '%s\\n' '\"Acquire::http::Proxy \"http://10.0.3.1:3142\";' > '/etc/apt/apt.conf.d/99proxy'",
+			"echo '\"Acquire::http::Proxy \"http://10.0.3.1:3142\";' > '/etc/apt/apt.conf.d/99proxy'",
 		},
 	},
 	func(cfg cloudinit.CloudConfig) error {
@@ -398,7 +398,7 @@ var ctests = []struct {
 	map[string]any{
 		"runcmd": []string{
 			"install -D -m 644 /dev/null '/dev/nonsense'",
-			"printf %s AAECAw== | base64 -d > '/dev/nonsense'",
+			"echo -n AAECAw== | base64 -d > '/dev/nonsense'",
 		},
 	},
 	func(cfg cloudinit.CloudConfig) error {
@@ -414,7 +414,7 @@ var ctests = []struct {
 	map[string]any{
 		"bootcmd": []string{
 			"install -D -m 644 /dev/null '/etc/apt/apt.conf.d/99proxy'",
-			"printf '%s\\n' '\"Acquire::http::Proxy \"http://10.0.3.1:3142\";' > '/etc/apt/apt.conf.d/99proxy'",
+			"echo '\"Acquire::http::Proxy \"http://10.0.3.1:3142\";' > '/etc/apt/apt.conf.d/99proxy'",
 		},
 	},
 	func(cfg cloudinit.CloudConfig) error {

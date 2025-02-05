@@ -12,8 +12,7 @@ import (
 	coretesting "github.com/juju/juju/testing"
 )
 
-//go:generate go run github.com/golang/mock/mockgen -package raftlease -destination writer_mock_test.go io Writer
-//go:generate go run github.com/golang/mock/mockgen -package raftlease -destination logger_mock_test.go github.com/juju/juju/core/raftlease ErrorLogger
+//go:generate go run go.uber.org/mock/mockgen -package raftlease -destination writer_mock_test.go io Writer
 
 func TestPackage(t *testing.T) {
 	gc.TestingT(t)

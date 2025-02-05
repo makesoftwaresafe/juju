@@ -1,12 +1,11 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package controller defines an API end point for functions dealing
-// with controllers as a whole.
 package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/juju/loggo"
 	"github.com/juju/names/v4"
 	"github.com/juju/txn/v2"
+	"github.com/juju/version/v2"
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/api"
@@ -30,6 +30,7 @@ import (
 	coremigration "github.com/juju/juju/core/migration"
 	"github.com/juju/juju/core/multiwatcher"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/docker"
 	"github.com/juju/juju/migration"
 	"github.com/juju/juju/pubsub/controller"
 	"github.com/juju/juju/rpc/params"
@@ -593,7 +594,10 @@ func (c *ControllerAPI) initiateOneMigration(spec params.MigrationSpec) (string,
 	if err != nil {
 		return "", errors.Trace(err)
 	}
-	if err := runMigrationPrechecks(hostedState.State, systemState, &targetInfo, c.presence); err != nil {
+	if err := runMigrationPrechecks(
+		hostedState.State, systemState,
+		&targetInfo, c.presence,
+	); err != nil {
 		return "", errors.Trace(err)
 	}
 
@@ -657,6 +661,50 @@ func (c *ControllerAPI) ConfigSet(args params.ControllerConfigSet) error {
 	if err := c.checkIsSuperUser(); err != nil {
 		return errors.Trace(err)
 	}
+
+	currentCfg, err := c.state.ControllerConfig()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	// TODO(dqlite): move this business logic out of the facade.
+	if newValue, ok := args.Config[corecontroller.CAASImageRepo]; ok {
+		var newCAASImageRepo *docker.ImageRepoDetails
+		if v, ok := newValue.(string); ok {
+			newCAASImageRepo, err = docker.NewImageRepoDetails(v)
+			if err != nil {
+				return fmt.Errorf("cannot parse %s: %s%w", corecontroller.CAASImageRepo, err.Error(),
+					errors.Hide(errors.NotValid))
+			}
+		} else {
+			return fmt.Errorf("%s expected a string got %v%w", corecontroller.CAASImageRepo, v,
+				errors.Hide(errors.NotValid))
+		}
+
+		var currentCAASImageRepo *docker.ImageRepoDetails
+		if currentValue, ok := currentCfg[corecontroller.CAASImageRepo]; !ok {
+			return fmt.Errorf("cannot change %s as it is not currently set%w", corecontroller.CAASImageRepo,
+				errors.Hide(errors.NotValid))
+		} else if v, ok := currentValue.(string); !ok {
+			return fmt.Errorf("existing %s expected a string", corecontroller.CAASImageRepo)
+		} else {
+			currentCAASImageRepo, err = docker.NewImageRepoDetails(v)
+			if err != nil {
+				return fmt.Errorf("cannot parse existing %s: %w", corecontroller.CAASImageRepo, err)
+			}
+		}
+		// TODO: when podspec is removed, implement changing caas-image-repo.
+		if newCAASImageRepo.Repository != currentCAASImageRepo.Repository {
+			return fmt.Errorf("cannot change %s: repository read-only, only authentication can be updated", corecontroller.CAASImageRepo)
+		}
+		if !newCAASImageRepo.IsPrivate() && currentCAASImageRepo.IsPrivate() {
+			return fmt.Errorf("cannot change %s: unable to remove authentication details", corecontroller.CAASImageRepo)
+		}
+		if newCAASImageRepo.IsPrivate() && !currentCAASImageRepo.IsPrivate() {
+			return fmt.Errorf("cannot change %s: unable to add authentication details", corecontroller.CAASImageRepo)
+		}
+	}
+
 	if err := c.state.UpdateControllerConfig(args.Config, nil); err != nil {
 		return errors.Trace(err)
 	}
@@ -685,7 +733,9 @@ func (c *ControllerAPIv4) ConfigSet(_, _ struct{}) {}
 // runMigrationPrechecks runs prechecks on the migration and updates
 // information in targetInfo as needed based on information
 // retrieved from the target controller.
-var runMigrationPrechecks = func(st, ctlrSt *state.State, targetInfo *coremigration.TargetInfo, presence facade.Presence) error {
+var runMigrationPrechecks = func(
+	st, ctlrSt *state.State, targetInfo *coremigration.TargetInfo, presence facade.Presence,
+) error {
 	// Check model and source controller.
 	backend, err := migration.PrecheckShim(st, ctlrSt)
 	if err != nil {
@@ -693,28 +743,40 @@ var runMigrationPrechecks = func(st, ctlrSt *state.State, targetInfo *coremigrat
 	}
 	modelPresence := presence.ModelPresence(st.ModelUUID())
 	controllerPresence := presence.ModelPresence(ctlrSt.ModelUUID())
-	if err := migration.SourcePrecheck(backend, modelPresence, controllerPresence); err != nil {
+
+	targetConn, err := api.Open(targetToAPIInfo(targetInfo), migration.ControllerDialOpts())
+	if err != nil {
+		return errors.Annotate(err, "connect to target controller")
+	}
+	defer targetConn.Close()
+
+	targetControllerVersion, err := getTargetControllerVersion(targetConn)
+	if err != nil {
+		return errors.Annotate(err, "cannot get target controller version")
+	}
+
+	if err := migration.SourcePrecheck(
+		backend,
+		targetControllerVersion,
+		modelPresence, controllerPresence,
+		cloudspec.MakeCloudSpecGetterForModel(st),
+	); err != nil {
 		return errors.Annotate(err, "source prechecks failed")
 	}
 
 	// Check target controller.
-	conn, err := api.Open(targetToAPIInfo(targetInfo), migration.ControllerDialOpts())
-	if err != nil {
-		return errors.Annotate(err, "connect to target controller")
-	}
-	defer conn.Close()
 	modelInfo, srcUserList, err := makeModelInfo(st, ctlrSt)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	dstUserList, err := getTargetControllerUsers(conn)
+	dstUserList, err := getTargetControllerUsers(targetConn)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	if err = srcUserList.checkCompatibilityWith(dstUserList); err != nil {
 		return errors.Trace(err)
 	}
-	client := migrationtarget.NewClient(conn)
+	client := migrationtarget.NewClient(targetConn)
 	if targetInfo.CACert == "" {
 		targetInfo.CACert, err = client.CACert()
 		if err != nil {
@@ -847,6 +909,19 @@ func makeModelInfo(st, ctlrSt *state.State) (coremigration.ModelInfo, userList, 
 	}, ul, nil
 }
 
+func getTargetControllerVersion(conn api.Connection) (version.Number, error) {
+	client := controllerclient.NewClient(conn)
+	result, err := client.ControllerVersion()
+	if err != nil {
+		return version.Number{}, errors.Annotate(err, "failed to obtain target controller version during prechecks")
+	}
+	number, err := version.Parse(result.Version)
+	if err != nil {
+		return version.Number{}, errors.Trace(err)
+	}
+	return number, nil
+}
+
 func getTargetControllerUsers(conn api.Connection) (userList, error) {
 	ul := userList{}
 
@@ -871,13 +946,18 @@ func getTargetControllerUsers(conn api.Connection) (userList, error) {
 }
 
 func targetToAPIInfo(ti *coremigration.TargetInfo) *api.Info {
-	return &api.Info{
+	info := &api.Info{
 		Addrs:     ti.Addrs,
 		CACert:    ti.CACert,
-		Tag:       ti.AuthTag,
 		Password:  ti.Password,
 		Macaroons: ti.Macaroons,
 	}
+	// Only local users must be added to the api info.
+	// For external users, the tag needs to be left empty.
+	if ti.AuthTag.IsLocal() {
+		info.Tag = ti.AuthTag
+	}
+	return info
 }
 
 // grantControllerCloudAccess exists for backwards compatibility since older clients

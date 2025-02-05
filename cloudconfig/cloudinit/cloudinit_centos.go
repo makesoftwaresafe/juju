@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"strings"
 
-	corenetwork "github.com/juju/juju/core/network"
-	jujupackaging "github.com/juju/juju/packaging"
 	"github.com/juju/packaging/v2"
 	"github.com/juju/packaging/v2/config"
 	"gopkg.in/yaml.v2"
+
+	corenetwork "github.com/juju/juju/core/network"
+	jujupackaging "github.com/juju/juju/packaging"
 )
 
-//PackageHelper is the interface for configuring specific parameter of the package manager
+// PackageHelper is the interface for configuring specific parameter of the package manager
 type packageHelper interface {
 	// addPackageProxyCmd is a helper method which returns the corresponding runcmd
 	// to apply the package proxy settings.
@@ -25,11 +26,11 @@ type packageHelper interface {
 	getRequiredPackages() []string
 }
 
-//Implementation of PackageHelper for CentOS
+// Implementation of PackageHelper for CentOS
 type centOSHelper struct {
 }
 
-//Returns the list of required packages in CentOS
+// Returns the list of required packages in CentOS
 func (helper centOSHelper) getRequiredPackages() []string {
 	return []string{
 		"curl",
@@ -248,10 +249,10 @@ func (cfg *centOSCloudConfig) addRequiredPackages() {
 	}
 }
 
-//TODO(bogdanteleaga, aznashwan): On ubuntu when we render the conf as yaml we
-//have apt_proxy and when we render it as bash we use the equivalent of this.
-//However on centOS even when rendering the YAML we use a helper function
-//addPackageProxyCmds. Research if calling the same is fine.
+// TODO(bogdanteleaga, aznashwan): On ubuntu when we render the conf as yaml we
+// have apt_proxy and when we render it as bash we use the equivalent of this.
+// However on centOS even when rendering the YAML we use a helper function
+// addPackageProxyCmds. Research if calling the same is fine.
 func (cfg *centOSCloudConfig) updateProxySettings(PackageManagerProxyConfig) error {
 	return nil
 }

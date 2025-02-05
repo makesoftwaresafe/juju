@@ -4,5 +4,6 @@
 package charms
 
 var (
-	NewFacadeV4 = newFacadeV4
+	NewFacadeV5      = newFacadeV5
+	GetUnifiedSeries = getUnifiedSeries
 )

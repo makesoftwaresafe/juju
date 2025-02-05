@@ -1,14 +1,13 @@
 // Copyright 2016 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package hostkeyreporter implements the client-side API facade used
-// by the hostkeyreporter worker.
 package hostkeyreporter
 
 import (
+	"github.com/juju/names/v4"
+
 	"github.com/juju/juju/api/base"
 	"github.com/juju/juju/rpc/params"
-	"github.com/juju/names/v4"
 )
 
 // Facade provides access to the HostKeyReporter API facade.

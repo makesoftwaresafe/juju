@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -557,6 +559,12 @@ func (s *bootstrapSuite) setupProviderWithNoSupportedArches(c *gc.C) bootstrapEn
 // despite image metadata in other data sources compatible with the same configuration as well.
 // Related to bug#1560625.
 func (s *bootstrapSuite) TestBootstrapImageMetadataFromAllSources(c *gc.C) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+
+	s.PatchValue(&imagemetadata.DefaultUbuntuBaseURL, server.URL)
 	s.PatchValue(&series.HostSeries, func() (string, error) { return "raring", nil })
 	s.PatchValue(&arch.HostArch, func() string { return arch.AMD64 })
 
@@ -617,7 +625,7 @@ func (s *bootstrapSuite) TestBootstrapLocalTools(c *gc.C) {
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			ControllerConfig: coretesting.FakeControllerConfig(),
-			BuildAgentTarball: func(bool, *version.Number, string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(bool, string, func(localBinaryVersion version.Number) version.Number) (*sync.BuiltAgent, error) {
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
 			},
 			BootstrapSeries:          "trusty",
@@ -649,7 +657,7 @@ func (s *bootstrapSuite) TestBootstrapLocalToolsMismatchingOS(c *gc.C) {
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			ControllerConfig: coretesting.FakeControllerConfig(),
-			BuildAgentTarball: func(bool, *version.Number, string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(bool, string, func(localBinaryVersion version.Number) version.Number) (*sync.BuiltAgent, error) {
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
 			},
 			BootstrapSeries:          "trusty",
@@ -678,7 +686,7 @@ func (s *bootstrapSuite) TestBootstrapLocalToolsDifferentLinuxes(c *gc.C) {
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			ControllerConfig: coretesting.FakeControllerConfig(),
-			BuildAgentTarball: func(bool, *version.Number, string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(bool, string, func(localBinaryVersion version.Number) version.Number) (*sync.BuiltAgent, error) {
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
 			},
 			BootstrapSeries:          "trusty",
@@ -711,11 +719,14 @@ func (s *bootstrapSuite) TestBootstrapBuildAgent(c *gc.C) {
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			ControllerConfig: coretesting.FakeControllerConfig(),
-			BuildAgentTarball: func(build bool, ver *version.Number, _ string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(build bool, _ string,
+				getForceVersion func(version.Number) version.Number,
+			) (*sync.BuiltAgent, error) {
+				ver := getForceVersion(version.Zero)
 				c.Logf("BuildAgentTarball version %s", ver)
 				c.Assert(build, jc.IsTrue)
 				c.Assert(ver.String(), gc.Equals, "2.99.0.1")
-				localVer := *ver
+				localVer := ver
 				return &sync.BuiltAgent{
 					Dir:      c.MkDir(),
 					Official: true,
@@ -768,7 +779,7 @@ func (s *bootstrapSuite) assertBootstrapPackagedToolsAvailable(c *gc.C, clientAr
 			ControllerConfig:         coretesting.FakeControllerConfig(),
 			BootstrapSeries:          "quantal",
 			SupportedBootstrapSeries: supportedJujuSeries,
-			BuildAgentTarball: func(bool, *version.Number, string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(bool, string, func(localBinaryVersion version.Number) version.Number) (*sync.BuiltAgent, error) {
 				c.Fatal("should not call BuildAgentTarball if there are packaged tools")
 				return nil, nil
 			},
@@ -804,7 +815,7 @@ func (s *bootstrapSuite) TestBootstrapNoToolsNonReleaseStream(c *gc.C) {
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			ControllerConfig: coretesting.FakeControllerConfig(),
-			BuildAgentTarball: func(bool, *version.Number, string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(bool, string, func(localBinaryVersion version.Number) version.Number) (*sync.BuiltAgent, error) {
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
 			},
 			SupportedBootstrapSeries: supportedJujuSeries,
@@ -830,7 +841,7 @@ func (s *bootstrapSuite) TestBootstrapNoToolsDevelopmentConfig(c *gc.C) {
 			ControllerConfig: coretesting.FakeControllerConfig(),
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
-			BuildAgentTarball: func(bool, *version.Number, string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(bool, string, func(localBinaryVersion version.Number) version.Number) (*sync.BuiltAgent, error) {
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
 			},
 			SupportedBootstrapSeries: supportedJujuSeries,
@@ -1427,7 +1438,11 @@ func (s *bootstrapSuite) setupBootstrapSpecificVersion(c *gc.C, clientMajor, cli
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			AgentVersion:     toolsVersion,
-			BuildAgentTarball: func(build bool, ver *version.Number, _ string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(
+				build bool, _ string,
+				getForceVersion func(version.Number) version.Number,
+			) (*sync.BuiltAgent, error) {
+				ver := getForceVersion(version.Zero)
 				c.Logf("BuildAgentTarball version %s", ver)
 				c.Assert(build, jc.IsFalse)
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
@@ -1509,7 +1524,11 @@ func (s *bootstrapSuite) TestAvailableToolsInvalidArch(c *gc.C) {
 			AdminSecret:      "admin-secret",
 			CAPrivateKey:     coretesting.CAKey,
 			ControllerConfig: coretesting.FakeControllerConfig(),
-			BuildAgentTarball: func(build bool, ver *version.Number, _ string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(
+				build bool, _ string,
+				getForceVersion func(version.Number) version.Number,
+			) (*sync.BuiltAgent, error) {
+				ver := getForceVersion(version.Zero)
 				c.Logf("BuildAgentTarball version %s", ver)
 				c.Assert(build, jc.IsTrue)
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
@@ -1540,7 +1559,11 @@ func (s *bootstrapSuite) TestTargetArchOverride(c *gc.C) {
 			CAPrivateKey:             coretesting.CAKey,
 			ControllerConfig:         coretesting.FakeControllerConfig(),
 			SupportedBootstrapSeries: supportedJujuSeries,
-			BuildAgentTarball: func(build bool, ver *version.Number, _ string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(
+				build bool, _ string,
+				getForceVersion func(version.Number) version.Number,
+			) (*sync.BuiltAgent, error) {
+				ver := getForceVersion(version.Zero)
 				c.Logf("BuildAgentTarball version %s", ver)
 				c.Assert(build, jc.IsTrue)
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil
@@ -1567,7 +1590,11 @@ func (s *bootstrapSuite) TestTargetSeriesAndArchOverridePriority(c *gc.C) {
 			CAPrivateKey:             coretesting.CAKey,
 			ControllerConfig:         coretesting.FakeControllerConfig(),
 			SupportedBootstrapSeries: supportedJujuSeries,
-			BuildAgentTarball: func(build bool, ver *version.Number, _ string) (*sync.BuiltAgent, error) {
+			BuildAgentTarball: func(
+				build bool, _ string,
+				getForceVersion func(version.Number) version.Number,
+			) (*sync.BuiltAgent, error) {
+				ver := getForceVersion(version.Zero)
 				c.Logf("BuildAgentTarball version %s", ver)
 				c.Assert(build, jc.IsTrue)
 				return &sync.BuiltAgent{Dir: c.MkDir()}, nil

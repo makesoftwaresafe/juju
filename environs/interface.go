@@ -24,7 +24,7 @@ import (
 	"github.com/juju/juju/storage"
 )
 
-//go:generate go run github.com/golang/mock/mockgen -package testing -destination testing/package_mock.go github.com/juju/juju/environs EnvironProvider,CloudEnvironProvider,ProviderSchema,ProviderCredentials,FinalizeCredentialContext,FinalizeCloudContext,CloudFinalizer,CloudDetector,CloudRegionDetector,ModelConfigUpgrader,ConfigGetter,CloudDestroyer,Environ,InstancePrechecker,Firewaller,InstanceTagger,InstanceTypesFetcher,Upgrader,UpgradeStep,DefaultConstraintsChecker,ProviderCredentialsRegister,RequestFinalizeCredential,NetworkingEnviron
+//go:generate go run go.uber.org/mock/mockgen -package testing -destination testing/package_mock.go -write_package_comment=false github.com/juju/juju/environs EnvironProvider,CloudEnvironProvider,ProviderSchema,ProviderCredentials,FinalizeCredentialContext,FinalizeCloudContext,CloudFinalizer,CloudDetector,CloudRegionDetector,ModelConfigUpgrader,ConfigGetter,CloudDestroyer,Environ,InstancePrechecker,Firewaller,InstanceTagger,InstanceTypesFetcher,Upgrader,UpgradeStep,DefaultConstraintsChecker,ProviderCredentialsRegister,RequestFinalizeCredential,NetworkingEnviron
 
 type ConnectorInfo interface {
 	ConnectionProxyInfo() (proxy.Proxier, error)
@@ -178,6 +178,10 @@ type RequestFinalizeCredential interface {
 // to provide a means of interacting with the user when finalizing credentials.
 type FinalizeCredentialContext interface {
 	GetStderr() io.Writer
+
+	// Verbosef will write the formatted string to Stderr if the
+	// verbose flag is true, and to the logger if not.
+	Verbosef(string, ...interface{})
 }
 
 // FinalizeCredentialParams contains the parameters for
@@ -185,6 +189,9 @@ type FinalizeCredentialContext interface {
 type FinalizeCredentialParams struct {
 	// Credential is the credential that the provider should finalize.
 	Credential cloud.Credential
+
+	// CloudName is the name of the cloud that the credentials are for.
+	CloudName string
 
 	// CloudEndpoint is the endpoint for the cloud that the credentials are
 	// for. This may be used by the provider to communicate with the cloud

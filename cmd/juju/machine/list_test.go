@@ -45,6 +45,7 @@ func (*fakeStatusAPI) Status(c []string) (*params.FullStatus, error) {
 				},
 				InstanceId: "juju-badd06-0",
 				Series:     "trusty",
+				Base:       params.Base{Name: "ubuntu", Channel: "14.04"},
 				NetworkInterfaces: map[string]params.NetworkInterface{
 					"eth0": {
 						IPAddresses: []string{
@@ -70,6 +71,7 @@ func (*fakeStatusAPI) Status(c []string) (*params.FullStatus, error) {
 				},
 				InstanceId: "juju-badd06-1",
 				Series:     "trusty",
+				Base:       params.Base{Name: "ubuntu", Channel: "14.04"},
 				NetworkInterfaces: map[string]params.NetworkInterface{
 					"eth0": {
 						IPAddresses: []string{
@@ -93,6 +95,7 @@ func (*fakeStatusAPI) Status(c []string) (*params.FullStatus, error) {
 						},
 						InstanceId: "juju-badd06-1-lxd-0",
 						Series:     "trusty",
+						Base:       params.Base{Name: "ubuntu", Channel: "14.04"},
 						NetworkInterfaces: map[string]params.NetworkInterface{
 							"eth0": {
 								IPAddresses: []string{

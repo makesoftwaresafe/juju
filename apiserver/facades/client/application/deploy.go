@@ -18,6 +18,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/instance"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/state"
 	"github.com/juju/juju/state/stateenvirons"
@@ -26,7 +27,7 @@ import (
 
 var (
 	// Overridden by tests.
-	supportedFeaturesGetter = stateenvirons.SupportedFeatures
+	SupportedFeaturesGetter = stateenvirons.SupportedFeatures
 )
 
 // DeployApplicationParams contains the arguments required to deploy the referenced
@@ -92,11 +93,34 @@ func DeployApplication(st ApplicationDeployer, model Model, args DeployApplicati
 	// TODO(fwereade): transactional State.AddApplication including settings, constraints
 	// (minimumUnitCount, initialMachineIds?).
 
+	// TODO(juju3) - remove
+	// We still store series in state for now.
+	series := args.Series
+	// Legacy k8s charms from kubernetes bundles do not set the channel.
+	if series == "" && args.CharmOrigin.Platform.Channel != "" {
+		series, err = coreseries.GetSeriesFromChannel(args.CharmOrigin.Platform.OS, args.CharmOrigin.Platform.Channel)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+	}
+	if series != "" && args.CharmOrigin.Platform.Channel == "" {
+		base, err := coreseries.GetBaseFromSeries(series)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		args.CharmOrigin.Platform.OS = base.Name
+		args.CharmOrigin.Platform.Channel = base.Channel.String()
+	}
+
+	origin, err := stateCharmOrigin(args.CharmOrigin)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	asa := state.AddApplicationArgs{
 		Name:              args.ApplicationName,
-		Series:            args.Series,
+		Series:            series,
 		Charm:             args.Charm,
-		CharmOrigin:       stateCharmOrigin(args.CharmOrigin),
+		CharmOrigin:       origin,
 		Channel:           args.Channel,
 		Storage:           stateStorageConstraints(args.Storage),
 		Devices:           stateDeviceConstraints(args.Devices),
@@ -179,7 +203,7 @@ func stateDeviceConstraints(cons map[string]devices.Constraints) map[string]stat
 	return result
 }
 
-func stateCharmOrigin(origin corecharm.Origin) *state.CharmOrigin {
+func stateCharmOrigin(origin corecharm.Origin) (*state.CharmOrigin, error) {
 	var ch *state.Channel
 	if c := origin.Channel; c != nil {
 		normalizedC := c.Normalize()
@@ -189,7 +213,11 @@ func stateCharmOrigin(origin corecharm.Origin) *state.CharmOrigin {
 			Branch: normalizedC.Branch,
 		}
 	}
-	stateOrigin := &state.CharmOrigin{
+	series, err := coreseries.GetSeriesFromChannel(origin.Platform.OS, origin.Platform.Channel)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return &state.CharmOrigin{
 		Type:     origin.Type,
 		Source:   string(origin.Source),
 		ID:       origin.ID,
@@ -199,10 +227,9 @@ func stateCharmOrigin(origin corecharm.Origin) *state.CharmOrigin {
 		Platform: &state.Platform{
 			Architecture: origin.Platform.Architecture,
 			OS:           origin.Platform.OS,
-			Series:       origin.Platform.Series,
+			Series:       series,
 		},
-	}
-	return stateOrigin
+	}, nil
 }
 
 func assertCharmAssumptions(assumesExprTree *assumes.ExpressionTree, model Model, ctrlCfgGetter func() (controller.Config, error)) error {
@@ -210,7 +237,7 @@ func assertCharmAssumptions(assumesExprTree *assumes.ExpressionTree, model Model
 		return nil
 	}
 
-	featureSet, err := supportedFeaturesGetter(model, environs.New)
+	featureSet, err := SupportedFeaturesGetter(model, environs.New)
 	if err != nil {
 		return errors.Annotate(err, "querying feature set supported by the model")
 	}

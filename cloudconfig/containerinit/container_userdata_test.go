@@ -12,6 +12,7 @@ import (
 	jc "github.com/juju/testing/checkers"
 	gc "gopkg.in/check.v1"
 
+	"github.com/juju/juju/cloudconfig/cloudinit"
 	"github.com/juju/juju/cloudconfig/containerinit"
 	"github.com/juju/juju/container"
 	containertesting "github.com/juju/juju/container/testing"
@@ -78,7 +79,11 @@ func CloudInitDataExcludingOutputSection(data string) []string {
 func (s *UserDataSuite) TestCloudInitUserDataNoNetworkConfig(c *gc.C) {
 	instanceConfig, err := containertesting.MockMachineConfig("1/lxd/0")
 	c.Assert(err, jc.ErrorIsNil)
-	data, err := containerinit.CloudInitUserData(instanceConfig, nil)
+
+	cfg, err := cloudinit.New(instanceConfig.Series)
+	c.Assert(err, jc.ErrorIsNil)
+
+	data, err := containerinit.CloudInitUserData(cfg, instanceConfig, nil)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(data, gc.NotNil)
 
@@ -98,8 +103,11 @@ func (s *UserDataSuite) TestCloudInitUserDataSomeNetworkConfig(c *gc.C) {
 		InterfaceType: network.EthernetDevice,
 		ConfigType:    network.ConfigDHCP,
 	}}
-	netConfig := container.BridgeNetworkConfig(0, nics)
-	data, err := containerinit.CloudInitUserData(instanceConfig, netConfig)
+
+	cfg, err := cloudinit.New(instanceConfig.Series)
+	c.Assert(err, jc.ErrorIsNil)
+
+	data, err := containerinit.CloudInitUserData(cfg, instanceConfig, container.BridgeNetworkConfig(0, nics))
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(data, gc.NotNil)
 

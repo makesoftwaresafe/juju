@@ -10,7 +10,7 @@ import (
 	"github.com/juju/clock"
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
-	"github.com/juju/lumberjack"
+	"github.com/juju/lumberjack/v2"
 	"github.com/juju/names/v4"
 	"github.com/juju/utils/v3/arch"
 	"github.com/juju/utils/v3/voyeur"
@@ -158,7 +158,7 @@ func NewUnitAgent(config UnitAgentConfig) (*UnitAgent, error) {
 
 func (a *UnitAgent) start() (worker.Worker, error) {
 	a.logger.Tracef("starting workers for %q", a.name)
-	loggingContext, bufferedLogger, err := a.initLogging()
+	loggingContext, bufferedLogger, closeLogging, err := a.initLogging()
 	if err != nil {
 		a.logger.Tracef("init logging failed %s", err)
 		return nil, errors.Trace(err)
@@ -221,13 +221,12 @@ func (a *UnitAgent) start() (worker.Worker, error) {
 		_ = engine.Wait()
 		a.mu.Lock()
 		a.workerRunning = false
-		bufferedLogger.Close()
+		closeLogging()
 		a.mu.Unlock()
 	}()
 	if err := addons.StartIntrospection(addons.IntrospectionConfig{
-		AgentTag:           a.CurrentConfig().Tag(),
+		AgentDir:           a.CurrentConfig().Dir(),
 		Engine:             engine,
-		NewSocketName:      addons.DefaultIntrospectionSocketName,
 		PrometheusGatherer: a.prometheusRegistry,
 		MachineLock:        machineLock,
 		WorkerFunc:         introspection.NewWorker,
@@ -248,7 +247,7 @@ func (a *UnitAgent) running() bool {
 	return a.workerRunning
 }
 
-func (a *UnitAgent) initLogging() (*loggo.Context, *logsender.BufferedLogWriter, error) {
+func (a *UnitAgent) initLogging() (*loggo.Context, *logsender.BufferedLogWriter, func(), error) {
 	loggingContext := loggo.NewContext(loggo.INFO)
 
 	logFilename := agent.LogFilename(a.agentConf)
@@ -272,12 +271,23 @@ func (a *UnitAgent) initLogging() (*loggo.Context, *logsender.BufferedLogWriter,
 
 	bufferedLogger, err := logsender.InstallBufferedLogWriter(loggingContext, 1048576)
 	if err != nil {
-		return nil, nil, errors.Annotate(err, "unable to add buffered log writer")
+		return nil, nil, nil, errors.Annotate(err, "unable to add buffered log writer")
 	}
+
+	closeLogging := func() {
+		if _, err = loggingContext.RemoveWriter("file"); err != nil {
+			a.logger.Errorf("%q remove writer: %s", a.name, err)
+		}
+		bufferedLogger.Close()
+		if err = ljLogger.Close(); err != nil {
+			a.logger.Errorf("%q lumberjack logger close: %s", a.name, err)
+		}
+	}
+
 	// Add line for starting agent to logging context.
 	loggingContext.GetLogger("juju").Infof("Starting unit workers for %q", a.name)
 	a.setupLogging(loggingContext, a.agentConf)
-	return loggingContext, bufferedLogger, nil
+	return loggingContext, bufferedLogger, closeLogging, nil
 }
 
 // ChangeConfig modifies this configuration using the given mutator.

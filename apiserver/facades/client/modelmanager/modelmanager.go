@@ -1,10 +1,6 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package modelmanager defines an API end point for functions dealing with
-// models.  Creating, listing and sharing models. This facade is available at
-// the root of the controller API, and as such, there is no implicit Model
-// associated.
 package modelmanager
 
 import (
@@ -129,24 +125,6 @@ type ModelManagerV2 interface {
 
 type newCaasBrokerFunc func(_ stdcontext.Context, args environs.OpenParams) (caas.Broker, error)
 
-// StatePool represents a point of use interface for getting the state from the
-// pool.
-type StatePool interface {
-	Get(string) (State, error)
-}
-
-// State represents a point of use interface for modelling a current model.
-type State interface {
-	Model() (Model, error)
-	HasUpgradeSeriesLocks() (bool, error)
-	Release() bool
-}
-
-// Model defines a point of use interface for the model from state.
-type Model interface {
-	IsControllerModel() bool
-}
-
 // ModelManagerAPI implements the model manager interface and is
 // the concrete implementation of the api end point.
 type ModelManagerAPI struct {
@@ -154,7 +132,7 @@ type ModelManagerAPI struct {
 	state       common.ModelManagerBackend
 	statePool   StatePool
 	ctlrState   common.ModelManagerBackend
-	check       *common.BlockChecker
+	check       common.BlockCheckerInterface
 	authorizer  facade.Authorizer
 	toolsFinder common.ToolsFinder
 	apiUser     names.UserTag
@@ -223,8 +201,9 @@ func NewModelManagerAPI(
 	st common.ModelManagerBackend,
 	ctlrSt common.ModelManagerBackend,
 	stPool StatePool,
-	configGetter environs.EnvironConfigGetter,
+	toolsFinder common.ToolsFinder,
 	getBroker newCaasBrokerFunc,
+	blockChecker common.BlockCheckerInterface,
 	authorizer facade.Authorizer,
 	m common.Model,
 	callCtx context.ProviderCallContext,
@@ -241,13 +220,6 @@ func NewModelManagerAPI(
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	urlGetter := common.NewToolsURLGetter(st.ModelUUID(), ctlrSt)
-
-	model, err := st.Model()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	newEnviron := common.EnvironFuncForModel(model, configGetter)
 
 	return &ModelManagerAPI{
 		ModelStatusAPI: common.NewModelStatusAPI(st, authorizer, apiUser),
@@ -255,9 +227,9 @@ func NewModelManagerAPI(
 		ctlrState:      ctlrSt,
 		statePool:      stPool,
 		getBroker:      getBroker,
-		check:          common.NewBlockChecker(st),
+		check:          blockChecker,
 		authorizer:     authorizer,
-		toolsFinder:    common.NewToolsFinder(configGetter, st, urlGetter, newEnviron),
+		toolsFinder:    toolsFinder,
 		apiUser:        apiUser,
 		isAdmin:        isAdmin,
 		model:          m,
@@ -931,6 +903,7 @@ func (m *ModelManagerAPI) ListModels(user params.Entity) (params.UserModelList, 
 			// no reason to fail the request here, as it wasn't the users fault
 			logger.Warningf("for model %v, got an invalid owner: %q", mi.UUID, mi.Owner)
 		}
+		lastConnection := mi.LastConnection
 		result.UserModels = append(result.UserModels, params.UserModel{
 			Model: params.Model{
 				Name:     mi.Name,
@@ -938,7 +911,7 @@ func (m *ModelManagerAPI) ListModels(user params.Entity) (params.UserModelList, 
 				Type:     string(mi.Type),
 				OwnerTag: ownerTag.String(),
 			},
-			LastConnection: &mi.LastConnection,
+			LastConnection: &lastConnection,
 		})
 	}
 
@@ -1689,5 +1662,5 @@ func (*ModelManagerAPIV4) ChangeModelCredential(_, _ struct{}) {}
 // ModelDefaultsForClouds did not exist prior to v6.
 func (*ModelManagerAPIV5) ModelDefaultsForClouds(_, _ struct{}) {}
 
-// ValidateModelUpgrade did not exist prior to v9.
-func (*ModelManagerAPIV8) ValidateModelUpgrade(_, _ struct{}) {}
+// ValidateModelUpgrades did not exist prior to v9.
+func (*ModelManagerAPIV8) ValidateModelUpgrades(_, _ struct{}) {}

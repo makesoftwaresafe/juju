@@ -136,6 +136,12 @@ machines:
 `[1:])
 }
 
+func (s *diffSuite) TestLocalBundleInvalidYaml(c *gc.C) {
+	_, err := s.runDiffBundle(c, s.writeLocalBundle(c, invalidYaml))
+	c.Assert(err, jc.Satisfies, errors.IsNotValid)
+	c.Assert(err, gc.ErrorMatches, `.*cannot unmarshal bundle contents.*`[1:])
+}
+
 func (s *diffSuite) TestIncludeAnnotations(c *gc.C) {
 	ctx, err := s.runDiffBundle(c, "--annotations", s.writeLocalBundle(c, testCharmStoreBundle))
 	c.Assert(err, jc.ErrorIsNil)
@@ -549,8 +555,8 @@ func makeAPIResponsesWithRelations(relations []params.RelationStatus) map[string
 			},
 			Relations: relations,
 			Machines: map[string]params.MachineStatus{
-				"0": {Series: "xenial"},
-				"1": {Series: "bionic"},
+				"0": {Series: "xenial", Base: params.Base{Name: "ubuntu", Channel: "16.04"}},
+				"1": {Series: "bionic", Base: params.Base{Name: "ubuntu", Channel: "18.04"}},
 			},
 		},
 		"Annotations.Get": params.AnnotationsGetResults{
@@ -610,7 +616,7 @@ func makeAPIResponsesWithExposedEndpoints(exposedEndpoints map[string]params.Exp
 				},
 			},
 			Machines: map[string]params.MachineStatus{
-				"0": {Series: "xenial"},
+				"0": {Series: "xenial", Base: params.Base{Name: "ubuntu", Channel: "16.04"}},
 			},
 		},
 		"Annotations.Get": params.AnnotationsGetResults{
@@ -643,7 +649,6 @@ type mockCharmStore struct {
 	stub   jujutesting.Stub
 	url    *charm.URL
 	origin commoncharm.Origin
-	series []string
 	bundle *mockBundle
 }
 
@@ -758,6 +763,13 @@ machines:
 	invalidBundle = `
 machines:
   0:
+`
+	invalidYaml = `
+applications:
+  prometheus:
+    options:
+      admin-user: lovecraft
+va
 `
 	overlay1 = `
 applications:

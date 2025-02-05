@@ -31,7 +31,7 @@ import (
 type getSuite struct {
 	jujutesting.JujuConnSuite
 
-	applicationAPI *application.APIv13
+	applicationAPI *application.APIv15
 	authorizer     apiservertesting.FakeAuthorizer
 }
 
@@ -64,7 +64,7 @@ func (s *getSuite) SetUpTest(c *gc.C) {
 		nil, // CAAS Broker not used in this suite.
 	)
 	c.Assert(err, jc.ErrorIsNil)
-	s.applicationAPI = &application.APIv13{api}
+	s.applicationAPI = &application.APIv15{api}
 }
 
 func (s *getSuite) TestClientApplicationGetSmokeTestV4(c *gc.C) {
@@ -77,8 +77,12 @@ func (s *getSuite) TestClientApplicationGetSmokeTestV4(c *gc.C) {
 						&application.APIv9{
 							&application.APIv10{
 								&application.APIv11{
-									&application.APIv12{
-										s.applicationAPI,
+									APIv12: &application.APIv12{
+										APIv13: &application.APIv13{
+											APIv14: &application.APIv14{
+												s.applicationAPI,
+											},
+										},
 									},
 								},
 							},
@@ -103,6 +107,7 @@ func (s *getSuite) TestClientApplicationGetSmokeTestV4(c *gc.C) {
 		},
 		Constraints: constraints.MustParse("arch=amd64"),
 		Series:      "quantal",
+		Base:        params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 	})
 }
 
@@ -115,8 +120,12 @@ func (s *getSuite) TestClientApplicationGetSmokeTestV5(c *gc.C) {
 					&application.APIv9{
 						&application.APIv10{
 							&application.APIv11{
-								&application.APIv12{
-									s.applicationAPI,
+								APIv12: &application.APIv12{
+									APIv13: &application.APIv13{
+										APIv14: &application.APIv14{
+											s.applicationAPI,
+										},
+									},
 								},
 							},
 						},
@@ -141,6 +150,7 @@ func (s *getSuite) TestClientApplicationGetSmokeTestV5(c *gc.C) {
 		},
 		Constraints: constraints.MustParse("arch=amd64"),
 		Series:      "quantal",
+		Base:        params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 	})
 }
 
@@ -171,6 +181,7 @@ func (s *getSuite) TestClientApplicationGetIAASModelSmokeTest(c *gc.C) {
 			}},
 		Constraints: constraints.MustParse("arch=amd64"),
 		Series:      "quantal",
+		Base:        params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 		EndpointBindings: map[string]string{
 			"":                network.AlphaSpaceName,
 			"admin-api":       network.AlphaSpaceName,
@@ -261,9 +272,13 @@ func (s *getSuite) TestClientApplicationGetCAASModelSmokeTest(c *gc.C) {
 		&application.APIv9{
 			&application.APIv10{
 				&application.APIv11{
-					&application.APIv12{
-						&application.APIv13{
-							api,
+					APIv12: &application.APIv12{
+						APIv13: &application.APIv13{
+							APIv14: &application.APIv14{
+								APIv15: &application.APIv15{
+									api,
+								},
+							},
 						},
 					},
 				},
@@ -288,6 +303,7 @@ func (s *getSuite) TestClientApplicationGetCAASModelSmokeTest(c *gc.C) {
 		ApplicationConfig: expectedAppConfig,
 		Constraints:       constraints.MustParse("arch=amd64"),
 		Series:            "kubernetes",
+		Base:              params.Base{Name: "kubernetes", Channel: "kubernetes"},
 		EndpointBindings: map[string]string{
 			"":      network.AlphaSpaceName,
 			"miner": network.AlphaSpaceName,
@@ -357,6 +373,7 @@ var getTests = []struct {
 			},
 		},
 		Series: "quantal",
+		Base:   params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 		EndpointBindings: map[string]string{
 			"": network.AlphaSpaceName,
 		},
@@ -419,6 +436,7 @@ var getTests = []struct {
 			},
 		},
 		Series: "quantal",
+		Base:   params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 		EndpointBindings: map[string]string{
 			"": network.AlphaSpaceName,
 		},
@@ -429,6 +447,7 @@ var getTests = []struct {
 	expect: params.ApplicationGetResults{
 		CharmConfig: map[string]interface{}{},
 		Series:      "quantal",
+		Base:        params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 		ApplicationConfig: map[string]interface{}{
 			"trust": map[string]interface{}{
 				"value":       false,
@@ -458,6 +477,7 @@ var getTests = []struct {
 	expect: params.ApplicationGetResults{
 		CharmConfig: map[string]interface{}{},
 		Series:      "quantal",
+		Base:        params.Base{Name: "ubuntu", Channel: "12.10/stable"},
 		ApplicationConfig: map[string]interface{}{
 			"trust": map[string]interface{}{
 				"value":       false,

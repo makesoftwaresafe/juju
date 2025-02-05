@@ -125,22 +125,23 @@ See also:
 const (
 	// SSHRetryDelay is the time to wait for an SSH connection to be established
 	// to a single endpoint of a target.
-	SSHRetryDelay = 500 * time.Millisecond
+	SSHRetryDelay = 2 * time.Second
 
-	// SSHTimeout is the time to wait for before giving up trying to establish
-	// an SSH connection to a target, after retrying.
-	SSHTimeout = 5 * time.Second
+	// SSHTimeout is the time to wait for all SSH negotiation and authentication process.
+	SSHTimeout = 20 * time.Second
 )
 
 func newSSHCommand(
 	hostChecker jujussh.ReachableChecker,
 	isTerminal func(interface{}) bool,
 	retryStrategy retry.CallArgs,
+	publicKeyRetryStrategy retry.CallArgs,
 ) cmd.Command {
 	c := &sshCommand{
-		hostChecker:   hostChecker,
-		isTerminal:    isTerminal,
-		retryStrategy: retryStrategy,
+		hostChecker:            hostChecker,
+		isTerminal:             isTerminal,
+		retryStrategy:          retryStrategy,
+		publicKeyRetryStrategy: publicKeyRetryStrategy,
 	}
 	return modelcmd.Wrap(c)
 }
@@ -149,6 +150,14 @@ var defaultSSHRetryStrategy = retry.CallArgs{
 	Clock:       clock.WallClock,
 	MaxDuration: SSHTimeout,
 	Delay:       SSHRetryDelay,
+}
+
+var defaultSSHPublicKeyRetryStrategy = retry.CallArgs{
+	Clock:       clock.WallClock,
+	MaxDelay:    60 * time.Second,
+	Delay:       1 * time.Second,
+	Attempts:    10,
+	BackoffFunc: retry.DoubleDelay,
 }
 
 // sshCommand is responsible for launching a ssh shell on a given unit or machine.
@@ -165,7 +174,8 @@ type sshCommand struct {
 	isTerminal  func(interface{}) bool
 	pty         autoBoolValue
 
-	retryStrategy retry.CallArgs
+	retryStrategy          retry.CallArgs
+	publicKeyRetryStrategy retry.CallArgs
 }
 
 func (c *sshCommand) SetFlags(f *gnuflag.FlagSet) {
@@ -195,10 +205,12 @@ func (c *sshCommand) Init(args []string) (err error) {
 	} else {
 		c.provider = &c.sshMachine
 	}
+	c.provider.setModelType(c.modelType)
 	c.provider.setTarget(args[0])
 	c.provider.setArgs(args[1:])
 	c.provider.setHostChecker(c.hostChecker)
 	c.provider.setRetryStrategy(c.retryStrategy)
+	c.provider.setPublicKeyRetryStrategy(c.publicKeyRetryStrategy)
 	return nil
 }
 
@@ -218,8 +230,12 @@ type sshProvider interface {
 	setHostChecker(checker jujussh.ReachableChecker)
 	resolveTarget(string) (*resolvedTarget, error)
 	maybePopulateTargetViaField(*resolvedTarget, func([]string) (*params.FullStatus, error)) error
+	maybeResolveLeaderUnit(leaderAPIGetterFunc, statusAPIGetterFunc, string) (string, error)
 	ssh(ctx Context, enablePty bool, target *resolvedTarget) error
 	copy(Context) error
+
+	getModelType() model.ModelType
+	setModelType(modelType model.ModelType)
 
 	getTarget() string
 	setTarget(target string)
@@ -228,10 +244,11 @@ type sshProvider interface {
 	setArgs(Args []string)
 
 	setRetryStrategy(retry.CallArgs)
+	setPublicKeyRetryStrategy(retry.CallArgs)
 }
 
-// Run resolves c.Target to a machine, to the address of a i
-// machine or unit forks ssh passing any arguments provided.
+// Run resolves the given target to a machine or unit, then opens
+// an SSH connection to this target.
 func (c *sshCommand) Run(ctx *cmd.Context) error {
 	if err := c.provider.initRun(&c.ModelCommandBase); err != nil {
 		return errors.Trace(err)
@@ -308,32 +325,39 @@ type StatusAPI interface {
 }
 
 type statusAPIGetterFunc func() (StatusAPI, error)
+type leaderAPIGetterFunc func() (LeaderAPI, bool, error)
 
-// LeaderAPI is implemented by types that can query for a Leader based on
-// application name.
 type LeaderAPI interface {
-	BestAPIVersion() int
 	Leader(string) (string, error)
+	BestAPIVersion() int
+	Close() error
 }
 
-type leaderAPIGetterFunc func() (LeaderAPI, error)
+type leaderResolver struct {
+	resolvedLeader string
+}
 
-func maybeResolveLeaderUnit(leaderAPIGetter leaderAPIGetterFunc, statusAPIGetter statusAPIGetterFunc, target string) (string, error) {
+func (c *leaderResolver) maybeResolveLeaderUnit(leaderAPIGetter leaderAPIGetterFunc, statusAPIGetter statusAPIGetterFunc, target string) (resolved string, _ error) {
 	if !strings.HasSuffix(target, "/leader") {
 		return target, nil
 	}
+	if c.resolvedLeader != "" {
+		return c.resolvedLeader, nil
+	}
+
+	defer func() {
+		c.resolvedLeader = resolved
+	}()
 
 	app := strings.Split(target, "/")[0]
 
-	lapi, err := leaderAPIGetter()
+	leaderAPI, useLeaderAPI, err := leaderAPIGetter()
 	if err != nil {
 		return "", errors.Trace(err)
 	}
-	// Do not call lapi.Close() here, it's used again
-	// upstream from here.
-	if lapi.BestAPIVersion() > 2 {
-		// Leader() is part of facade version 3.
-		return lapi.Leader(app)
+	// Do not call leaderAPI.Close() here, it's closed upstream from here.
+	if useLeaderAPI {
+		return leaderAPI.Leader(app)
 	}
 
 	sapi, err := statusAPIGetter()

@@ -4,16 +4,16 @@
 package modelgeneration_test
 
 import (
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
-	"github.com/juju/juju/core/cache"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	facademocks "github.com/juju/juju/apiserver/facade/mocks"
 	"github.com/juju/juju/apiserver/facades/client/modelgeneration"
 	"github.com/juju/juju/apiserver/facades/client/modelgeneration/mocks"
+	"github.com/juju/juju/core/cache"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/settings"
 	"github.com/juju/juju/rpc/params"
@@ -273,10 +273,6 @@ func (s *modelGenerationSuite) expectBranch() {
 
 func (s *modelGenerationSuite) expectHasActiveBranch(err error) {
 	s.mockModelCache.EXPECT().Branch(s.newBranchName).Return(cache.Branch{}, err)
-}
-
-func (s *modelGenerationSuite) expectAssignAllUnits(appName string) {
-	s.mockGen.EXPECT().AssignAllUnits(appName).Return(nil)
 }
 
 func (s *modelGenerationSuite) expectAssignUnits(appName string, numUnits int) {

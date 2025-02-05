@@ -7,7 +7,6 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	instance "github.com/juju/juju/core/instance"
 	life "github.com/juju/juju/core/life"
 	status "github.com/juju/juju/core/status"
@@ -15,6 +14,7 @@ import (
 	params "github.com/juju/juju/rpc/params"
 	names "github.com/juju/names/v4"
 	version "github.com/juju/version/v2"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockMachineProvisioner is a mock of MachineProvisioner interface.
@@ -199,21 +199,6 @@ func (m *MockMachineProvisioner) ModelAgentVersion() (*version.Number, error) {
 func (mr *MockMachineProvisionerMockRecorder) ModelAgentVersion() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ModelAgentVersion", reflect.TypeOf((*MockMachineProvisioner)(nil).ModelAgentVersion))
-}
-
-// ProvisioningInfo mocks base method.
-func (m *MockMachineProvisioner) ProvisioningInfo() (*params.ProvisioningInfoV10, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProvisioningInfo")
-	ret0, _ := ret[0].(*params.ProvisioningInfoV10)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ProvisioningInfo indicates an expected call of ProvisioningInfo.
-func (mr *MockMachineProvisionerMockRecorder) ProvisioningInfo() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProvisioningInfo", reflect.TypeOf((*MockMachineProvisioner)(nil).ProvisioningInfo))
 }
 
 // Refresh mocks base method.
@@ -418,21 +403,6 @@ func (m *MockMachineProvisioner) Tag() names.Tag {
 func (mr *MockMachineProvisionerMockRecorder) Tag() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tag", reflect.TypeOf((*MockMachineProvisioner)(nil).Tag))
-}
-
-// WatchAllContainers mocks base method.
-func (m *MockMachineProvisioner) WatchAllContainers() (watcher.StringsWatcher, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "WatchAllContainers")
-	ret0, _ := ret[0].(watcher.StringsWatcher)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// WatchAllContainers indicates an expected call of WatchAllContainers.
-func (mr *MockMachineProvisionerMockRecorder) WatchAllContainers() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WatchAllContainers", reflect.TypeOf((*MockMachineProvisioner)(nil).WatchAllContainers))
 }
 
 // WatchContainers mocks base method.

@@ -12,12 +12,15 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/golang/mock/gomock"
+	"github.com/juju/clock/testclock"
 	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
+	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
+	"gopkg.in/yaml.v2"
 
 	"github.com/juju/juju/api/agent/caasapplication"
 	"github.com/juju/juju/cmd/containeragent/initialize"
@@ -33,6 +36,7 @@ type initCommandSuit struct {
 	fileReaderWriter *utilsmocks.MockFileReaderWriter
 	environment      *utilsmocks.MockEnvironment
 	cmd              cmd.Command
+	clock            testclock.AdvanceableClock
 }
 
 var _ = gc.Suite(&initCommandSuit{})
@@ -68,7 +72,8 @@ func (s *initCommandSuit) setupCommand(c *gc.C) *gomock.Controller {
 	s.applicationAPI = mocks.NewMockApplicationAPI(ctrl)
 	s.fileReaderWriter = utilsmocks.NewMockFileReaderWriter(ctrl)
 	s.environment = utilsmocks.NewMockEnvironment(ctrl)
-	s.cmd = initialize.NewInitCommandForTest(s.applicationAPI, s.fileReaderWriter, s.environment)
+	s.clock = testclock.NewDilatedWallClock(coretesting.ShortWait)
+	s.cmd = initialize.NewInitCommandForTest(s.applicationAPI, s.fileReaderWriter, s.environment, s.clock)
 	return ctrl
 }
 
@@ -91,6 +96,43 @@ apiport: 17070`[1:])
 	expectedContainerAgent := []byte(`CONTAINERAGENT`)
 	expectedJujuc := []byte(`JUJUC`)
 
+	expectedCAPebbleService := []byte(`summary: Juju container agent service
+services:
+    container-agent:
+        summary: Juju container agent
+        startup: enabled
+        override: replace
+        command: '/charm/bin/containeragent unit --data-dir /var/lib/juju --append-env "PATH=$PATH:/charm/bin" --show-log '
+        environment:
+            HTTP_PROBE_PORT: "65301"
+        kill-delay: 30m0s
+        on-success: ignore
+        on-failure: shutdown
+        on-check-failure:
+            liveness: ignore
+            readiness: ignore
+checks:
+    liveness:
+        override: replace
+        level: alive
+        period: 10s
+        timeout: 3s
+        threshold: 3
+        http:
+            url: http://localhost:65301/liveness
+    readiness:
+        override: replace
+        level: ready
+        period: 10s
+        timeout: 3s
+        threshold: 3
+        http:
+            url: http://localhost:65301/readiness
+`)
+	var y any
+	err := yaml.Unmarshal(expectedCAPebbleService, &y)
+	c.Assert(err, jc.ErrorIsNil)
+
 	pebbleWritten := bytes.NewBuffer(nil)
 	containerAgentWritten := bytes.NewBuffer(nil)
 	jujucWritten := bytes.NewBuffer(nil)
@@ -103,6 +145,8 @@ apiport: 17070`[1:])
 	s.fileReaderWriter.EXPECT().Writer("/charm/bin/jujuc", os.FileMode(0755)).Return(NopWriteCloser(jujucWritten), nil)
 
 	gomock.InOrder(
+		s.applicationAPI.EXPECT().UnitIntroduction(`gitlab-0`, `gitlab-uuid`).Times(1).Return(nil, errors.NotAssignedf("yo we not needed yet")),
+		s.applicationAPI.EXPECT().UnitIntroduction(`gitlab-0`, `gitlab-uuid`).Times(1).Return(nil, errors.AlreadyExistsf("yo we dead atm")),
 		s.applicationAPI.EXPECT().UnitIntroduction(`gitlab-0`, `gitlab-uuid`).Times(1).Return(&caasapplication.UnitConfig{
 			UnitTag:   names.NewUnitTag("gitlab/0"),
 			AgentConf: data,
@@ -111,11 +155,14 @@ apiport: 17070`[1:])
 		s.fileReaderWriter.EXPECT().MkdirAll("/var/lib/juju", os.FileMode(0755)).Return(nil),
 		s.fileReaderWriter.EXPECT().WriteFile("/var/lib/juju/template-agent.conf", data, os.FileMode(0644)).Return(nil),
 		s.fileReaderWriter.EXPECT().MkdirAll("/charm/bin", os.FileMode(0755)).Return(nil),
+		s.fileReaderWriter.EXPECT().MkdirAll("/containeragent/pebble/layers", os.FileMode(0555)).Return(nil),
+		s.fileReaderWriter.EXPECT().WriteFile("/containeragent/pebble/layers/001-container-agent.yaml", expectedCAPebbleService, os.FileMode(0444)).Return(nil),
 
 		s.applicationAPI.EXPECT().Close().Times(1).Return(nil),
 	)
 
-	_, err := cmdtesting.RunCommand(c, s.cmd,
+	_, err = cmdtesting.RunCommand(c, s.cmd,
+		"--containeragent-pebble-dir", "/containeragent/pebble",
 		"--data-dir", "/var/lib/juju",
 		"--bin-dir", "/charm/bin",
 	)

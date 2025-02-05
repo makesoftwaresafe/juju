@@ -1,10 +1,6 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package collect provides a worker that executes the collect-metrics hook
-// periodically, as long as the workload has been started (between start and
-// stop hooks). collect-metrics executes in its own execution context, which is
-// restricted to avoid contention with uniter "lifecycle" hooks.
 package collect
 
 import (
@@ -31,6 +27,7 @@ import (
 	"github.com/juju/juju/worker/uniter/charm"
 	"github.com/juju/juju/worker/uniter/runner"
 	"github.com/juju/juju/worker/uniter/runner/context"
+	"github.com/juju/juju/wrench"
 )
 
 const (
@@ -47,18 +44,18 @@ var (
 	defaultPeriod = 5 * time.Minute
 
 	// errMetricsNotDefined is returned when the charm the uniter is running does
-	// not declared any metrics.
+	// not declare any metrics.
 	errMetricsNotDefined = errors.New("no metrics defined")
 
 	// readCharm function reads the charm directory and extracts declared metrics and the charm url.
-	readCharm = func(unitTag names.UnitTag, paths context.Paths) (*corecharm.URL, map[string]corecharm.Metric, error) {
+	readCharm = func(unitTag names.UnitTag, paths context.Paths) (string, map[string]corecharm.Metric, error) {
 		ch, err := corecharm.ReadCharm(paths.GetCharmDir())
 		if err != nil {
-			return nil, nil, errors.Annotatef(err, "failed to read charm from: %v", paths.GetCharmDir())
+			return "", nil, errors.Annotatef(err, "failed to read charm from: %v", paths.GetCharmDir())
 		}
 		chURL, err := charm.ReadCharmURL(path.Join(paths.GetCharmDir(), charm.CharmURLPath))
 		if err != nil {
-			return nil, nil, errors.Trace(err)
+			return "", nil, errors.Trace(err)
 		}
 		charmMetrics := map[string]corecharm.Metric{}
 		if ch.Metrics() != nil {
@@ -77,7 +74,7 @@ var (
 		if len(charmMetrics) == 0 {
 			return nil, errMetricsNotDefined
 		}
-		return metricFactory.Recorder(charmMetrics, chURL.String(), unitTag.String())
+		return metricFactory.Recorder(charmMetrics, chURL, unitTag.String())
 	}
 
 	newSocketListener = func(path string, handler spool.ConnectionHandler) (stopper, error) {
@@ -141,6 +138,10 @@ func socketName(baseDir, unitTag string) string {
 }
 
 func newCollect(config ManifoldConfig, context dependency.Context) (*collect, error) {
+	if wrench.IsActive("metricscollector", "short-interval") {
+		defaultPeriod = 10 * time.Second
+	}
+
 	period := defaultPeriod
 	if config.Period != nil {
 		period = *config.Period
@@ -188,7 +189,11 @@ func newCollect(config ManifoldConfig, context dependency.Context) (*collect, er
 		return nil, errors.Trace(err)
 	}
 
-	if len(validMetrics) > 0 && charmURL.Schema == "local" {
+	curl, err := corecharm.ParseURL(charmURL)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	if len(validMetrics) > 0 && curl.Schema == "local" {
 		h := newHandler(handlerConfig{
 			charmdir:       charmdir,
 			agent:          agent,

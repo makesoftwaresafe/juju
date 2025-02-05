@@ -21,9 +21,13 @@ import (
 	"github.com/juju/juju/api/client/modelmanager"
 	"github.com/juju/juju/api/client/sshclient"
 	commoncharm "github.com/juju/juju/api/common/charms"
+	controllerapi "github.com/juju/juju/api/controller/controller"
+	"github.com/juju/juju/caas/kubernetes/provider"
 	k8sprovider "github.com/juju/juju/caas/kubernetes/provider"
 	k8sexec "github.com/juju/juju/caas/kubernetes/provider/exec"
 	jujucloud "github.com/juju/juju/cloud"
+	"github.com/juju/juju/controller"
+	"github.com/juju/juju/core/model"
 	environsbootstrap "github.com/juju/juju/environs/bootstrap"
 	"github.com/juju/juju/environs/cloudspec"
 	jujussh "github.com/juju/juju/network/ssh"
@@ -33,6 +37,7 @@ import (
 // sshContainer implements functionality shared by sshCommand, SCPCommand
 // and DebugHooksCommand for CAAS model.
 type sshContainer struct {
+	leaderResolver
 	// remote indicates if it should target to the operator or workload pod.
 	remote    bool
 	target    string
@@ -40,6 +45,7 @@ type sshContainer struct {
 	args      []string
 	modelUUID string
 	modelName string
+	namespace string
 
 	cloudCredentialAPI CloudCredentialAPI
 	modelAPI           ModelAPI
@@ -48,7 +54,11 @@ type sshContainer struct {
 	execClientGetter   func(string, cloudspec.CloudSpec) (k8sexec.Executor, error)
 	execClient         k8sexec.Executor
 	statusAPIGetter    statusAPIGetterFunc
-	leaderAPIGetter    leaderAPIGetterFunc
+	// TODO(juju3) - remove
+	modelType       model.ModelType
+	sshClient       SSHClientAPI
+	leaderAPIGetter leaderAPIGetterFunc
+	controllerAPI   SSHControllerAPI
 }
 
 // CloudCredentialAPI defines cloud credential related APIs.
@@ -61,8 +71,18 @@ type CloudCredentialAPI interface {
 
 // ApplicationAPI defines application related APIs.
 type ApplicationAPI interface {
+	Leader(string) (string, error)
+	BestAPIVersion() int
 	Close() error
 	UnitsInfo(units []names.UnitTag) ([]application.UnitInfo, error)
+}
+
+// SSHClientAPI defines ssh client related APIs.
+type SSHClientAPI interface {
+	Leader(string) (string, error)
+	BestAPIVersion() int
+	Close() error
+	ModelCredentialForSSH() (cloudspec.CloudSpec, error)
 }
 
 // ModelAPI defines model related APIs.
@@ -74,6 +94,10 @@ type ModelAPI interface {
 type CharmsAPI interface {
 	Close() error
 	CharmInfo(charmURL string) (*commoncharm.CharmInfo, error)
+}
+
+type SSHControllerAPI interface {
+	ControllerConfig() (controller.Config, error)
 }
 
 // SetFlags sets up options and flags for the command.
@@ -106,9 +130,23 @@ func (c *sshContainer) setArgs(args []string) {
 
 func (c *sshContainer) setRetryStrategy(_ retry.CallArgs) {}
 
+func (c *sshContainer) setPublicKeyRetryStrategy(_ retry.CallArgs) {}
+
+func (c *sshContainer) getModelType() model.ModelType {
+	return c.modelType
+}
+
+func (c *sshContainer) setModelType(modelType model.ModelType) {
+	c.modelType = modelType
+}
+
 // initRun initializes the API connection if required. It must be called
 // at the top of the command's Run method.
 func (c *sshContainer) initRun(mc ModelCommand) (err error) {
+	if c.modelName, err = mc.ModelIdentifier(); err != nil {
+		return errors.Trace(err)
+	}
+
 	if len(c.modelUUID) == 0 {
 		_, mDetails, err := mc.ModelDetails()
 		if err != nil {
@@ -117,18 +155,42 @@ func (c *sshContainer) initRun(mc ModelCommand) (err error) {
 		c.modelUUID = mDetails.ModelUUID
 	}
 
-	if c.cloudCredentialAPI == nil || c.modelAPI == nil {
-		cAPI, err := mc.NewControllerAPIRoot()
-		if err != nil {
-			return errors.Trace(err)
-		}
+	cAPI, err := mc.NewControllerAPIRoot()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	root, err := mc.NewAPIRoot()
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if c.cloudCredentialAPI == nil {
 		c.cloudCredentialAPI = apicloud.NewClient(cAPI)
+	}
+	if c.modelAPI == nil {
 		c.modelAPI = modelmanager.NewClient(cAPI)
+	}
+
+	if c.sshClient == nil {
+		c.sshClient = sshclient.NewFacade(root)
 	}
 
 	if c.execClientGetter == nil {
 		c.execClientGetter = k8sexec.NewForJujuCloudSpec
 	}
+
+	c.namespace = modelNameWithoutUsername(c.modelName)
+	if c.namespace == environsbootstrap.ControllerModelName {
+		if c.controllerAPI == nil {
+			c.controllerAPI = controllerapi.NewClient(cAPI)
+		}
+		controllerCfg, err := c.controllerAPI.ControllerConfig()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		c.namespace = provider.DecideControllerNamespace(controllerCfg.ControllerName())
+	}
+
 	if c.execClient == nil {
 		if c.execClient, err = c.getExecClient(); err != nil {
 			return errors.Trace(err)
@@ -136,14 +198,16 @@ func (c *sshContainer) initRun(mc ModelCommand) (err error) {
 	}
 
 	if c.applicationAPI == nil {
-		root, err := mc.NewAPIRoot()
-		if err != nil {
-			return errors.Trace(err)
-		}
 		c.applicationAPI = application.NewClient(root)
 		if c.leaderAPIGetter == nil {
-			c.leaderAPIGetter = func() (LeaderAPI, error) {
-				return sshclient.NewFacade(root), nil
+			c.leaderAPIGetter = func() (LeaderAPI, bool, error) {
+				if c.applicationAPI.BestAPIVersion() > 13 {
+					return c.applicationAPI, true, nil
+				}
+				if c.sshClient.BestAPIVersion() > 2 && c.modelType != model.CAAS {
+					return c.sshClient, true, nil
+				}
+				return nil, false, nil
 			}
 		}
 	}
@@ -189,12 +253,16 @@ func (c *sshContainer) cleanupRun() {
 		_ = c.charmsAPI.Close()
 		c.charmsAPI = nil
 	}
+	if c.sshClient != nil {
+		_ = c.sshClient.Close()
+		c.sshClient = nil
+	}
 }
 
 const charmContainerName = "charm"
 
 func (c *sshContainer) resolveTarget(target string) (*resolvedTarget, error) {
-	if c.modelName == environsbootstrap.ControllerModelName && names.IsValidMachine(target) {
+	if modelNameWithoutUsername(c.modelName) == environsbootstrap.ControllerModelName && names.IsValidMachine(target) {
 		// TODO(caas): change here to controller unit tag once we refactored controller to an application.
 		if target != "0" {
 			// HA is not enabled on CaaS controller yet.
@@ -204,7 +272,7 @@ func (c *sshContainer) resolveTarget(target string) (*resolvedTarget, error) {
 	}
 	// If the user specified a leader unit, try to resolve it to the
 	// appropriate unit name and override the requested target name.
-	resolvedTargetName, err := maybeResolveLeaderUnit(c.leaderAPIGetter, c.statusAPIGetter, target)
+	resolvedTargetName, err := c.maybeResolveLeaderUnit(c.leaderAPIGetter, c.statusAPIGetter, target)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -237,7 +305,7 @@ func (c *sshContainer) resolveTarget(target string) (*resolvedTarget, error) {
 	if !isMetaV2 && !c.remote {
 		// We don't want to introduce CaaS broker here, but only use exec client.
 		podAPI := c.execClient.RawClient().CoreV1().Pods(c.execClient.NameSpace())
-		modelName := c.modelName
+		modelName := modelNameWithoutUsername(c.modelName)
 		// Model name should always be set, but just in case...
 		if modelName == "" {
 			modelName = c.execClient.NameSpace()
@@ -293,10 +361,16 @@ type Context interface {
 func (c *sshContainer) ssh(ctx Context, enablePty bool, target *resolvedTarget) (err error) {
 	args := c.args
 	if len(args) == 0 {
-		args = []string{"sh"}
+		args = []string{"exec", "sh"}
 	}
 	cancel, stop := getInterruptAbortChan(ctx)
 	defer stop()
+	var env []string
+	if enablePty {
+		if term := os.Getenv("TERM"); term != "" {
+			env = append(env, "TERM="+term)
+		}
+	}
 	return c.execClient.Exec(
 		k8sexec.ExecParams{
 			PodName:       target.entity,
@@ -306,6 +380,7 @@ func (c *sshContainer) ssh(ctx Context, enablePty bool, target *resolvedTarget) 
 			Stderr:        ctx.GetStderr(),
 			Stdin:         ctx.GetStdin(),
 			TTY:           enablePty,
+			Env:           env,
 		},
 		cancel,
 	)
@@ -370,51 +445,72 @@ func (c *sshContainer) expandSCPArg(arg string) (o k8sexec.FileResource, err err
 	return o, errors.New("target must match format: [pod[/container]:]path")
 }
 
+func modelNameWithoutUsername(modelName string) string {
+	parts := strings.Split(modelName, "/")
+	if len(parts) == 2 {
+		modelName = parts[1]
+	}
+	return modelName
+}
+
 func (c *sshContainer) getExecClient() (k8sexec.Executor, error) {
+	cloudSpec, err := c.getCloudSpec()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return c.execClientGetter(c.namespace, cloudSpec)
+}
+
+func (c *sshContainer) getCloudSpec() (cloudspec.CloudSpec, error) {
 	if v := c.cloudCredentialAPI.BestAPIVersion(); v < 2 {
-		return nil, errors.NotSupportedf("credential content lookup on the controller in Juju v%d", v)
+		return cloudspec.CloudSpec{}, errors.NotSupportedf("credential content lookup on the controller in Juju v%d", v)
 	}
 
+	if c.sshClient.BestAPIVersion() > 3 {
+		return c.sshClient.ModelCredentialForSSH()
+	}
+
+	// legacy code for v3 API
 	modelTag := names.NewModelTag(c.modelUUID)
 	mInfoResults, err := c.modelAPI.ModelInfo([]names.ModelTag{modelTag})
 	if err != nil {
-		return nil, err
+		return cloudspec.CloudSpec{}, err
 	}
 	mInfo := mInfoResults[0]
 	if mInfo.Error != nil {
-		return nil, errors.Annotatef(mInfo.Error, "getting model information")
+		return cloudspec.CloudSpec{}, errors.Annotatef(mInfo.Error, "getting model information")
 	}
 	c.modelName = mInfo.Result.Name
 
 	credentialTag, err := names.ParseCloudCredentialTag(mInfo.Result.CloudCredentialTag)
 	if err != nil {
-		return nil, err
+		return cloudspec.CloudSpec{}, err
 	}
 	remoteContents, err := c.cloudCredentialAPI.CredentialContents(credentialTag.Cloud().Id(), credentialTag.Name(), true)
 	if err != nil {
-		return nil, err
+		return cloudspec.CloudSpec{}, err
 	}
 	cred := remoteContents[0]
+	if cred.Error != nil && params.IsCodeNotFound(cred.Error) {
+		return cloudspec.CloudSpec{}, errors.NewForbidden(err, `
+ssh requires super user for current version, please consider to upgrade the controller to ssh using admin user`)
+	}
 	if cred.Error != nil {
-		return nil, errors.Annotatef(cred.Error, "getting credential")
+		return cloudspec.CloudSpec{}, errors.Annotatef(cred.Error, "getting credential")
 	}
 	if cred.Result.Content.Valid != nil && !*cred.Result.Content.Valid {
-		return nil, errors.NewNotValid(nil, fmt.Sprintf("model credential %q is not valid", cred.Result.Content.Name))
+		return cloudspec.CloudSpec{}, errors.NewNotValid(nil, fmt.Sprintf("model credential %q is not valid", cred.Result.Content.Name))
 	}
 
 	jujuCred := jujucloud.NewCredential(jujucloud.AuthType(cred.Result.Content.AuthType), cred.Result.Content.Attributes)
 	cloud, err := c.cloudCredentialAPI.Cloud(names.NewCloudTag(cred.Result.Content.Cloud))
 	if err != nil {
-		return nil, err
+		return cloudspec.CloudSpec{}, err
 	}
 	if !jujucloud.CloudIsCAAS(cloud) {
-		return nil, errors.NewNotValid(nil, fmt.Sprintf("cloud %q is not kubernetes cloud type", cloud.Name))
+		return cloudspec.CloudSpec{}, errors.NewNotValid(nil, fmt.Sprintf("cloud %q is not kubernetes cloud type", cloud.Name))
 	}
-	cloudSpec, err := cloudspec.MakeCloudSpec(cloud, "", &jujuCred)
-	if err != nil {
-		return nil, err
-	}
-	return c.execClientGetter(mInfo.Result.Name, cloudSpec)
+	return cloudspec.MakeCloudSpec(cloud, "", &jujuCred)
 }
 
 func (c *sshContainer) maybePopulateTargetViaField(_ *resolvedTarget, _ func([]string) (*params.FullStatus, error)) error {

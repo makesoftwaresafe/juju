@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	jujuclock "github.com/juju/clock"
 	"github.com/juju/clock/testclock"
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version/v2"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -34,7 +34,6 @@ import (
 	k8sutils "github.com/juju/juju/caas/kubernetes/provider/utils"
 	k8swatcher "github.com/juju/juju/caas/kubernetes/provider/watcher"
 	k8swatchertest "github.com/juju/juju/caas/kubernetes/provider/watcher/test"
-	"github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/paths"
@@ -56,6 +55,8 @@ type applicationSuite struct {
 	watchers     []k8swatcher.KubernetesNotifyWatcher
 	applier      *resourcesmocks.MockApplier
 }
+
+const defaultAgentVersion = "2.9.37"
 
 var _ = gc.Suite(&applicationSuite{})
 
@@ -111,7 +112,11 @@ func (s *applicationSuite) getApp(c *gc.C, deploymentType caas.DeploymentType, m
 	), ctrl
 }
 
-func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivateImageRepo bool, cons constraints.Value, trust bool, checkMainResource func()) {
+func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivateImageRepo bool, cons constraints.Value, trust bool, agentVersion string, checkMainResource func()) {
+	if agentVersion == "" {
+		agentVersion = defaultAgentVersion
+	}
+
 	appSecret := corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "gitlab-application-config",
@@ -120,7 +125,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 		Data: map[string][]byte{
 			"JUJU_K8S_APPLICATION":          []byte("gitlab"),
@@ -138,7 +143,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{"app.kubernetes.io/name": "gitlab"},
@@ -158,7 +163,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{
@@ -173,7 +178,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 		AutomountServiceAccountToken: pointer.BoolPtr(false),
 	}
@@ -185,7 +190,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 	}
 	if trust {
@@ -196,6 +201,15 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 		}}
 	} else {
 		appRole.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"namespaces"},
+				Verbs: []string{
+					"get",
+					"list",
+				},
+				ResourceNames: []string{s.namespace},
+			},
 			{
 				APIGroups: []string{""},
 				Resources: []string{"pods", "services"},
@@ -222,7 +236,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
@@ -241,7 +255,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 	}
 	if trust {
@@ -258,7 +272,7 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": agentVersion},
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
@@ -273,10 +287,10 @@ func (s *applicationSuite) assertEnsure(c *gc.C, app caas.Application, isPrivate
 
 	c.Assert(app.Ensure(
 		caas.ApplicationConfig{
-			AgentVersion:         version.MustParse("1.1.1"),
+			AgentVersion:         version.MustParse(agentVersion),
 			IsPrivateImageRepo:   isPrivateImageRepo,
 			AgentImagePath:       "operator/image-path:1.1.1",
-			CharmBaseImagePath:   "ubuntu:20.04",
+			CharmBaseImagePath:   "ubuntu@20.04",
 			CharmModifiedVersion: 9001,
 			Filesystems: []storage.KubernetesFilesystemParams{
 				{
@@ -412,7 +426,7 @@ func (s *applicationSuite) assertDelete(c *gc.C, app caas.Application) {
 	c.Assert(statefulSets.Items, gc.IsNil)
 }
 
-func getPodSpec(c *gc.C) corev1.PodSpec {
+func getPodSpec() corev1.PodSpec {
 	jujuDataDir := paths.DataDir(paths.OSUnixLike)
 	return corev1.PodSpec{
 		ServiceAccountName:            "gitlab",
@@ -425,7 +439,7 @@ func getPodSpec(c *gc.C) corev1.PodSpec {
 			Image:           "operator/image-path:1.1.1",
 			WorkingDir:      jujuDataDir,
 			Command:         []string{"/opt/containeragent"},
-			Args:            []string{"init", "--data-dir", "/var/lib/juju", "--bin-dir", "/charm/bin"},
+			Args:            []string{"init", "--containeragent-pebble-dir", "/containeragent/pebble", "--charm-modified-version", "9001", "--data-dir", "/var/lib/juju", "--bin-dir", "/charm/bin"},
 			Env: []corev1.EnvVar{
 				{
 					Name:  "JUJU_CONTAINER_NAMES",
@@ -473,20 +487,23 @@ func getPodSpec(c *gc.C) corev1.PodSpec {
 					MountPath: "/charm/containers",
 					SubPath:   "charm/containers",
 				},
+				{
+					Name:      "charm-data",
+					MountPath: "/containeragent/pebble",
+					SubPath:   "containeragent/pebble",
+				},
 			},
 		}},
 		Containers: []corev1.Container{{
 			Name:            "charm",
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			Image:           "ubuntu:20.04",
+			Image:           "ubuntu@20.04",
 			WorkingDir:      jujuDataDir,
-			Command:         []string{"/charm/bin/containeragent"},
+			Command:         []string{"/charm/bin/pebble"},
 			Args: []string{
-				"unit",
-				"--data-dir", jujuDataDir,
-				"--charm-modified-version", "9001",
-				"--append-env", "PATH=$PATH:/charm/bin",
-				"--show-log",
+				"run",
+				"--http", ":38812",
+				"--verbose",
 			},
 			Env: []corev1.EnvVar{
 				{
@@ -505,38 +522,41 @@ func getPodSpec(c *gc.C) corev1.PodSpec {
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
-						Path: constants.AgentHTTPPathLiveness,
-						Port: intstr.Parse(constants.AgentHTTPProbePort),
+						Path: "/v1/health?level=alive",
+						Port: intstr.Parse("38812"),
 					},
 				},
 				InitialDelaySeconds: 30,
-				PeriodSeconds:       10,
+				TimeoutSeconds:      1,
+				PeriodSeconds:       5,
 				SuccessThreshold:    1,
-				FailureThreshold:    2,
+				FailureThreshold:    1,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
-						Path: constants.AgentHTTPPathReadiness,
-						Port: intstr.Parse(constants.AgentHTTPProbePort),
+						Path: "/v1/health?level=ready",
+						Port: intstr.Parse("38812"),
 					},
 				},
 				InitialDelaySeconds: 30,
-				PeriodSeconds:       10,
+				TimeoutSeconds:      1,
+				PeriodSeconds:       5,
 				SuccessThreshold:    1,
-				FailureThreshold:    2,
+				FailureThreshold:    1,
 			},
 			StartupProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					HTTPGet: &corev1.HTTPGetAction{
-						Path: constants.AgentHTTPPathStartup,
-						Port: intstr.Parse(constants.AgentHTTPProbePort),
+						Path: "/v1/health?level=alive",
+						Port: intstr.Parse("38812"),
 					},
 				},
 				InitialDelaySeconds: 30,
-				PeriodSeconds:       10,
+				TimeoutSeconds:      1,
+				PeriodSeconds:       5,
 				SuccessThreshold:    1,
-				FailureThreshold:    2,
+				FailureThreshold:    1,
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{
@@ -554,6 +574,11 @@ func getPodSpec(c *gc.C) corev1.PodSpec {
 					Name:      "charm-data",
 					MountPath: "/charm/containers",
 					SubPath:   "charm/containers",
+				},
+				{
+					Name:      "charm-data",
+					MountPath: "/var/lib/pebble/default",
+					SubPath:   "containeragent/pebble",
 				},
 				{
 					Name:      "gitlab-database-appuuid",
@@ -697,7 +722,7 @@ func getPodSpec(c *gc.C) corev1.PodSpec {
 func (s *applicationSuite) TestEnsureStateful(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, func() {
+		c, app, false, constraints.Value{}, true, "", func() {
 			svc, err := s.client.CoreV1().Services("test").Get(context.TODO(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, jc.ErrorIsNil)
 			c.Assert(svc, gc.DeepEquals, &corev1.Service{
@@ -709,7 +734,7 @@ func (s *applicationSuite) TestEnsureStateful(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version": "1.1.1",
+						"juju.is/version": "2.9.37",
 						"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
 					},
 				},
@@ -732,7 +757,7 @@ func (s *applicationSuite) TestEnsureStateful(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version":  "1.1.1",
+						"juju.is/version":  "2.9.37",
 						"app.juju.is/uuid": "appuuid",
 					},
 				},
@@ -746,9 +771,9 @@ func (s *applicationSuite) TestEnsureStateful(c *gc.C) {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-							Annotations: map[string]string{"juju.is/version": "1.1.1"},
+							Annotations: map[string]string{"juju.is/version": "2.9.37"},
 						},
-						Spec: getPodSpec(c),
+						Spec: getPodSpec(),
 					},
 					VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
 						{
@@ -785,7 +810,7 @@ func (s *applicationSuite) TestEnsureStateful(c *gc.C) {
 func (s *applicationSuite) TestEnsureTrusted(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, func() {},
+		c, app, false, constraints.Value{}, true, "", func() {},
 	)
 	s.assertDelete(c, app)
 }
@@ -793,7 +818,7 @@ func (s *applicationSuite) TestEnsureTrusted(c *gc.C) {
 func (s *applicationSuite) TestEnsureUntrusted(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, func() {},
+		c, app, false, constraints.Value{}, false, "", func() {},
 	)
 	s.assertDelete(c, app)
 }
@@ -801,7 +826,7 @@ func (s *applicationSuite) TestEnsureUntrusted(c *gc.C) {
 func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 
-	podSpec := getPodSpec(c)
+	podSpec := getPodSpec()
 	podSpec.ImagePullSecrets = append(
 		[]corev1.LocalObjectReference{
 			{Name: constants.CAASImageRepoSecretName},
@@ -809,7 +834,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *gc.C) {
 		podSpec.ImagePullSecrets...,
 	)
 	s.assertEnsure(
-		c, app, true, constraints.Value{}, true, func() {
+		c, app, true, constraints.Value{}, true, "", func() {
 			svc, err := s.client.CoreV1().Services("test").Get(context.TODO(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, jc.ErrorIsNil)
 			c.Assert(svc, gc.DeepEquals, &corev1.Service{
@@ -821,7 +846,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version": "1.1.1",
+						"juju.is/version": "2.9.37",
 						"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
 					},
 				},
@@ -844,7 +869,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version":  "1.1.1",
+						"juju.is/version":  "2.9.37",
 						"app.juju.is/uuid": "appuuid",
 					},
 				},
@@ -858,7 +883,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *gc.C) {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-							Annotations: map[string]string{"juju.is/version": "1.1.1"},
+							Annotations: map[string]string{"juju.is/version": "2.9.37"},
 						},
 						Spec: podSpec,
 					},
@@ -897,7 +922,7 @@ func (s *applicationSuite) TestEnsureStatefulPrivateImageRepo(c *gc.C) {
 func (s *applicationSuite) TestEnsureStateless(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateless, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, func() {
+		c, app, false, constraints.Value{}, true, "", func() {
 			ss, err := s.client.AppsV1().Deployments("test").Get(context.TODO(), "gitlab", metav1.GetOptions{})
 			c.Assert(err, jc.ErrorIsNil)
 
@@ -927,7 +952,7 @@ func (s *applicationSuite) TestEnsureStateless(c *gc.C) {
 				},
 			})
 
-			podSpec := getPodSpec(c)
+			podSpec := getPodSpec()
 			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 				Name: "gitlab-database-appuuid",
 				VolumeSource: corev1.VolumeSource{
@@ -944,7 +969,7 @@ func (s *applicationSuite) TestEnsureStateless(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version":  "1.1.1",
+						"juju.is/version":  "2.9.37",
 						"app.juju.is/uuid": "appuuid",
 					},
 				},
@@ -956,7 +981,7 @@ func (s *applicationSuite) TestEnsureStateless(c *gc.C) {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-							Annotations: map[string]string{"juju.is/version": "1.1.1"},
+							Annotations: map[string]string{"juju.is/version": "2.9.37"},
 						},
 						Spec: podSpec,
 					},
@@ -970,7 +995,7 @@ func (s *applicationSuite) TestEnsureStateless(c *gc.C) {
 func (s *applicationSuite) TestEnsureDaemon(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentDaemon, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, true, func() {
+		c, app, false, constraints.Value{}, true, "", func() {
 			ss, err := s.client.AppsV1().DaemonSets("test").Get(context.TODO(), "gitlab", metav1.GetOptions{})
 			c.Assert(err, jc.ErrorIsNil)
 
@@ -1000,7 +1025,7 @@ func (s *applicationSuite) TestEnsureDaemon(c *gc.C) {
 				},
 			})
 
-			podSpec := getPodSpec(c)
+			podSpec := getPodSpec()
 			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 				Name: "gitlab-database-appuuid",
 				VolumeSource: corev1.VolumeSource{
@@ -1017,7 +1042,7 @@ func (s *applicationSuite) TestEnsureDaemon(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version":  "1.1.1",
+						"juju.is/version":  "2.9.37",
 						"app.juju.is/uuid": "appuuid",
 					},
 				},
@@ -1028,7 +1053,7 @@ func (s *applicationSuite) TestEnsureDaemon(c *gc.C) {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-							Annotations: map[string]string{"juju.is/version": "1.1.1"},
+							Annotations: map[string]string{"juju.is/version": "2.9.37"},
 						},
 						Spec: podSpec,
 					},
@@ -1063,7 +1088,7 @@ func (s *applicationSuite) TestExistsDeployment(c *gc.C) {
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{
@@ -1102,7 +1127,7 @@ func (s *applicationSuite) TestExistsStatefulSet(c *gc.C) {
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Selector: &metav1.LabelSelector{
@@ -1142,7 +1167,7 @@ func (s *applicationSuite) TestExistsDaemonSet(c *gc.C) {
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 		Spec: appsv1.DaemonSetSpec{
 			Selector: &metav1.LabelSelector{
@@ -1163,93 +1188,35 @@ func (s *applicationSuite) TestExistsDaemonSet(c *gc.C) {
 	})
 }
 
+// Test upgrades are performed by ensure. Regression bug for lp1997253
 func (s *applicationSuite) TestUpgradeStateful(c *gc.C) {
-	// Not mock applier and ensure the resources created in the s.client.
+
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
-	s.assertEnsure(c, app, false, constraints.Value{}, true, func() {})
+	s.assertEnsure(c, app, false, constraints.Value{}, true, "2.9.34", func() {
+		ss, err := s.client.AppsV1().StatefulSets("test").Get(context.TODO(), "gitlab", metav1.GetOptions{})
+		c.Assert(err, jc.ErrorIsNil)
 
-	app, ctrl := s.getApp(c, caas.DeploymentStateful, true)
-	defer ctrl.Finish()
+		c.Assert(len(ss.Spec.Template.Spec.InitContainers), gc.Equals, 1)
+		c.Assert(ss.Spec.Template.Spec.InitContainers[0].Args, jc.DeepEquals, []string{
+			"init",
+			"--data-dir", "/var/lib/juju",
+			"--bin-dir", "/charm/bin",
+		})
+	})
 
-	targetVersion := version.MustParse("2.9.1")
-	versionKey := k8sutils.AnnotationVersionKey(app.IsLegacyLabels())
+	s.assertEnsure(c, app, false, constraints.Value{}, true, "2.9.37", func() {
+		ss, err := s.client.AppsV1().StatefulSets("test").Get(context.TODO(), "gitlab", metav1.GetOptions{})
+		c.Assert(err, jc.ErrorIsNil)
 
-	assertExpectedVersion := func(r application.AnnotationUpdater) {
-		c.Assert(r.Get(context.Background(), s.client), jc.ErrorIsNil)
-		c.Assert(r.GetAnnotations()[versionKey], gc.Equals, "1.1.1")
-		r.SetAnnotations(annotations.New(r.GetAnnotations()).Add(
-			versionKey, targetVersion.String(),
-		))
-	}
-
-	headlessSvc := resources.NewService("gitlab-endpoints", "test", nil)
-	assertExpectedVersion(headlessSvc)
-
-	ss := resources.NewStatefulSet("gitlab", "test", nil)
-	assertExpectedVersion(ss)
-	ss.Spec.Template.SetAnnotations(annotations.New(ss.Spec.Template.GetAnnotations()).Add(
-		versionKey, targetVersion.String(),
-	))
-	initContainer := ss.Spec.Template.Spec.InitContainers[0]
-	c.Assert(initContainer.Image, gc.Equals, `operator/image-path:1.1.1`)
-	initContainer.Image = `operator/image-path:2.9.1`
-	ss.Spec.Template.Spec.InitContainers = []corev1.Container{initContainer}
-
-	secret := resources.NewSecret("gitlab-application-config", "test", nil)
-	assertExpectedVersion(secret)
-
-	sa := resources.NewServiceAccount("gitlab", "test", nil)
-	assertExpectedVersion(sa)
-
-	role := resources.NewRole("gitlab", "test", nil)
-	assertExpectedVersion(role)
-
-	rolebinding := resources.NewRoleBinding("gitlab", "test", nil)
-	assertExpectedVersion(rolebinding)
-
-	clusterrole := resources.NewClusterRole("test-gitlab", nil)
-	assertExpectedVersion(clusterrole)
-
-	clusterrolebinding := resources.NewClusterRoleBinding("test-gitlab", nil)
-	assertExpectedVersion(clusterrolebinding)
-
-	svc := resources.NewService("gitlab", "test", nil)
-	assertExpectedVersion(svc)
-
-	gomock.InOrder(
-		s.applier.EXPECT().Apply(headlessSvc),
-		s.applier.EXPECT().Apply(ss),
-		s.applier.EXPECT().Apply(secret),
-		s.applier.EXPECT().Apply(sa),
-		s.applier.EXPECT().Apply(role),
-		s.applier.EXPECT().Apply(rolebinding),
-		s.applier.EXPECT().Apply(clusterrole),
-		s.applier.EXPECT().Apply(clusterrolebinding),
-		s.applier.EXPECT().Apply(svc),
-		s.applier.EXPECT().Run(context.Background(), s.client, false).Return(nil),
-	)
-	c.Assert(app.Upgrade(targetVersion), jc.ErrorIsNil)
-}
-
-func (s *applicationSuite) TestUpgradeStateless(c *gc.C) {
-	app, ctrl := s.getApp(c, caas.DeploymentStateless, true)
-	defer ctrl.Finish()
-	err := app.Upgrade(version.MustParse("2.9.1"))
-	c.Assert(err, gc.ErrorMatches, `upgrade for deployment type "stateless" not supported`)
-}
-
-func (s *applicationSuite) TestUpgradeDaemon(c *gc.C) {
-	app, ctrl := s.getApp(c, caas.DeploymentDaemon, true)
-	defer ctrl.Finish()
-	err := app.Upgrade(version.MustParse("2.9.1"))
-	c.Assert(err, gc.ErrorMatches, `upgrade for deployment type "daemon" not supported`)
-}
-
-func (s *applicationSuite) TestUpgradeNotsupported(c *gc.C) {
-	app, ctrl := s.getApp(c, "bad-deployment-type", true)
-	defer ctrl.Finish()
-	err := app.Upgrade(version.MustParse("2.9.1"))
-	c.Assert(err, gc.ErrorMatches, `unknown deployment type "bad-deployment-type" not supported`)
+		c.Assert(len(ss.Spec.Template.Spec.InitContainers), gc.Equals, 1)
+		c.Assert(ss.Spec.Template.Spec.InitContainers[0].Args, jc.DeepEquals, []string{
+			"init",
+			"--containeragent-pebble-dir", "/containeragent/pebble",
+			"--charm-modified-version", "9001",
+			"--data-dir", "/var/lib/juju",
+			"--bin-dir", "/charm/bin",
+		})
+	})
 }
 
 func (s *applicationSuite) TestDeleteStateful(c *gc.C) {
@@ -1378,7 +1345,7 @@ func (s *applicationSuite) assertState(c *gc.C, deploymentType caas.DeploymentTy
 			Name:        "pod1",
 			Namespace:   "test",
 			Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 	}
 	_, err := s.client.CoreV1().Pods("test").Create(context.TODO(),
@@ -1391,7 +1358,7 @@ func (s *applicationSuite) assertState(c *gc.C, deploymentType caas.DeploymentTy
 			Name:        "pod2",
 			Namespace:   "test",
 			Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 	}
 	_, err = s.client.CoreV1().Pods("test").Create(context.TODO(),
@@ -1418,7 +1385,7 @@ func (s *applicationSuite) TestStateStateful(c *gc.C) {
 					"app.kubernetes.io/name":       "gitlab",
 					"app.kubernetes.io/managed-by": "juju",
 				},
-				Annotations: map[string]string{"juju.is/version": "1.1.1"},
+				Annotations: map[string]string{"juju.is/version": "2.9.37"},
 			},
 			Spec: appsv1.StatefulSetSpec{
 				Selector: &metav1.LabelSelector{
@@ -1446,7 +1413,7 @@ func (s *applicationSuite) TestStateStateless(c *gc.C) {
 					"app.kubernetes.io/name":       "gitlab",
 					"app.kubernetes.io/managed-by": "juju",
 				},
-				Annotations: map[string]string{"juju.is/version": "1.1.1"},
+				Annotations: map[string]string{"juju.is/version": "2.9.37"},
 			},
 			Spec: appsv1.DeploymentSpec{
 				Selector: &metav1.LabelSelector{
@@ -1474,7 +1441,7 @@ func (s *applicationSuite) TestStateDaemon(c *gc.C) {
 					"app.kubernetes.io/name":       "gitlab",
 					"app.kubernetes.io/managed-by": "juju",
 				},
-				Annotations: map[string]string{"juju.is/version": "1.1.1"},
+				Annotations: map[string]string{"juju.is/version": "2.9.37"},
 			},
 			Spec: appsv1.DaemonSetSpec{
 				Selector: &metav1.LabelSelector{
@@ -1501,7 +1468,7 @@ func getDefaultSvc() *corev1.Service {
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{"app.kubernetes.io/name": "gitlab"},
@@ -1528,7 +1495,7 @@ func (s *applicationSuite) TestUpdatePortsStatelessUpdateContainerPorts(c *gc.C)
 					"app.kubernetes.io/managed-by": "juju",
 				},
 				Annotations: map[string]string{
-					"juju.is/version":  "1.1.1",
+					"juju.is/version":  "2.9.37",
 					"app.juju.is/uuid": "appuuid",
 				},
 			},
@@ -1539,7 +1506,7 @@ func (s *applicationSuite) TestUpdatePortsStatelessUpdateContainerPorts(c *gc.C)
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-						Annotations: map[string]string{"juju.is/version": "1.1.1"},
+						Annotations: map[string]string{"juju.is/version": "2.9.37"},
 					},
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{
@@ -1658,7 +1625,7 @@ func (s *applicationSuite) TestUpdatePortsStatefulUpdateContainerPorts(c *gc.C) 
 					"app.kubernetes.io/managed-by": "juju",
 				},
 				Annotations: map[string]string{
-					"juju.is/version":  "1.1.1",
+					"juju.is/version":  "2.9.37",
 					"app.juju.is/uuid": "appuuid",
 				},
 			},
@@ -1669,7 +1636,7 @@ func (s *applicationSuite) TestUpdatePortsStatefulUpdateContainerPorts(c *gc.C) 
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-						Annotations: map[string]string{"juju.is/version": "1.1.1"},
+						Annotations: map[string]string{"juju.is/version": "2.9.37"},
 					},
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{
@@ -1788,7 +1755,7 @@ func (s *applicationSuite) TestUpdatePortsDaemonUpdateContainerPorts(c *gc.C) {
 					"app.kubernetes.io/managed-by": "juju",
 				},
 				Annotations: map[string]string{
-					"juju.is/version":  "1.1.1",
+					"juju.is/version":  "2.9.37",
 					"app.juju.is/uuid": "appuuid",
 				},
 			},
@@ -1799,7 +1766,7 @@ func (s *applicationSuite) TestUpdatePortsDaemonUpdateContainerPorts(c *gc.C) {
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-						Annotations: map[string]string{"juju.is/version": "1.1.1"},
+						Annotations: map[string]string{"juju.is/version": "2.9.37"},
 					},
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{
@@ -1958,7 +1925,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 
 	for i := 0; i < 9; i++ {
-		podSpec := getPodSpec(c)
+		podSpec := getPodSpec()
 		podSpec.Volumes = append(podSpec.Volumes,
 			corev1.Volume{
 				Name: "gitlab-database-appuuid",
@@ -2018,7 +1985,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 				Namespace:   s.namespace,
 				Name:        fmt.Sprintf("%s-%d", s.appName, i),
 				Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-				Annotations: map[string]string{"juju.is/version": "1.1.1"},
+				Annotations: map[string]string{"juju.is/version": "2.9.37"},
 			},
 			Spec: podSpec,
 			Status: corev1.PodStatus{
@@ -2226,7 +2193,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-0",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2258,7 +2225,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-1",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2289,7 +2256,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-2",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2320,7 +2287,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-3",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2352,7 +2319,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-4",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2384,7 +2351,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-5",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2416,7 +2383,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-6",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2448,7 +2415,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-7",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2479,7 +2446,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 					Volume: caas.VolumeInfo{
 						VolumeId:   "pv-8",
 						Size:       1024,
-						Persistent: false,
+						Persistent: true,
 						Status: status.StatusInfo{
 							Status:  "attached",
 							Message: "volume bound",
@@ -2494,7 +2461,7 @@ func (s *applicationSuite) TestUnits(c *gc.C) {
 func (s *applicationSuite) TestServiceActive(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, func() {},
+		c, app, false, constraints.Value{}, false, "", func() {},
 	)
 	defer s.assertDelete(c, app)
 
@@ -2533,7 +2500,7 @@ func (s *applicationSuite) TestServiceActive(c *gc.C) {
 func (s *applicationSuite) TestServiceNotSupportedDaemon(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentDaemon, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, func() {},
+		c, app, false, constraints.Value{}, false, "", func() {},
 	)
 	defer s.assertDelete(c, app)
 
@@ -2550,7 +2517,7 @@ func (s *applicationSuite) TestServiceNotSupportedDaemon(c *gc.C) {
 func (s *applicationSuite) TestServiceNotSupportedStateless(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateless, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, func() {},
+		c, app, false, constraints.Value{}, false, "", func() {},
 	)
 	defer s.assertDelete(c, app)
 
@@ -2567,7 +2534,7 @@ func (s *applicationSuite) TestServiceNotSupportedStateless(c *gc.C) {
 func (s *applicationSuite) TestServiceTerminated(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, func() {},
+		c, app, false, constraints.Value{}, false, "", func() {},
 	)
 	defer s.assertDelete(c, app)
 
@@ -2607,7 +2574,7 @@ func (s *applicationSuite) TestServiceTerminated(c *gc.C) {
 func (s *applicationSuite) TestServiceError(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.Value{}, false, func() {},
+		c, app, false, constraints.Value{}, false, "", func() {},
 	)
 	defer s.assertDelete(c, app)
 
@@ -2666,7 +2633,7 @@ func (s *applicationSuite) TestServiceError(c *gc.C) {
 func (s *applicationSuite) TestEnsureConstraints(c *gc.C) {
 	app, _ := s.getApp(c, caas.DeploymentStateful, false)
 	s.assertEnsure(
-		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, func() {
+		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, "", func() {
 			svc, err := s.client.CoreV1().Services("test").Get(context.TODO(), "gitlab-endpoints", metav1.GetOptions{})
 			c.Assert(err, jc.ErrorIsNil)
 			c.Assert(svc, gc.DeepEquals, &corev1.Service{
@@ -2678,7 +2645,7 @@ func (s *applicationSuite) TestEnsureConstraints(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version": "1.1.1",
+						"juju.is/version": "2.9.37",
 						"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
 					},
 				},
@@ -2690,13 +2657,17 @@ func (s *applicationSuite) TestEnsureConstraints(c *gc.C) {
 				},
 			})
 
-			ps := getPodSpec(c)
+			ps := getPodSpec()
 			ps.NodeSelector = map[string]string{
 				"kubernetes.io/arch": "arm64",
 			}
-			ps.Containers[0].Resources.Requests = corev1.ResourceList{
+			resourceRequests := corev1.ResourceList{
 				corev1.ResourceCPU:    k8sresource.MustParse("1000m"),
 				corev1.ResourceMemory: k8sresource.MustParse("1024Mi"),
+			}
+			ps.Containers[0].Resources.Requests = resourceRequests
+			for i := range ps.Containers {
+				ps.Containers[i].Resources.Limits = resourceRequests
 			}
 
 			ss, err := s.client.AppsV1().StatefulSets("test").Get(context.TODO(), "gitlab", metav1.GetOptions{})
@@ -2710,7 +2681,7 @@ func (s *applicationSuite) TestEnsureConstraints(c *gc.C) {
 						"app.kubernetes.io/managed-by": "juju",
 					},
 					Annotations: map[string]string{
-						"juju.is/version":  "1.1.1",
+						"juju.is/version":  "2.9.37",
 						"app.juju.is/uuid": "appuuid",
 					},
 				},
@@ -2724,7 +2695,7 @@ func (s *applicationSuite) TestEnsureConstraints(c *gc.C) {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels:      map[string]string{"app.kubernetes.io/name": "gitlab"},
-							Annotations: map[string]string{"juju.is/version": "1.1.1"},
+							Annotations: map[string]string{"juju.is/version": "2.9.37"},
 						},
 						Spec: ps,
 					},
@@ -2770,7 +2741,7 @@ func (s *applicationSuite) TestPullSecretUpdate(c *gc.C) {
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{
@@ -2791,7 +2762,7 @@ func (s *applicationSuite) TestPullSecretUpdate(c *gc.C) {
 				"app.kubernetes.io/name":       "gitlab",
 				"app.kubernetes.io/managed-by": "juju",
 			},
-			Annotations: map[string]string{"juju.is/version": "1.1.1"},
+			Annotations: map[string]string{"juju.is/version": "2.9.37"},
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{
@@ -2802,7 +2773,7 @@ func (s *applicationSuite) TestPullSecretUpdate(c *gc.C) {
 		metav1.CreateOptions{})
 	c.Assert(err, jc.ErrorIsNil)
 
-	s.assertEnsure(c, app, false, constraints.Value{}, true, func() {})
+	s.assertEnsure(c, app, false, constraints.Value{}, true, "", func() {})
 
 	_, err = s.client.CoreV1().Secrets(s.namespace).Get(context.TODO(), "gitlab-oldcontainer-secret", metav1.GetOptions{})
 	c.Assert(err, gc.ErrorMatches, `secrets "gitlab-oldcontainer-secret" not found`)
@@ -2899,6 +2870,24 @@ func (s *applicationSuite) TestPVCNames(c *gc.C) {
 		"gitlab-storage_b": "gitlab-storage_b-abcd1234",
 		"gitlab-storage_c": "juju-storage_c-42",
 	})
+}
+
+func (s *applicationSuite) TestLimits(c *gc.C) {
+	limits := corev1.ResourceList{
+		corev1.ResourceCPU:    *k8sresource.NewMilliQuantity(1000, k8sresource.DecimalSI),
+		corev1.ResourceMemory: *k8sresource.NewQuantity(1024*1024*1024, k8sresource.BinarySI),
+	}
+
+	app, _ := s.getApp(c, caas.DeploymentStateful, false)
+	s.assertEnsure(
+		c, app, false, constraints.MustParse("mem=1G cpu-power=1000 arch=arm64"), true, "", func() {
+			ss, err := s.client.AppsV1().StatefulSets("test").Get(context.TODO(), "gitlab", metav1.GetOptions{})
+			c.Assert(err, jc.ErrorIsNil)
+			for _, ctr := range ss.Spec.Template.Spec.Containers {
+				c.Check(ctr.Resources.Limits, gc.DeepEquals, limits)
+			}
+		},
+	)
 }
 
 func int64Ptr(a int64) *int64 {

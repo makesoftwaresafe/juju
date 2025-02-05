@@ -5,12 +5,12 @@
 package mocks
 
 import (
+	context "context"
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	caas "github.com/juju/juju/caas"
 	watcher "github.com/juju/juju/core/watcher"
-	version "github.com/juju/version/v2"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockApplication is a mock of Application interface.
@@ -152,6 +152,21 @@ func (mr *MockApplicationMockRecorder) Units() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Units", reflect.TypeOf((*MockApplication)(nil).Units))
 }
 
+// UnitsToRemove mocks base method.
+func (m *MockApplication) UnitsToRemove(arg0 context.Context, arg1 int) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnitsToRemove", arg0, arg1)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UnitsToRemove indicates an expected call of UnitsToRemove.
+func (mr *MockApplicationMockRecorder) UnitsToRemove(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnitsToRemove", reflect.TypeOf((*MockApplication)(nil).UnitsToRemove), arg0, arg1)
+}
+
 // UpdatePorts mocks base method.
 func (m *MockApplication) UpdatePorts(arg0 []caas.ServicePort, arg1 bool) error {
 	m.ctrl.T.Helper()
@@ -178,20 +193,6 @@ func (m *MockApplication) UpdateService(arg0 caas.ServiceParam) error {
 func (mr *MockApplicationMockRecorder) UpdateService(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateService", reflect.TypeOf((*MockApplication)(nil).UpdateService), arg0)
-}
-
-// Upgrade mocks base method.
-func (m *MockApplication) Upgrade(arg0 version.Number) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Upgrade", arg0)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Upgrade indicates an expected call of Upgrade.
-func (mr *MockApplicationMockRecorder) Upgrade(arg0 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Upgrade", reflect.TypeOf((*MockApplication)(nil).Upgrade), arg0)
 }
 
 // Watch mocks base method.

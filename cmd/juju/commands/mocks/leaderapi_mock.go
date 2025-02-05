@@ -7,7 +7,7 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockLeaderAPI is a mock of LeaderAPI interface.
@@ -45,6 +45,20 @@ func (m *MockLeaderAPI) BestAPIVersion() int {
 func (mr *MockLeaderAPIMockRecorder) BestAPIVersion() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BestAPIVersion", reflect.TypeOf((*MockLeaderAPI)(nil).BestAPIVersion))
+}
+
+// Close mocks base method.
+func (m *MockLeaderAPI) Close() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Close")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Close indicates an expected call of Close.
+func (mr *MockLeaderAPIMockRecorder) Close() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockLeaderAPI)(nil).Close))
 }
 
 // Leader mocks base method.

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/cmd/v3"
 	"github.com/juju/cmd/v3/cmdtesting"
 	"github.com/juju/names/v4"
@@ -18,6 +17,7 @@ import (
 	"github.com/juju/utils/v3/voyeur"
 	"github.com/juju/version/v2"
 	"github.com/juju/worker/v3"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/agent"
@@ -111,7 +111,7 @@ func (s *commonMachineSuite) TearDownTest(c *gc.C) {
 // machine agent's directory.  It returns the new machine, the
 // agent's configuration and the tools currently running.
 func (s *commonMachineSuite) primeAgent(c *gc.C, jobs ...state.MachineJob) (m *state.Machine, agentConfig agent.ConfigSetterWriter, tools *tools.Tools) {
-	vers := coretesting.CurrentVersion(c)
+	vers := coretesting.CurrentVersion()
 	return s.primeAgentVersion(c, vers, jobs...)
 }
 
@@ -192,7 +192,6 @@ func NewTestMachineAgentFactory(
 			rootDir:                     rootDir,
 			initialUpgradeCheckComplete: gate.NewLock(),
 			loopDeviceManager:           &mockLoopDeviceManager{},
-			newIntrospectionSocketName:  addons.DefaultIntrospectionSocketName,
 			prometheusRegistry:          prometheusRegistry,
 			mongoTxnCollector:           mongometrics.NewTxnCollector(),
 			mongoDialCollector:          mongometrics.NewDialCollector(),

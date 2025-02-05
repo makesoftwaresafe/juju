@@ -32,6 +32,7 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/resources"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/mongo"
 	"github.com/juju/juju/mongo/utils"
@@ -188,6 +189,10 @@ func AddTestingCharm(c *gc.C, st *State, name string) *Charm {
 	return addCharm(c, st, "quantal", testcharms.Repo.CharmDir(name))
 }
 
+func AddTestingCharmFromRepo(c *gc.C, st *State, name string, repo *charmrepotesting.Repo) *Charm {
+	return addCharm(c, st, "quantal", repo.CharmDir(name))
+}
+
 func getCharmRepo(series string) *charmrepotesting.Repo {
 	// ALl testing charms for state are under `quantal` except `kubernetes`.
 	if series == "kubernetes" {
@@ -298,11 +303,29 @@ type addTestingApplicationParams struct {
 
 func addTestingApplication(c *gc.C, params addTestingApplicationParams) *Application {
 	c.Assert(params.ch, gc.NotNil)
+
+	series := params.series
+	if params.series == "" {
+		series = params.ch.URL().Series
+	}
+
+	origin := params.origin
+	if params.origin == nil {
+		base, err := coreseries.GetBaseFromSeries(series)
+		c.Assert(err, jc.ErrorIsNil)
+
+		origin = &CharmOrigin{Platform: &Platform{
+			Architecture: params.ch.URL().Architecture,
+			OS:           base.Name,
+			Series:       series,
+		}}
+	}
+
 	app, err := params.st.AddApplication(AddApplicationArgs{
 		Name:             params.name,
-		Series:           params.series,
+		Series:           series,
 		Charm:            params.ch,
-		CharmOrigin:      params.origin,
+		CharmOrigin:      origin,
 		EndpointBindings: params.bindings,
 		Storage:          params.storage,
 		Devices:          params.devices,
@@ -1084,7 +1107,7 @@ func (s ModelBackendShim) db() Database {
 	return s.Database
 }
 
-func (s ModelBackendShim) modelUUID() string {
+func (s ModelBackendShim) ModelUUID() string {
 	return ""
 }
 
@@ -1092,7 +1115,7 @@ func (s ModelBackendShim) modelName() (string, error) {
 	return "", nil
 }
 
-func (s ModelBackendShim) isController() bool {
+func (s ModelBackendShim) IsController() bool {
 	return false
 }
 
@@ -1133,4 +1156,24 @@ var (
 
 func (st *State) ScheduleForceCleanup(kind cleanupKind, name string, maxWait time.Duration) {
 	st.scheduleForceCleanup(kind, name, maxWait)
+}
+
+func GetCollectionCappedInfo(coll *mgo.Collection) (bool, int, error) {
+	return getCollectionCappedInfo(coll)
+}
+
+func (m *Model) AllActionIDsHasActionNotifications() ([]string, error) {
+	actionNotifications, closer := m.st.db().GetCollection(actionNotificationsC)
+	defer closer()
+
+	docs := []actionNotificationDoc{}
+	err := actionNotifications.Find(nil).All(&docs)
+	if err != nil {
+		return nil, errors.Annotatef(err, "cannot get all actions")
+	}
+	actionIDs := make([]string, len(docs))
+	for i, doc := range docs {
+		actionIDs[i] = doc.ActionID
+	}
+	return actionIDs, nil
 }

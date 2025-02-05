@@ -6,12 +6,13 @@ package resources_test
 import (
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/testing"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/base/mocks"
 	"github.com/juju/juju/api/client/resources"
+	httpmocks "github.com/juju/juju/api/http/mocks"
 	coreresources "github.com/juju/juju/core/resources"
 	resourcetesting "github.com/juju/juju/core/resources/testing"
 	"github.com/juju/juju/rpc/params"
@@ -22,7 +23,7 @@ type BaseSuite struct {
 
 	facade     *mocks.MockFacadeCaller
 	apiCaller  *mocks.MockAPICallCloser
-	httpClient *mocks.MockHTTPDoer
+	httpClient *httpmocks.MockHTTPDoer
 	client     *resources.Client
 }
 
@@ -34,13 +35,13 @@ func (s *BaseSuite) TearDownTest(c *gc.C) {
 func (s *BaseSuite) setUpMocks(c *gc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
-	s.httpClient = mocks.NewMockHTTPDoer(ctrl)
+	s.httpClient = httpmocks.NewMockHTTPDoer(ctrl)
 	s.apiCaller = mocks.NewMockAPICallCloser(ctrl)
 	s.apiCaller.EXPECT().BestFacadeVersion(gomock.Any()).Return(3).AnyTimes()
 
 	s.facade = mocks.NewMockFacadeCaller(ctrl)
 	s.facade.EXPECT().RawAPICaller().Return(s.apiCaller).AnyTimes()
-	s.facade.EXPECT().BestAPIVersion().Return(2).AnyTimes()
+	s.facade.EXPECT().BestAPIVersion().Return(3).AnyTimes()
 	s.client = resources.NewClientForTest(s.facade, s.httpClient)
 	return ctrl
 }

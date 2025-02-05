@@ -122,6 +122,7 @@ func (op *CaasOperatorAgent) Init(args []string) error {
 		IsFatal:       agenterrors.IsFatal,
 		MoreImportant: agenterrors.MoreImportant,
 		RestartDelay:  jworker.RestartDelay,
+		Logger:        logger,
 	})
 	return nil
 }
@@ -257,10 +258,9 @@ func (op *CaasOperatorAgent) Workers() (worker.Worker, error) {
 		return nil, err
 	}
 	if err := addons.StartIntrospection(addons.IntrospectionConfig{
-		AgentTag:           op.CurrentConfig().Tag(),
+		AgentDir:           agentConfig.Dir(),
 		Engine:             engine,
 		MachineLock:        op.machineLock,
-		NewSocketName:      addons.DefaultIntrospectionSocketName,
 		PrometheusGatherer: op.prometheusRegistry,
 		WorkerFunc:         introspection.NewWorker,
 		Clock:              clock.WallClock,

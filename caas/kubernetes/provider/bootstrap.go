@@ -31,6 +31,7 @@ import (
 	"github.com/juju/juju/agent"
 	agenttools "github.com/juju/juju/agent/tools"
 	"github.com/juju/juju/caas"
+	k8sapplication "github.com/juju/juju/caas/kubernetes/provider/application"
 	"github.com/juju/juju/caas/kubernetes/provider/constants"
 	k8sproxy "github.com/juju/juju/caas/kubernetes/provider/proxy"
 	"github.com/juju/juju/caas/kubernetes/provider/resources"
@@ -40,6 +41,7 @@ import (
 	"github.com/juju/juju/cloudconfig/podcfg"
 	k8sannotations "github.com/juju/juju/core/annotations"
 	"github.com/juju/juju/core/watcher"
+	"github.com/juju/juju/docker/registry"
 	"github.com/juju/juju/environs"
 	environsbootstrap "github.com/juju/juju/environs/bootstrap"
 	"github.com/juju/juju/juju/osenv"
@@ -300,9 +302,26 @@ func newcontrollerStack(
 
 	cs.pvcNameControllerPodStorage = "storage"
 
-	if cs.dockerAuthSecretData, err = pcfg.Controller.CAASImageRepo().SecretData(); err != nil {
-		return nil, errors.Trace(err)
+	// Initialize registry.
+	if repoDetails := pcfg.Controller.CAASImageRepo(); !repoDetails.Empty() {
+		reg, err := registry.New(repoDetails)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		defer func() { _ = reg.Close() }()
+		err = reg.RefreshAuth()
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		err = reg.Ping()
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		if cs.dockerAuthSecretData, err = reg.ImageRepoDetails().SecretData(); err != nil {
+			return nil, errors.Trace(err)
+		}
 	}
+
 	return cs, nil
 }
 
@@ -894,7 +913,8 @@ func (c *controllerStack) createControllerStatefulset() error {
 		return errors.Trace(err)
 	}
 
-	if err := processConstraints(&spec.Spec.Template.Spec, c.stackName, c.pcfg.Bootstrap.BootstrapMachineConstraints); err != nil {
+	if err := k8sapplication.ApplyConstraints(
+		&spec.Spec.Template.Spec, c.stackName, c.pcfg.Bootstrap.BootstrapMachineConstraints, k8sapplication.ConfigureConstraint); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -1167,6 +1187,7 @@ func (c *controllerStack) buildContainerSpecForController(statefulset *apps.Stat
 		// add container mongoDB.
 		// TODO(bootstrap): refactor mongo package to make it usable for IAAS and CAAS,
 		// then generate mongo config from EnsureServerParams.
+		tlsPrivateKeyPath := c.pathJoin(c.pcfg.DataDir, c.fileNameSSLKey)
 		probCmds := &core.ExecAction{
 			Command: []string{
 				"mongo",
@@ -1174,14 +1195,14 @@ func (c *controllerStack) buildContainerSpecForController(statefulset *apps.Stat
 				"--ssl",
 				"--sslAllowInvalidHostnames",
 				"--sslAllowInvalidCertificates",
-				fmt.Sprintf("--sslPEMKeyFile=%s", c.pathJoin(c.pcfg.DataDir, c.fileNameSSLKey)),
+				fmt.Sprintf("--sslPEMKeyFile=%s", tlsPrivateKeyPath),
 				"--eval",
 				"db.adminCommand('ping')",
 			},
 		}
 		args := []string{
 			fmt.Sprintf("--dbpath=%s", c.pathJoin(c.pcfg.DataDir, "db")),
-			fmt.Sprintf("--sslPEMKeyFile=%s", c.pathJoin(c.pcfg.DataDir, c.fileNameSSLKey)),
+			fmt.Sprintf("--sslPEMKeyFile=%s", tlsPrivateKeyPath),
 			"--sslPEMKeyPassword=ignored",
 			"--sslMode=requireSSL",
 			fmt.Sprintf("--port=%d", c.portMongoDB),
@@ -1199,7 +1220,7 @@ func (c *controllerStack) buildContainerSpecForController(statefulset *apps.Stat
 		}
 		// Create the script used to start mongo.
 		const mongoSh = "/root/mongo.sh"
-		mongoStartup := fmt.Sprintf(caas.MongoStartupShTemplate, strings.Join(args, " "))
+		mongoStartup := fmt.Sprintf(caas.MongoStartupShTemplate, strings.Join(args, " "), tlsPrivateKeyPath)
 		// Write it to a file so it can be executed.
 		mongoStartup = strings.ReplaceAll(mongoStartup, "\n", "\\n")
 		makeMongoCmd := fmt.Sprintf("printf '%s'>%s", mongoStartup, mongoSh)

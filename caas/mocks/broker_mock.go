@@ -7,7 +7,6 @@ package mocks
 import (
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
 	caas "github.com/juju/juju/caas"
 	config "github.com/juju/juju/core/config"
 	constraints "github.com/juju/juju/core/constraints"
@@ -19,6 +18,7 @@ import (
 	storage "github.com/juju/juju/storage"
 	names "github.com/juju/names/v4"
 	version "github.com/juju/version/v2"
+	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -358,6 +358,21 @@ func (m *MockBroker) GetNamespace(arg0 string) (*v1.Namespace, error) {
 func (mr *MockBrokerMockRecorder) GetNamespace(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNamespace", reflect.TypeOf((*MockBroker)(nil).GetNamespace), arg0)
+}
+
+// GetSecretToken mocks base method.
+func (m *MockBroker) GetSecretToken(arg0 string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetSecretToken", arg0)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetSecretToken indicates an expected call of GetSecretToken.
+func (mr *MockBrokerMockRecorder) GetSecretToken(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSecretToken", reflect.TypeOf((*MockBroker)(nil).GetSecretToken), arg0)
 }
 
 // GetService mocks base method.

@@ -5,10 +5,10 @@ package state_test
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"time" // only uses time.Time values
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/description/v3"
 	"github.com/juju/errors"
@@ -17,6 +17,7 @@ import (
 	"github.com/juju/utils/v3"
 	"github.com/juju/utils/v3/arch"
 	"github.com/juju/version/v2"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/juju/environschema.v1"
 	"gopkg.in/yaml.v2"
@@ -504,11 +505,11 @@ func (s *MigrationImportSuite) TestMachinePortOps(c *gc.C) {
 	c.Assert(ops[0].Id, gc.Equals, "3")
 }
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/description_mock.go github.com/juju/description/v3 Machine,MachinePortRanges,UnitPortRanges
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/description_mock.go github.com/juju/description/v3 Machine,PortRanges,UnitPortRanges
 func setupMockOpenedPortRanges(c *gc.C, mID string) (*gomock.Controller, *mocks.MockMachine) {
 	ctrl := gomock.NewController(c)
 	mockMachine := mocks.NewMockMachine(ctrl)
-	mockMachinePortRanges := mocks.NewMockMachinePortRanges(ctrl)
+	mockMachinePortRanges := mocks.NewMockPortRanges(ctrl)
 
 	mExp := mockMachine.EXPECT()
 	mExp.Id().Return(mID)
@@ -547,7 +548,7 @@ func (s *MigrationImportSuite) setupSourceApplications(
 	application, pwd := f.MakeApplicationReturningPassword(c, &factory.ApplicationParams{
 		Charm: testCharm,
 		CharmOrigin: &state.CharmOrigin{
-			Source:   testCharm.URL().Schema,
+			Source:   "charm-store",
 			Type:     "charm",
 			Revision: &testCharm.URL().Revision,
 			Channel: &state.Channel{
@@ -602,11 +603,18 @@ func (s *MigrationImportSuite) assertImportedApplication(
 
 	c.Assert(imported.ApplicationTag(), gc.Equals, exported.ApplicationTag())
 	c.Assert(imported.Series(), gc.Equals, exported.Series())
+	if exported.Series() == "kubernetes" {
+		origin := exported.CharmOrigin()
+		origin.Platform.OS = "ubuntu"
+		origin.Platform.Series = "focal"
+		c.Assert(imported.CharmOrigin(), jc.DeepEquals, origin)
+	} else {
+		c.Assert(imported.CharmOrigin(), jc.DeepEquals, exported.CharmOrigin())
+	}
 	c.Assert(imported.IsExposed(), gc.Equals, exported.IsExposed())
 	c.Assert(imported.ExposedEndpoints(), gc.DeepEquals, exported.ExposedEndpoints())
 	c.Assert(imported.MetricCredentials(), jc.DeepEquals, exported.MetricCredentials())
 	c.Assert(imported.PasswordValid(pwd), jc.IsTrue)
-	c.Assert(imported.CharmOrigin(), jc.DeepEquals, exported.CharmOrigin())
 
 	exportedCharmConfig, err := exported.CharmConfig(model.GenerationMaster)
 	c.Assert(err, jc.ErrorIsNil)
@@ -677,8 +685,13 @@ func (s *MigrationImportSuite) TestApplications(c *gc.C) {
 }
 
 func (s *MigrationImportSuite) TestApplicationsUpdateSeriesNotPlatform(c *gc.C) {
-	// The application series should be quantal, the origin platform series should
-	// be focal.  After migration, the platform series should be quantal as well.
+	// In previous versions of Juju it's been possible that the application doc
+	// series get's out of sync with the platform series. While this has been
+	// fixed this test asserts that a hard decision is made should the case
+	// ever be come across.
+	// We should always use the platform series for applications now on import.
+	// This asserts this is the path we take.
+
 	cons := constraints.MustParse("arch=amd64 mem=8G root-disk-source=tralfamadore")
 	platform := &state.Platform{
 		Architecture: corearch.DefaultArchitecture,
@@ -704,73 +717,7 @@ func (s *MigrationImportSuite) TestApplicationsUpdateSeriesNotPlatform(c *gc.C) 
 	obtainedOrigin := obtainedApp.CharmOrigin()
 	c.Assert(obtainedOrigin, gc.NotNil)
 	c.Assert(obtainedOrigin.Platform, gc.NotNil)
-	c.Assert(obtainedOrigin.Platform.Series, gc.Equals, exportedApp.Series())
-}
-
-func (s *MigrationImportSuite) TestApplicationsWithMissingPlatform(c *gc.C) {
-	cons := constraints.MustParse("arch=amd64 mem=8G root-disk-source=tralfamadore")
-	testCharm, _, _ := s.setupSourceApplications(c, s.State, cons, nil, true)
-
-	allApplications, err := s.State.AllApplications()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(allApplications, gc.HasLen, 1)
-	exported := allApplications[0]
-
-	_, newSt := s.importModel(c, s.State)
-	// Manually copy across the charm from the old model
-	// as it's normally done later.
-	f := factory.NewFactory(newSt, s.StatePool)
-	f.MakeCharm(c, &factory.CharmParams{
-		Name:     "starsay", // it has resources
-		URL:      testCharm.String(),
-		Revision: strconv.Itoa(testCharm.Revision()),
-	})
-
-	importedApplications, err := newSt.AllApplications()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(importedApplications, gc.HasLen, 1)
-	imported := importedApplications[0]
-
-	expectedOrigin := exported.CharmOrigin()
-	expectedOrigin.Platform = &state.Platform{
-		Architecture: corearch.DefaultArchitecture,
-		Series:       "quantal",
-	}
-
-	c.Assert(imported.CharmOrigin(), jc.DeepEquals, expectedOrigin)
-}
-
-func (s *MigrationImportSuite) TestApplicationsWithMissingPlatformWithoutConstraint(c *gc.C) {
-	cons := constraints.MustParse("mem=8G root-disk-source=tralfamadore")
-	testCharm, _, _ := s.setupSourceApplications(c, s.State, cons, nil, true)
-
-	allApplications, err := s.State.AllApplications()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(allApplications, gc.HasLen, 1)
-	exported := allApplications[0]
-
-	_, newSt := s.importModel(c, s.State)
-	// Manually copy across the charm from the old model
-	// as it's normally done later.
-	f := factory.NewFactory(newSt, s.StatePool)
-	f.MakeCharm(c, &factory.CharmParams{
-		Name:     "starsay", // it has resources
-		URL:      testCharm.String(),
-		Revision: strconv.Itoa(testCharm.Revision()),
-	})
-
-	importedApplications, err := newSt.AllApplications()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(importedApplications, gc.HasLen, 1)
-	imported := importedApplications[0]
-
-	expectedOrigin := exported.CharmOrigin()
-	expectedOrigin.Platform = &state.Platform{
-		Architecture: corearch.DefaultArchitecture,
-		Series:       "quantal",
-	}
-
-	c.Assert(imported.CharmOrigin(), jc.DeepEquals, expectedOrigin)
+	c.Assert(obtainedOrigin.Platform.Series, gc.Equals, "focal")
 }
 
 func (s *MigrationImportSuite) TestApplicationStatus(c *gc.C) {
@@ -867,7 +814,11 @@ func (s *MigrationImportSuite) TestCAASApplicationStatus(c *gc.C) {
 	s.AddCleanup(func(_ *gc.C) { caasSt.Close() })
 
 	cons := constraints.MustParse("arch=amd64 mem=8G")
-	platform := &state.Platform{Architecture: corearch.DefaultArchitecture}
+	platform := &state.Platform{
+		Architecture: corearch.DefaultArchitecture,
+		OS:           "ubuntu",
+		Series:       "focal",
+	}
 	testCharm, application, _ := s.setupSourceApplications(c, caasSt, cons, platform, false)
 	ss, err := application.Status()
 	c.Assert(err, jc.ErrorIsNil)
@@ -1382,14 +1333,16 @@ func (s *MigrationImportSuite) TestRelations(c *gc.C) {
 	state.AddTestingApplication(c, s.State, "mysql", state.AddTestingCharm(c, s.State, "mysql"))
 	eps, err := s.State.InferEndpoints("mysql", "wordpress")
 	c.Assert(err, jc.ErrorIsNil)
+
 	rel, err := s.State.AddRelation(eps...)
 	c.Assert(err, jc.ErrorIsNil)
 	err = rel.SetStatus(status.StatusInfo{Status: status.Joined})
 	c.Assert(err, jc.ErrorIsNil)
-	wordpress_0 := s.Factory.MakeUnit(c, &factory.UnitParams{Application: wordpress})
 
-	ru, err := rel.Unit(wordpress_0)
+	wordpress0 := s.Factory.MakeUnit(c, &factory.UnitParams{Application: wordpress})
+	ru, err := rel.Unit(wordpress0)
 	c.Assert(err, jc.ErrorIsNil)
+
 	relSettings := map[string]interface{}{
 		"name": "wordpress/0",
 	}
@@ -1418,6 +1371,60 @@ func (s *MigrationImportSuite) TestRelations(c *gc.C) {
 	settings, err := ru.Settings()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(settings.Map(), gc.DeepEquals, relSettings)
+}
+
+func (s *MigrationImportSuite) TestCMRRemoteRelationScope(c *gc.C) {
+	_, err := s.State.AddRemoteApplication(state.AddRemoteApplicationParams{
+		Name:        "gravy-rainbow",
+		URL:         "me/model.rainbow",
+		SourceModel: s.Model.ModelTag(),
+		Token:       "charisma",
+		OfferUUID:   "offer-uuid",
+		Endpoints: []charm.Relation{{
+			Interface: "mysql",
+			Name:      "db",
+			Role:      charm.RoleProvider,
+			Scope:     charm.ScopeGlobal,
+		}},
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	wordpress := state.AddTestingApplication(c, s.State, "wordpress", state.AddTestingCharm(c, s.State, "wordpress"))
+	eps, err := s.State.InferEndpoints("gravy-rainbow", "wordpress")
+	c.Assert(err, jc.ErrorIsNil)
+	rel, err := s.State.AddRelation(eps...)
+	c.Assert(err, jc.ErrorIsNil)
+
+	wordpress0 := s.Factory.MakeUnit(c, &factory.UnitParams{Application: wordpress})
+	localRU, err := rel.Unit(wordpress0)
+	c.Assert(err, jc.ErrorIsNil)
+
+	wordpressSettings := map[string]interface{}{"name": "wordpress/0"}
+	err = localRU.EnterScope(wordpressSettings)
+	c.Assert(err, jc.ErrorIsNil)
+
+	remoteRU, err := rel.RemoteUnit("gravy-rainbow/0")
+	c.Assert(err, jc.ErrorIsNil)
+
+	gravySettings := map[string]interface{}{"name": "gravy-rainbow/0"}
+	err = remoteRU.EnterScope(gravySettings)
+	c.Assert(err, jc.ErrorIsNil)
+
+	_, newSt := s.importModel(c, s.State)
+
+	newWordpress, err := newSt.Application("wordpress")
+	c.Assert(err, jc.ErrorIsNil)
+
+	rels, err := newWordpress.Relations()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(rels, gc.HasLen, 1)
+
+	ru, err := rels[0].RemoteUnit("gravy-rainbow/0")
+	c.Assert(err, jc.ErrorIsNil)
+
+	inScope, err := ru.InScope()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(inScope, jc.IsTrue)
 }
 
 func (s *MigrationImportSuite) assertRelationsMissingStatus(c *gc.C, hasUnits bool) {
@@ -1986,23 +1993,117 @@ func (s *MigrationImportSuite) TestAction(c *gc.C) {
 	m, err := s.State.Model()
 	c.Assert(err, jc.ErrorIsNil)
 
-	operationID, err := m.EnqueueOperation("a test", 2)
+	// pending action.
+	operationIDPending, err := m.EnqueueOperation("a test", 2)
 	c.Assert(err, jc.ErrorIsNil)
-	_, err = m.EnqueueAction(operationID, machine.MachineTag(), "foo", nil, nil)
+	actionPending, err := m.EnqueueAction(operationIDPending, machine.MachineTag(), "action-pending", nil, nil)
 	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionPending.Status(), gc.Equals, state.ActionPending)
+
+	// running action.
+	operationIDRunning, err := m.EnqueueOperation("another test", 2)
+	c.Assert(err, jc.ErrorIsNil)
+	actionRunning, err := m.EnqueueAction(operationIDRunning, machine.MachineTag(), "action-running", nil, nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionRunning.Status(), gc.Equals, state.ActionPending)
+	actionRunning, err = actionRunning.Begin()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionRunning.Status(), gc.Equals, state.ActionRunning)
+
+	// aborting action.
+	operationIDAborting, err := m.EnqueueOperation("another test", 2)
+	c.Assert(err, jc.ErrorIsNil)
+	actionAborting, err := m.EnqueueAction(operationIDAborting, machine.MachineTag(), "action-aborting", nil, nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionAborting.Status(), gc.Equals, state.ActionPending)
+	actionAborting, err = actionAborting.Begin()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionAborting.Status(), gc.Equals, state.ActionRunning)
+	actionAborting, err = actionAborting.Finish(state.ActionResults{Status: state.ActionAborting})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionAborting.Status(), gc.Equals, state.ActionAborting)
+
+	// aborted action.
+	operationIDAborted, err := m.EnqueueOperation("another test", 2)
+	c.Assert(err, jc.ErrorIsNil)
+	actionAborted, err := m.EnqueueAction(operationIDAborted, machine.MachineTag(), "action-aborted", nil, nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionAborted.Status(), gc.Equals, state.ActionPending)
+	actionAborted, err = actionAborted.Begin()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionAborted.Status(), gc.Equals, state.ActionRunning)
+	actionAborted, err = actionAborted.Finish(state.ActionResults{Status: state.ActionAborted})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionAborted.Status(), gc.Equals, state.ActionAborted)
+
+	// completed action.
+	operationIDCompleted, err := m.EnqueueOperation("another test", 2)
+	c.Assert(err, jc.ErrorIsNil)
+	actionCompleted, err := m.EnqueueAction(operationIDCompleted, machine.MachineTag(), "action-completed", nil, nil)
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionCompleted.Status(), gc.Equals, state.ActionPending)
+	actionCompleted, err = actionCompleted.Begin()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionCompleted.Status(), gc.Equals, state.ActionRunning)
+	actionCompleted, err = actionCompleted.Finish(state.ActionResults{Status: state.ActionCompleted})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actionCompleted.Status(), gc.Equals, state.ActionCompleted)
 
 	newModel, newState := s.importModel(c, s.State)
 	defer func() {
 		c.Assert(newState.Close(), jc.ErrorIsNil)
 	}()
 
-	actions, _ := newModel.AllActions()
-	c.Assert(actions, gc.HasLen, 1)
-	action := actions[0]
-	c.Check(action.Receiver(), gc.Equals, machine.Id())
-	c.Check(action.Name(), gc.Equals, "foo")
-	c.Check(state.ActionOperationId(action), gc.Equals, operationID)
-	c.Check(action.Status(), gc.Equals, state.ActionPending)
+	actions, err := newModel.AllActions()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(actions, gc.HasLen, 5)
+
+	actionPending, err = newModel.ActionByTag(actionPending.ActionTag())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(actionPending.Receiver(), gc.Equals, machine.Id())
+	c.Check(actionPending.Name(), gc.Equals, "action-pending")
+	c.Check(state.ActionOperationId(actionPending), gc.Equals, operationIDPending)
+	c.Check(actionPending.Status(), gc.Equals, state.ActionPending)
+
+	actionRunning, err = newModel.ActionByTag(actionRunning.ActionTag())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(actionRunning.Receiver(), gc.Equals, machine.Id())
+	c.Check(actionRunning.Name(), gc.Equals, "action-running")
+	c.Check(state.ActionOperationId(actionRunning), gc.Equals, operationIDRunning)
+	c.Check(actionRunning.Status(), gc.Equals, state.ActionRunning)
+
+	actionAborting, err = newModel.ActionByTag(actionAborting.ActionTag())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(actionAborting.Receiver(), gc.Equals, machine.Id())
+	c.Check(actionAborting.Name(), gc.Equals, "action-aborting")
+	c.Check(state.ActionOperationId(actionAborting), gc.Equals, operationIDAborting)
+	c.Check(actionAborting.Status(), gc.Equals, state.ActionAborting)
+
+	actionAborted, err = newModel.ActionByTag(actionAborted.ActionTag())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(actionAborted.Receiver(), gc.Equals, machine.Id())
+	c.Check(actionAborted.Name(), gc.Equals, "action-aborted")
+	c.Check(state.ActionOperationId(actionAborted), gc.Equals, operationIDAborted)
+	c.Check(actionAborted.Status(), gc.Equals, state.ActionAborted)
+
+	actionCompleted, err = newModel.ActionByTag(actionCompleted.ActionTag())
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(actionCompleted.Receiver(), gc.Equals, machine.Id())
+	c.Check(actionCompleted.Name(), gc.Equals, "action-completed")
+	c.Check(state.ActionOperationId(actionCompleted), gc.Equals, operationIDCompleted)
+	c.Check(actionCompleted.Status(), gc.Equals, state.ActionCompleted)
+
+	// Only pending/running/aborting actions will have action notification docs imported.
+	actionIDs, err := newModel.AllActionIDsHasActionNotifications()
+	c.Assert(err, jc.ErrorIsNil)
+	sort.Strings(actionIDs)
+	expectedIDs := []string{
+		actionRunning.Id(),
+		actionPending.Id(),
+		actionAborting.Id(),
+	}
+	sort.Strings(expectedIDs)
+	c.Check(actionIDs, gc.DeepEquals, expectedIDs)
 }
 
 func (s *MigrationImportSuite) TestOperation(c *gc.C) {
@@ -2464,10 +2565,11 @@ func (s *MigrationImportSuite) TestPayloads(c *gc.C) {
 
 func (s *MigrationImportSuite) TestRemoteApplications(c *gc.C) {
 	remoteApp, err := s.State.AddRemoteApplication(state.AddRemoteApplicationParams{
-		Name:        "gravy-rainbow",
-		URL:         "me/model.rainbow",
-		SourceModel: s.Model.ModelTag(),
-		Token:       "charisma",
+		Name:           "gravy-rainbow",
+		URL:            "me/model.rainbow",
+		SourceModel:    s.Model.ModelTag(),
+		Token:          "charisma",
+		ConsumeVersion: 1,
 		Endpoints: []charm.Relation{{
 			Interface: "mysql",
 			Name:      "db",
@@ -2527,6 +2629,7 @@ func (s *MigrationImportSuite) TestRemoteApplications(c *gc.C) {
 
 	remoteApplication := remoteApplications[0]
 	c.Assert(remoteApplication.Name(), gc.Equals, "gravy-rainbow")
+	c.Assert(remoteApplication.ConsumeVersion(), gc.Equals, 1)
 
 	url, _ := remoteApplication.URL()
 	c.Assert(url, gc.Equals, "me/model.rainbow")
@@ -2726,10 +2829,48 @@ func (s *MigrationImportSuite) TestImportingModelWithBlankType(c *gc.C) {
 		CloudRegion:        testModel.CloudRegion(),
 	})
 	imported, newSt, err := s.Controller.Import(noTypeModel)
+	defer func() { _ = newSt.Close() }()
 	c.Assert(err, jc.ErrorIsNil)
-	defer newSt.Close()
 
 	c.Assert(imported.Type(), gc.Equals, state.ModelTypeIAAS)
+}
+
+func (s *MigrationImportSuite) TestImportingModelWithDefaultSeriesBefore2935(c *gc.C) {
+	defaultSeries, ok := s.testImportingModelWithDefaultSeries(c, version.MustParse("2.7.8"))
+	c.Assert(ok, jc.IsFalse, gc.Commentf("value: %q", defaultSeries))
+}
+
+func (s *MigrationImportSuite) TestImportingModelWithDefaultSeriesAfter2935(c *gc.C) {
+	defaultSeries, ok := s.testImportingModelWithDefaultSeries(c, version.MustParse("2.9.35"))
+	c.Assert(ok, jc.IsTrue)
+	c.Assert(defaultSeries, gc.Equals, "bionic")
+}
+
+func (s *MigrationImportSuite) testImportingModelWithDefaultSeries(c *gc.C, toolsVer version.Number) (string, bool) {
+	testModel, err := s.State.Export()
+	c.Assert(err, jc.ErrorIsNil)
+
+	newConfig := testModel.Config()
+	newConfig["uuid"] = "aabbccdd-1234-8765-abcd-0123456789ab"
+	newConfig["name"] = "something-new"
+	newConfig["default-series"] = "bionic"
+	newConfig["agent-version"] = toolsVer.String()
+	importModel := description.NewModel(description.ModelArgs{
+		Type:           string(state.ModelTypeIAAS),
+		Owner:          testModel.Owner(),
+		Config:         newConfig,
+		EnvironVersion: testModel.EnvironVersion(),
+		Blocks:         testModel.Blocks(),
+		Cloud:          testModel.Cloud(),
+		CloudRegion:    testModel.CloudRegion(),
+	})
+	imported, newSt, err := s.Controller.Import(importModel)
+	defer func() { _ = newSt.Close() }()
+	c.Assert(err, jc.ErrorIsNil)
+
+	importedCfg, err := imported.Config()
+	c.Assert(err, jc.ErrorIsNil)
+	return importedCfg.DefaultSeries()
 }
 
 func (s *MigrationImportSuite) TestImportingRelationApplicationSettings(c *gc.C) {
@@ -2769,6 +2910,88 @@ func (s *MigrationImportSuite) TestImportingRelationApplicationSettings(c *gc.C)
 	newMysqlSettings, err := newRel.ApplicationSettings("mysql")
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(newMysqlSettings, gc.DeepEquals, mysqlSettings)
+}
+
+func (s *MigrationImportSuite) TestApplicationAddLatestCharmChannelTrack(c *gc.C) {
+	st := s.State
+	// Add a application with charm settings, app config, and leadership settings.
+	f := factory.NewFactory(st, s.StatePool)
+
+	// Add a application with charm settings, app config, and leadership settings.
+	testCharm := f.MakeCharmV2(c, &factory.CharmParams{
+		Name: "snappass-test", // it has resources
+	})
+	c.Assert(testCharm.Meta().Resources, gc.HasLen, 3)
+	origin := &state.CharmOrigin{
+		Source:   "charm-hub",
+		Type:     "charm",
+		Revision: &testCharm.URL().Revision,
+		Channel: &state.Channel{
+			Risk: "edge",
+		},
+		Platform: &state.Platform{
+			Architecture: testCharm.URL().Architecture,
+			OS:           "ubuntu",
+			Series:       testCharm.URL().Series,
+		},
+	}
+	application := f.MakeApplication(c, &factory.ApplicationParams{
+		Charm:       testCharm,
+		CharmOrigin: origin,
+	})
+	allApplications, err := s.State.AllApplications()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(allApplications, gc.HasLen, 1)
+
+	_, newSt := s.importModel(c, s.State)
+	importedApp, err := newSt.Application(application.Name())
+	c.Assert(err, jc.ErrorIsNil)
+	exportedOrigin := application.CharmOrigin()
+	exportedOrigin.Channel.Track = "latest"
+	c.Assert(importedApp.CharmOrigin(), gc.DeepEquals, exportedOrigin)
+}
+
+func (s *MigrationImportSuite) TestApplicationWithProvisioningState(c *gc.C) {
+	caasSt := s.Factory.MakeCAASModel(c, nil)
+	s.AddCleanup(func(_ *gc.C) { caasSt.Close() })
+
+	cons := constraints.MustParse("arch=amd64 mem=8G")
+	platform := &state.Platform{
+		Architecture: corearch.DefaultArchitecture,
+		OS:           "ubuntu",
+		Series:       "focal",
+	}
+	testCharm, application, _ := s.setupSourceApplications(c, caasSt, cons, platform, false)
+
+	err := application.SetScale(1, 0, true)
+	c.Assert(err, jc.ErrorIsNil)
+	err = application.SetProvisioningState(state.ApplicationProvisioningState{
+		Scaling:     true,
+		ScaleTarget: 1,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+
+	allApplications, err := caasSt.AllApplications()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(allApplications, gc.HasLen, 1)
+
+	_, newSt := s.importModel(c, caasSt)
+	// Manually copy across the charm from the old model
+	// as it's normally done later.
+	f := factory.NewFactory(newSt, s.StatePool)
+	f.MakeCharm(c, &factory.CharmParams{
+		Name:     "starsay", // it has resources
+		Series:   "kubernetes",
+		URL:      testCharm.String(),
+		Revision: strconv.Itoa(testCharm.Revision()),
+	})
+	importedApplication, err := newSt.Application(application.Name())
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(importedApplication.ProvisioningState(), jc.DeepEquals, &state.ApplicationProvisioningState{
+		Scaling:     true,
+		ScaleTarget: 1,
+	})
 }
 
 // newModel replaces the uuid and name of the config attributes so we

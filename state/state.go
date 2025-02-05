@@ -1,9 +1,6 @@
 // Copyright 2012-2014 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package state enables reading, observing, and changing
-// the state stored in MongoDB of a whole model
-// managed by juju.
 package state
 
 import (
@@ -243,41 +240,14 @@ func (st *State) RemoveExportingModelDocs() error {
 }
 
 func (st *State) removeAllModelDocs(modelAssertion bson.D) error {
-	modelUUID := st.ModelUUID()
-
-	// Gather all user permissions for the model.
-	// Do this first because we remove some parent docs below.
-	var permOps []txn.Op
-	permPattern := bson.M{
-		"_id": bson.M{"$regex": "^" + permissionID(modelKey(modelUUID), "")},
-	}
-	ops, err := st.removeInCollectionOps(permissionsC, permPattern)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	permOps = append(permOps, ops...)
-	// Gather all offer permissions for the model.
-	ao := NewApplicationOffers(st)
-	allOffers, err := ao.AllApplicationOffers()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	for _, offer := range allOffers {
-		permPattern = bson.M{
-			"_id": bson.M{"$regex": "^" + permissionID(applicationOfferKey(offer.OfferUUID), "")},
-		}
-		ops, err = st.removeInCollectionOps(permissionsC, permPattern)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		permOps = append(permOps, ops...)
-	}
-	err = st.db().RunTransaction(permOps)
-	if err != nil {
-		return errors.Trace(err)
+	// Remove permissions first, because we potentially
+	// remove parent documents in the following stage.
+	if err := st.removeAllModelPermissions(); err != nil {
+		return errors.Annotate(err, "removing permissions")
 	}
 
 	// Remove each collection in its own transaction.
+	modelUUID := st.ModelUUID()
 	for name, info := range st.database.Schema() {
 		if info.global || info.rawAccess {
 			continue
@@ -320,7 +290,7 @@ func (st *State) removeAllModelDocs(modelAssertion bson.D) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	ops = []txn.Op{{
+	ops := []txn.Op{{
 		// Cleanup the owner:envName unique key.
 		C:      usermodelnameC,
 		Id:     model.uniqueIndexID(),
@@ -346,7 +316,42 @@ func (st *State) removeAllModelDocs(modelAssertion bson.D) error {
 	if !st.IsController() {
 		ops = append(ops, decHostedModelCountOp())
 	}
-	return st.db().RunTransaction(ops)
+	return errors.Trace(st.db().RunTransaction(ops))
+}
+
+// removeAllModelPermissions removes all direct permissions documents for
+// this model, and all permissions for offers hosted by this model.
+func (st *State) removeAllModelPermissions() error {
+	var permOps []txn.Op
+	permPattern := bson.M{
+		"_id": bson.M{"$regex": "^" + permissionID(modelKey(st.ModelUUID()), "")},
+	}
+	ops, err := st.removeInCollectionOps(permissionsC, permPattern)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	permOps = append(permOps, ops...)
+
+	applicationOffersCollection, closer := st.db().GetCollection(applicationOffersC)
+	defer closer()
+
+	var offerDocs []applicationOfferDoc
+	if err := applicationOffersCollection.Find(bson.D{}).All(&offerDocs); err != nil {
+		return errors.Annotate(err, "getting application offer documents")
+	}
+
+	for _, offer := range offerDocs {
+		permPattern = bson.M{
+			"_id": bson.M{"$regex": "^" + permissionID(applicationOfferKey(offer.OfferUUID), "")},
+		}
+		ops, err = st.removeInCollectionOps(permissionsC, permPattern)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		permOps = append(permOps, ops...)
+	}
+	err = st.db().RunTransaction(permOps)
+	return errors.Trace(err)
 }
 
 // removeAllInCollectionRaw removes all the documents from the given
@@ -387,9 +392,9 @@ func (st *State) removeInCollectionOps(name string, sel interface{}) ([]txn.Op, 
 }
 
 // start makes a *State functional post-creation, by:
-//   * setting controllerTag and cloudName
-//   * starting watcher backends
-//   * creating cloud metadata storage
+//   - setting controllerTag and cloudName
+//   - starting watcher backends
+//   - creating cloud metadata storage
 //
 // start will close the *State if it fails.
 func (st *State) start(controllerTag names.ControllerTag, hub *pubsub.SimpleHub) (err error) {
@@ -723,6 +728,50 @@ func (st *State) AllMachines() ([]*Machine, error) {
 	machinesCollection, closer := st.db().GetCollection(machinesC)
 	defer closer()
 	return st.allMachines(machinesCollection)
+}
+
+// MachineCountForSeries counts the machines for the provided series in the model.
+func (st *State) MachineCountForSeries(series ...string) (map[string]int, error) {
+	machinesCollection, closer := st.db().GetCollection(machinesC)
+	defer closer()
+	pipe := machinesCollection.Pipe([]bson.M{
+		{
+			"$match": bson.M{
+				"series":     bson.M{"$in": series},
+				"model-uuid": st.ModelUUID(),
+			},
+		},
+		{
+			"$group": bson.M{
+				"_id": "$series", "count": bson.M{"$sum": 1},
+			},
+		},
+		{
+			"$sort": bson.M{"_id": 1},
+		},
+		{
+			"$group": bson.M{
+				"_id": nil,
+				"counts": bson.M{
+					"$push": bson.M{"k": "$_id", "v": "$count"},
+				},
+			},
+		},
+		{
+			"$replaceRoot": bson.M{
+				"newRoot": bson.M{"$arrayToObject": "$counts"},
+			},
+		},
+	})
+	var result []map[string]int
+	err := pipe.All(&result)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	if len(result) > 0 {
+		return result[0], nil
+	}
+	return nil, nil
 }
 
 type machineDocSlice []machineDoc
@@ -1239,7 +1288,7 @@ func (st *State) AddApplication(args AddApplicationArgs) (_ *Application, err er
 
 	// The doc defaults to CharmModifiedVersion = 0, which is correct, since it
 	// has, by definition, at its initial state.
-	cURL := args.Charm.URL().String()
+	cURL := args.Charm.String()
 	appDoc := &applicationDoc{
 		DocID:         applicationID,
 		Name:          args.Name,
@@ -1889,6 +1938,32 @@ func (st *State) AllApplications() (applications []*Application, err error) {
 	return applications, nil
 }
 
+// InferActiveRelation returns the relation corresponding to the supplied
+// application or endpoint name(s), assuming such a relation exists and is unique.
+// There must be 1 or 2 supplied names, of the form <application>[:<relation>].
+func (st *State) InferActiveRelation(names ...string) (*Relation, error) {
+	candidates, err := matchingRelations(st, names...)
+	if err != nil {
+		return nil, err
+	}
+
+	relationQuery := strings.Join(names, " ")
+	if len(candidates) == 0 {
+		return nil, errors.NotFoundf("relation matching %q", relationQuery)
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+
+	keys := make([]string, len(candidates))
+	for i, relation := range candidates {
+		keys[i] = fmt.Sprintf("%q", relation.String())
+	}
+	return nil, errors.Errorf("ambiguous relation: %q could refer to %s",
+		relationQuery, strings.Join(keys, "; "),
+	)
+}
+
 // InferEndpoints returns the endpoints corresponding to the supplied names.
 // There must be 1 or 2 supplied names, of the form <application>[:<relation>].
 // If the supplied names uniquely specify a possible relation, or if they
@@ -1898,6 +1973,7 @@ func (st *State) InferEndpoints(names ...string) ([]Endpoint, error) {
 	// Collect all possible sane endpoint lists.
 	var candidates [][]Endpoint
 	switch len(names) {
+	// Implicitly assume this is a peer relation, as they have only one endpoint
 	case 1:
 		eps, err := st.endpoints(names[0], isPeer)
 		if err != nil {
@@ -1906,6 +1982,7 @@ func (st *State) InferEndpoints(names ...string) ([]Endpoint, error) {
 		for _, ep := range eps {
 			candidates = append(candidates, []Endpoint{ep})
 		}
+	// All other relations are between two endpoints
 	case 2:
 		eps1, err := st.endpoints(names[0], notPeer)
 		if err != nil {
@@ -1929,13 +2006,13 @@ func (st *State) InferEndpoints(names ...string) ([]Endpoint, error) {
 	default:
 		return nil, errors.Errorf("cannot relate %d endpoints", len(names))
 	}
-	// If there's ambiguity, try discarding implicit relations.
 	switch len(candidates) {
 	case 0:
 		return nil, errors.Errorf("no relations found")
 	case 1:
 		return candidates[0], nil
 	}
+	// If there's ambiguity, try discarding implicit relations.
 	var filtered [][]Endpoint
 outer:
 	for _, cand := range candidates {
@@ -1987,6 +2064,16 @@ func containerScopeOk(st *State, ep1, ep2 Endpoint) (bool, error) {
 	return subordinateCount >= 1, nil
 }
 
+func splitEndpointName(name string) (string, string, error) {
+	if i := strings.Index(name, ":"); i == -1 {
+		return name, "", nil
+	} else if i != 0 && i != len(name)-1 {
+		return name[:i], name[i+1:], nil
+	} else {
+		return "", "", errors.Errorf("invalid endpoint %q", name)
+	}
+}
+
 func applicationByName(st *State, name string) (ApplicationEntity, error) {
 	app, err := st.Application(name)
 	if err == nil {
@@ -2009,14 +2096,9 @@ func applicationByName(st *State, name string) (ApplicationEntity, error) {
 // supplied endpoint name, and which cause the filter param to
 // return true.
 func (st *State) endpoints(name string, filter func(ep Endpoint) bool) ([]Endpoint, error) {
-	var appName, relName string
-	if i := strings.Index(name, ":"); i == -1 {
-		appName = name
-	} else if i != 0 && i != len(name)-1 {
-		appName = name[:i]
-		relName = name[i+1:]
-	} else {
-		return nil, errors.Errorf("invalid endpoint %q", name)
+	appName, relName, err := splitEndpointName(name)
+	if err != nil {
+		return nil, err
 	}
 	app, err := applicationByName(st, appName)
 	if err != nil {
@@ -2159,7 +2241,7 @@ func (st *State) AddRelation(eps ...Endpoint) (r *Relation, err error) {
 				ops = append(ops, txn.Op{
 					C:      applicationsC,
 					Id:     st.docID(ep.ApplicationName),
-					Assert: bson.D{{"life", Alive}, {"charmurl", ch.URL()}},
+					Assert: bson.D{{"life", Alive}, {"charmurl", ch.String()}},
 					Update: bson.D{{"$inc", bson.D{{"relationcount", 1}}}},
 				})
 			}

@@ -1,7 +1,6 @@
 // Copyright 2013 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package meterstatus provides the meter status API facade.
 package meterstatus
 
 import (
@@ -28,7 +27,8 @@ type MeterStatus interface {
 }
 
 // MeterStatusState represents the state of an model required by the MeterStatus.
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/meterstatus_mock.go github.com/juju/juju/apiserver/facades/agent/meterstatus MeterStatusState
+//
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/meterstatus_mock.go github.com/juju/juju/apiserver/facades/agent/meterstatus MeterStatusState
 type MeterStatusState interface {
 	ApplyOperation(state.ModelOperation) error
 	ControllerConfig() (controller.Config, error)

@@ -6,6 +6,7 @@ package params
 import (
 	"github.com/go-macaroon-bakery/macaroon-bakery/v3/bakery"
 	"github.com/juju/charm/v8"
+	"github.com/kr/pretty"
 	"gopkg.in/macaroon.v2"
 
 	"github.com/juju/juju/core/life"
@@ -24,7 +25,7 @@ type ExternalControllerInfoResult struct {
 	Error  *Error                  `json:"error"`
 }
 
-// SetControllersInfoParams contains the parameters for setting the
+// SetExternalControllersInfoParams contains the parameters for setting the
 // info for a set of external controllers.
 type SetExternalControllersInfoParams struct {
 	Controllers []SetExternalControllerInfoParams `json:"controllers"`
@@ -216,6 +217,7 @@ type RemoteRelation struct {
 	Key                   string         `json:"key"`
 	ApplicationName       string         `json:"application-name"`
 	Endpoint              RemoteEndpoint `json:"endpoint"`
+	UnitCount             int            `json:"unit-count"`
 	RemoteApplicationName string         `json:"remote-application-name"`
 	RemoteEndpointName    string         `json:"remote-endpoint-name"`
 	SourceModelUUID       string         `json:"source-model-uuid"`
@@ -374,7 +376,7 @@ type RemoteRelationChangeEvent struct {
 	ForceCleanup *bool `json:"force-cleanup,omitempty"`
 
 	// UnitCount is the number of units still in relation scope.
-	UnitCount *int `json:"unit-count,omitempty"`
+	UnitCount *int `json:"unit-count"`
 
 	// Suspended is the current suspended status of the relation.
 	Suspended *bool `json:"suspended,omitempty"`
@@ -397,6 +399,15 @@ type RemoteRelationChangeEvent struct {
 
 	// BakeryVersion is the version of the bakery used to mint macaroons.
 	BakeryVersion bakery.Version `json:"bakery-version,omitempty"`
+}
+
+func (e *RemoteRelationChangeEvent) GoString() string {
+	if e == nil {
+		return "<nil>"
+	}
+	eCopy := *e
+	eCopy.Macaroons = nil
+	return pretty.Sprint(eCopy)
 }
 
 // RemoteRelationWatchResult holds a RemoteRelationWatcher id, initial
@@ -475,9 +486,6 @@ type IngressNetworksChangeEvent struct {
 	// RelationToken is the token of the relation.
 	RelationToken string `json:"relation-token"`
 
-	// ApplicationToken is the token of the application.
-	ApplicationToken string `json:"application-token"`
-
 	// Networks are the CIDRs for which ingress is required.
 	Networks []string `json:"networks,omitempty"`
 
@@ -490,6 +498,15 @@ type IngressNetworksChangeEvent struct {
 
 	// BakeryVersion is the version of the bakery used to mint macaroons.
 	BakeryVersion bakery.Version `json:"bakery-version,omitempty"`
+}
+
+func (e *IngressNetworksChangeEvent) GoString() string {
+	if e == nil {
+		return "<nil>"
+	}
+	eCopy := *e
+	eCopy.Macaroons = nil
+	return pretty.Sprint(eCopy)
 }
 
 // RegisterRemoteRelationArg holds attributes used to register a remote relation.
@@ -538,7 +555,7 @@ type RegisterRemoteRelationResult struct {
 	Error  *Error                 `json:"error,omitempty"`
 }
 
-// RemoteRemoteRelationResults has a set of remote relation results.
+// RegisterRemoteRelationResults has a set of remote relation results.
 type RegisterRemoteRelationResults struct {
 	Results []RegisterRemoteRelationResult `json:"results,omitempty"`
 }
@@ -634,7 +651,7 @@ type RemoteEntities struct {
 	Tokens []string `json:"tokens"`
 }
 
-// RelationUnit holds a remote relation token and a unit tag.
+// RemoteRelationUnit holds a remote relation token and a unit tag.
 type RemoteRelationUnit struct {
 	RelationToken string         `json:"relation-token"`
 	Unit          string         `json:"unit"`
@@ -647,7 +664,7 @@ type RemoteRelationUnits struct {
 	RelationUnits []RemoteRelationUnit `json:"relation-units"`
 }
 
-// ModifyModelAccessRequest holds the parameters for making grant and revoke offer calls.
+// ModifyOfferAccessRequest holds the parameters for making grant and revoke offer calls.
 type ModifyOfferAccessRequest struct {
 	Changes []ModifyOfferAccess `json:"changes"`
 }

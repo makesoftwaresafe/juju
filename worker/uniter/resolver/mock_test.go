@@ -4,7 +4,6 @@
 package resolver_test
 
 import (
-	"github.com/juju/charm/v8"
 	"github.com/juju/testing"
 
 	"github.com/juju/juju/worker/fortress"
@@ -33,17 +32,22 @@ type mockOpFactory struct {
 	op mockOp
 }
 
-func (f *mockOpFactory) NewUpgrade(charmURL *charm.URL) (operation.Operation, error) {
+func (f *mockOpFactory) NewInstall(charmURL string) (operation.Operation, error) {
+	f.MethodCall(f, "NewInstall", charmURL)
+	return f.op, f.NextErr()
+}
+
+func (f *mockOpFactory) NewUpgrade(charmURL string) (operation.Operation, error) {
 	f.MethodCall(f, "NewUpgrade", charmURL)
 	return f.op, f.NextErr()
 }
 
-func (f *mockOpFactory) NewRevertUpgrade(charmURL *charm.URL) (operation.Operation, error) {
+func (f *mockOpFactory) NewRevertUpgrade(charmURL string) (operation.Operation, error) {
 	f.MethodCall(f, "NewRevertUpgrade", charmURL)
 	return f.op, f.NextErr()
 }
 
-func (f *mockOpFactory) NewResolvedUpgrade(charmURL *charm.URL) (operation.Operation, error) {
+func (f *mockOpFactory) NewResolvedUpgrade(charmURL string) (operation.Operation, error) {
 	f.MethodCall(f, "NewResolvedUpgrade", charmURL)
 	return f.op, f.NextErr()
 }
@@ -116,7 +120,6 @@ func (op mockOp) Commit(st operation.State) (*operation.State, error) {
 type mockCharmDirGuard struct {
 	fortress.Guard
 	testing.Stub
-	commit func(operation.State) (*operation.State, error)
 }
 
 func (l *mockCharmDirGuard) Unlock() error {

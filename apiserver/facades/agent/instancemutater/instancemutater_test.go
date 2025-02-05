@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	coretesting "github.com/juju/testing"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	apiservererrors "github.com/juju/juju/apiserver/errors"
@@ -257,7 +257,7 @@ func (s *InstanceMutaterAPICharmProfilingInfoSuite) TestCharmProfilingInfo(c *gc
 	s.expectLife(s.machineTag)
 	s.expectMachine(s.machineTag, s.machine)
 	s.expectInstanceId("0")
-	s.expectUnits(1)
+	s.expectUnits(state.Alive)
 	s.expectCharmProfiles()
 	s.expectProfileExtraction()
 	s.expectName()
@@ -299,7 +299,7 @@ func (s *InstanceMutaterAPICharmProfilingInfoSuite) TestCharmProfilingInfoWithNo
 	s.expectLife(s.machineTag)
 	s.expectMachine(s.machineTag, s.machine)
 	s.expectInstanceId("0")
-	s.expectUnits(2)
+	s.expectUnits(state.Alive, state.Alive, state.Dead)
 	s.expectCharmProfiles()
 	s.expectProfileExtraction()
 	s.expectProfileExtractionWithEmpty()
@@ -378,11 +378,15 @@ func (s *InstanceMutaterAPICharmProfilingInfoSuite) expectInstanceIdNotProvision
 	s.machine.EXPECT().InstanceId().Return(instance.Id("0"), params.Error{Code: params.CodeNotProvisioned})
 }
 
-func (s *InstanceMutaterAPICharmProfilingInfoSuite) expectUnits(times int) {
+func (s *InstanceMutaterAPICharmProfilingInfoSuite) expectUnits(lives ...state.Life) {
 	machineExp := s.machine.EXPECT()
-	units := make([]instancemutater.Unit, times)
-	for i := 0; i < times; i++ {
+	units := make([]instancemutater.Unit, len(lives))
+	for i := 0; i < len(lives); i++ {
 		units[i] = s.unit
+		s.unit.EXPECT().Life().Return(lives[i])
+		if lives[i] == state.Dead {
+			s.unit.EXPECT().Name().Return("foo")
+		}
 	}
 	machineExp.Units().Return(units, nil)
 }
@@ -836,10 +840,6 @@ func (s *InstanceMutaterAPIWatchLXDProfileVerificationNeededSuite) TestWatchLXDP
 	})
 }
 
-func (s *InstanceMutaterAPIWatchLXDProfileVerificationNeededSuite) expectAuthController() {
-	s.authorizer.EXPECT().AuthController().Return(true)
-}
-
 func (s *InstanceMutaterAPIWatchLXDProfileVerificationNeededSuite) expectWatchLXDProfileVerificationNeededWithNotify(times int) {
 	ch := make(chan struct{})
 
@@ -941,10 +941,6 @@ func (s *InstanceMutaterAPIWatchContainersSuite) TestWatchContainersWithClosedCh
 	result, err := facade.WatchContainers(params.Entity{Tag: s.machineTag.String()})
 	c.Assert(err, gc.ErrorMatches, "cannot obtain initial machine containers")
 	c.Assert(result, gc.DeepEquals, params.StringsWatchResult{})
-}
-
-func (s *InstanceMutaterAPIWatchContainersSuite) expectAuthController() {
-	s.authorizer.EXPECT().AuthController().Return(true)
 }
 
 func (s *InstanceMutaterAPIWatchContainersSuite) expectWatchContainersWithNotify(times int) {

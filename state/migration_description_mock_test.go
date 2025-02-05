@@ -8,9 +8,9 @@ import (
 	reflect "reflect"
 	time "time"
 
-	gomock "github.com/golang/mock/gomock"
 	description "github.com/juju/description/v3"
 	names "github.com/juju/names/v4"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockApplicationOffer is a mock of ApplicationOffer interface.
@@ -471,6 +471,20 @@ func (m *MockRemoteApplication) Bindings() map[string]string {
 func (mr *MockRemoteApplicationMockRecorder) Bindings() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Bindings", reflect.TypeOf((*MockRemoteApplication)(nil).Bindings))
+}
+
+// ConsumeVersion mocks base method.
+func (m *MockRemoteApplication) ConsumeVersion() int {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ConsumeVersion")
+	ret0, _ := ret[0].(int)
+	return ret0
+}
+
+// ConsumeVersion indicates an expected call of ConsumeVersion.
+func (mr *MockRemoteApplicationMockRecorder) ConsumeVersion() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConsumeVersion", reflect.TypeOf((*MockRemoteApplication)(nil).ConsumeVersion))
 }
 
 // Endpoints mocks base method.

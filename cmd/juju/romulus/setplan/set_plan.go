@@ -1,19 +1,15 @@
 // Copyright 2016 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// The setplan package contains the implementation of the juju set-plan
-// command.
 package setplan
 
 import (
 	"encoding/json"
 	"net/url"
 
-	"github.com/juju/juju/core/model"
-	"github.com/juju/names/v4"
-
 	"github.com/juju/cmd/v3"
 	"github.com/juju/errors"
+	"github.com/juju/names/v4"
 	api "github.com/juju/romulus/api/plan"
 	"gopkg.in/macaroon.v2"
 
@@ -21,6 +17,7 @@ import (
 	jujucmd "github.com/juju/juju/cmd"
 	rcmd "github.com/juju/juju/cmd/juju/romulus"
 	"github.com/juju/juju/cmd/modelcmd"
+	"github.com/juju/juju/core/model"
 )
 
 // authorizationClient defines the interface of an api client that

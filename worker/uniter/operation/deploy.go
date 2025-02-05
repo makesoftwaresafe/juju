@@ -6,7 +6,6 @@ package operation
 import (
 	"fmt"
 
-	corecharm "github.com/juju/charm/v8"
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
 
@@ -20,7 +19,7 @@ type deploy struct {
 	DoesNotRequireMachineLock
 
 	kind     Kind
-	charmURL *corecharm.URL
+	charmURL string
 	revert   bool
 	resolved bool
 
@@ -93,6 +92,7 @@ func (d *deploy) Commit(state State) (*State, error) {
 	if hookInfo := d.interruptedHook(state); hookInfo != nil {
 		change.Hook = hookInfo
 		change.Step = Pending
+		change.HookStep = state.HookStep
 	} else {
 		change.Hook = &hook.Info{Kind: deployHookKinds[d.kind]}
 		change.Step = Queued
@@ -109,7 +109,7 @@ func (d *deploy) checkAlreadyDone(state State) error {
 	if state.Kind != d.kind {
 		return nil
 	}
-	if *state.CharmURL != *d.charmURL {
+	if state.CharmURL != d.charmURL {
 		return nil
 	}
 	if state.Step == Done {
@@ -124,6 +124,7 @@ func (d *deploy) getState(state State, step Step) *State {
 		Step:     step,
 		CharmURL: d.charmURL,
 		Hook:     d.interruptedHook(state),
+		HookStep: state.HookStep,
 	}.apply(state)
 }
 

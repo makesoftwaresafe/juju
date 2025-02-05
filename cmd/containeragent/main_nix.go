@@ -177,7 +177,7 @@ func main() {
 			return cmd.Main(&run.RunCommand{MachineLock: lock}, ctx, args[1:])
 		},
 		jujuIntrospect: func(ctx *cmd.Context, args []string) int {
-			return cmd.Main(introspect.New(nil), ctx, args[1:])
+			return cmd.Main(introspect.New(), ctx, args[1:])
 		},
 	}
 	os.Exit(mainWrapper(f, os.Args))
@@ -188,6 +188,5 @@ type command func(*cmd.Context, []string) int
 type commandFactory struct {
 	containerAgentCmd command
 	jujuRun           command
-	jujuDumpLogs      command
 	jujuIntrospect    command
 }

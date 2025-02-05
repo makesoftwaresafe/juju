@@ -8,8 +8,6 @@ import (
 	"strconv"
 
 	"github.com/juju/errors"
-	"github.com/juju/juju/mongo"
-	"github.com/juju/juju/tools"
 	"github.com/juju/mgo/v2"
 	"github.com/juju/mgo/v2/bson"
 	"github.com/juju/mgo/v2/txn"
@@ -22,7 +20,9 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/controller"
 	"github.com/juju/juju/core/instance"
+	"github.com/juju/juju/mongo"
 	stateerrors "github.com/juju/juju/state/errors"
+	"github.com/juju/juju/tools"
 )
 
 func isController(mdoc *machineDoc) bool {
@@ -234,7 +234,8 @@ type enableHAIntent struct {
 // enableHAIntentions returns what we would like
 // to do to maintain the availability of the existing servers
 // mentioned in the given info, including:
-//   gathering available, non-voting machines that may be promoted;
+//
+//	gathering available, non-voting machines that may be promoted;
 func (st *State) enableHAIntentions(controllerIds []string, placement []string) (*enableHAIntent, error) {
 	var intent enableHAIntent
 	for _, s := range placement {

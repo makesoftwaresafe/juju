@@ -26,7 +26,6 @@ import (
 	"github.com/juju/utils/v3/exec"
 	"github.com/juju/version/v2"
 
-	"github.com/juju/juju/agent/addons"
 	k8sexec "github.com/juju/juju/caas/kubernetes/provider/exec"
 	jujucmd "github.com/juju/juju/cmd"
 	agentcmd "github.com/juju/juju/cmd/jujud/agent"
@@ -40,14 +39,12 @@ import (
 	coreos "github.com/juju/juju/core/os"
 	jujunames "github.com/juju/juju/juju/names"
 	"github.com/juju/juju/juju/sockets"
+	_ "github.com/juju/juju/provider/all" // Import the providers.
 	"github.com/juju/juju/upgrades"
 	"github.com/juju/juju/utils/proxy"
 	jujuversion "github.com/juju/juju/version"
 	"github.com/juju/juju/worker/logsender"
 	"github.com/juju/juju/worker/uniter/runner/jujuc"
-
-	// Import the providers.
-	_ "github.com/juju/juju/provider/all"
 )
 
 var logger = loggo.GetLogger("juju.cmd.jujud")
@@ -253,7 +250,7 @@ func jujuDMain(args []string, ctx *cmd.Context) (code int, err error) {
 
 	jujud.Register(agentcmd.NewBootstrapCommand())
 	jujud.Register(agentcmd.NewCAASUnitInitCommand())
-	jujud.Register(agentcmd.NewModelCommand())
+	jujud.Register(agentcmd.NewModelCommand(bufferedLogger))
 
 	// TODO(katco-): AgentConf type is doing too much. The
 	// MachineAgent type has called out the separate concerns; the
@@ -262,7 +259,6 @@ func jujuDMain(args []string, ctx *cmd.Context) (code int, err error) {
 	machineAgentFactory := agentcmd.MachineAgentFactoryFn(
 		agentConf,
 		bufferedLogger,
-		addons.DefaultIntrospectionSocketName,
 		upgrades.PreUpgradeSteps,
 		"",
 	)

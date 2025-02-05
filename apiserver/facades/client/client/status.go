@@ -13,19 +13,18 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 
-	corecharm "github.com/juju/juju/core/charm"
-	coreseries "github.com/juju/juju/core/series"
-
 	"github.com/juju/juju/apiserver/common"
 	apiservererrors "github.com/juju/juju/apiserver/errors"
 	k8sspecs "github.com/juju/juju/caas/kubernetes/provider/specs"
 	"github.com/juju/juju/core/cache"
+	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/container"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/lxdprofile"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
+	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
@@ -59,7 +58,8 @@ func (s byTime) Less(i, j int) bool {
 }
 
 // applicationStatusHistory returns status history for the given (remote) application.
-func (c *Client) applicationStatusHistory(appTag names.ApplicationTag, filter status.StatusHistoryFilter, kind status.HistoryKind) ([]params.DetailedStatus, error) {
+func (c *Client) applicationStatusHistory(appTag names.ApplicationTag, filter status.StatusHistoryFilter,
+	kind status.HistoryKind) ([]params.DetailedStatus, error) {
 	var (
 		app status.StatusHistoryGetter
 		err error
@@ -80,7 +80,8 @@ func (c *Client) applicationStatusHistory(appTag names.ApplicationTag, filter st
 }
 
 // unitStatusHistory returns a list of status history entries for unit agents or workloads.
-func (c *Client) unitStatusHistory(unitTag names.UnitTag, filter status.StatusHistoryFilter, kind status.HistoryKind) ([]params.DetailedStatus, error) {
+func (c *Client) unitStatusHistory(unitTag names.UnitTag, filter status.StatusHistoryFilter,
+	kind status.HistoryKind) ([]params.DetailedStatus, error) {
 	unit, err := c.api.stateAccessor.Unit(unitTag.Id())
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -113,7 +114,8 @@ func (c *Client) unitStatusHistory(unitTag names.UnitTag, filter status.StatusHi
 }
 
 // machineStatusHistory returns status history for the given machine.
-func (c *Client) machineStatusHistory(machineTag names.MachineTag, filter status.StatusHistoryFilter, kind status.HistoryKind) ([]params.DetailedStatus, error) {
+func (c *Client) machineStatusHistory(machineTag names.MachineTag, filter status.StatusHistoryFilter,
+	kind status.HistoryKind) ([]params.DetailedStatus, error) {
 	machine, err := c.api.stateAccessor.Machine(machineTag.Id())
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -205,7 +207,8 @@ func (c *Client) StatusHistory(request params.StatusHistoryRequests) params.Stat
 		results.Results = append(results.Results,
 			params.StatusHistoryResult{
 				History: params.History{Statuses: hist},
-				Error:   apiservererrors.ServerError(errors.Annotatef(err, "fetching status history for %q", request.Tag)),
+				Error: apiservererrors.ServerError(errors.Annotatef(err, "fetching status history for %q",
+					request.Tag)),
 			})
 	}
 	return results
@@ -301,7 +304,8 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 	logger.Tracef("Relations: %v", context.relations)
 
 	if len(args.Patterns) > 0 {
-		predicate := BuildPredicateFor(args.Patterns)
+		patterns := resolveLeaderUnits(args.Patterns, context.leaders)
+		predicate := BuildPredicateFor(patterns)
 
 		// First, attempt to match machines. Any units on those
 		// machines are implicitly matched.
@@ -429,7 +433,8 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 		}
 
 		// Filter branches
-		context.branches = filterBranches(context.branches, matchedApps, matchedUnits.Union(set.NewStrings(args.Patterns...)))
+		context.branches = filterBranches(context.branches, matchedApps,
+			matchedUnits.Union(set.NewStrings(args.Patterns...)))
 	}
 
 	modelStatus, err := c.modelStatus()
@@ -448,7 +453,24 @@ func (c *Client) FullStatus(args params.StatusParams) (params.FullStatus, error)
 	}, nil
 }
 
-func filterBranches(ctxBranches map[string]cache.Branch, matchedApps, matchedForBranches set.Strings) map[string]cache.Branch {
+// resolveLeaderUnits resolves the passed in leader pattern to an existing application leader unit
+// and then replaces it inplace in the patterns
+func resolveLeaderUnits(patterns []string, leaders map[string]string) []string {
+	for i, v := range patterns {
+		if strings.Contains(v, "leader") {
+			application := strings.Split(v, "/")[0]
+			unit, ok := leaders[application]
+			if ok {
+				patterns[i] = unit
+				continue
+			}
+		}
+	}
+	return patterns
+}
+
+func filterBranches(ctxBranches map[string]cache.Branch,
+	matchedApps, matchedForBranches set.Strings) map[string]cache.Branch {
 	// Filter branches based on matchedApps which contains
 	// the application name if matching on application or unit.
 	unmatchedBranches := set.NewStrings()
@@ -681,7 +703,8 @@ func fetchControllerNodes(st Backend) (map[string]state.ControllerNode, error) {
 //
 // All are required to determine a machine's network interfaces configuration,
 // so we want all or none.
-func fetchNetworkInterfaces(st Backend, spaceInfos network.SpaceInfos) (map[string][]*state.Address, map[string]map[string]set.Strings, map[string][]*state.LinkLayerDevice, error) {
+func fetchNetworkInterfaces(st Backend, spaceInfos network.SpaceInfos) (map[string][]*state.Address,
+	map[string]map[string]set.Strings, map[string][]*state.LinkLayerDevice, error) {
 	ipAddresses := make(map[string][]*state.Address)
 	spacesPerMachine := make(map[string]map[string]set.Strings)
 	subnets, err := st.AllSubnets()
@@ -762,7 +785,8 @@ func fetchNetworkInterfaces(st Backend, spaceInfos network.SpaceInfos) (map[stri
 
 // fetchAllApplicationsAndUnits returns a map from application name to application,
 // a map from application name to unit name to unit, and a map from base charm URL to latest URL.
-func fetchAllApplicationsAndUnits(st Backend, model *state.Model, spaceInfos network.SpaceInfos) (applicationStatusInfo, error) {
+func fetchAllApplicationsAndUnits(st Backend, model *state.Model, spaceInfos network.SpaceInfos) (applicationStatusInfo,
+	error) {
 	appMap := make(map[string]*state.Application)
 	unitMap := make(map[string]map[string]*state.Unit)
 	latestCharms := make(map[charm.URL]*state.Charm)
@@ -990,7 +1014,8 @@ func (c *statusContext) processMachines() map[string]params.MachineStatus {
 		for _, machine := range machines[1:] {
 			parent, ok := aCache[container.ParentId(machine.Id())]
 			if !ok {
-				logger.Errorf("programmer error, please file a bug, reference this whole log line: %q, %q", id, machine.Id())
+				logger.Errorf("programmer error, please file a bug, reference this whole log line: %q, %q", id,
+					machine.Id())
 				continue
 			}
 
@@ -1002,7 +1027,8 @@ func (c *statusContext) processMachines() map[string]params.MachineStatus {
 	return machinesMap
 }
 
-func (c *statusContext) makeMachineStatus(machine *state.Machine, appStatusInfo applicationStatusInfo) (status params.MachineStatus) {
+func (c *statusContext) makeMachineStatus(machine *state.Machine,
+	appStatusInfo applicationStatusInfo) (status params.MachineStatus) {
 	machineID := machine.Id()
 	ipAddresses := c.ipAddresses[machineID]
 	spaces := c.spaces[machineID]
@@ -1014,6 +1040,11 @@ func (c *statusContext) makeMachineStatus(machine *state.Machine, appStatusInfo 
 	status.AgentStatus = agentStatus
 
 	status.Series = machine.Series()
+	base, err := coreseries.GetBaseFromSeries(status.Series)
+	if err != nil {
+		logger.Errorf("cannot construct machine base from series %q", status.Series) //should never happen
+	}
+	status.Base = params.Base{Name: base.Name, Channel: base.Channel.String()}
 	status.Jobs = paramsJobsFromJobs(machine.Jobs())
 	node, wantsVote := c.controllerNodes[machineID]
 	status.WantsVote = wantsVote
@@ -1242,18 +1273,35 @@ func (context *statusContext) processApplication(application *state.Application)
 		channel = string(application.Channel())
 	}
 
-	series := application.Series()
-	// Sidecar k8s charms have the series set to that of the underlying base.
+	appSeries := application.Series()
+	// Sidecar k8s charms have the appSeries set to that of the underlying base.
 	// We want to ensure they are still shown as "kubernetes" in status.
+	// TODO(juju3) - we want to reflect the underlying base, so remove this
 	if corecharm.IsKubernetes(applicationCharm) {
-		series = coreseries.Kubernetes.String()
+		appSeries = coreseries.Kubernetes.String()
 	}
+	origin := application.CharmOrigin()
+	if appSeries == "" && origin != nil && origin.Platform != nil {
+		appSeries = origin.Platform.Series
+	}
+	var base coreseries.Base
+	if appSeries != "" {
+		base, err = coreseries.GetBaseFromSeries(appSeries)
+		if err != nil {
+			return params.ApplicationStatus{Err: apiservererrors.ServerError(err)}
+		}
+	}
+
 	var processedStatus = params.ApplicationStatus{
-		Charm:            applicationCharm.URL().String(),
-		CharmVersion:     applicationCharm.Version(),
-		CharmProfile:     charmProfileName,
-		CharmChannel:     channel,
-		Series:           series,
+		Charm:        applicationCharm.String(),
+		CharmVersion: applicationCharm.Version(),
+		CharmProfile: charmProfileName,
+		CharmChannel: channel,
+		Series:       appSeries,
+		Base: params.Base{
+			Name:    base.Name,
+			Channel: base.Channel.String(),
+		},
 		Exposed:          application.IsExposed(),
 		ExposedEndpoints: mappedExposedEndpoints,
 		Life:             processLife(application),
@@ -1276,7 +1324,7 @@ func (context *statusContext) processApplication(application *state.Application)
 		if err != nil {
 			return params.ApplicationStatus{Err: apiservererrors.ServerError(err)}
 		}
-		processedStatus.Units = context.processUnits(units, applicationCharm.URL().String(), expectWorkload)
+		processedStatus.Units = context.processUnits(units, applicationCharm.String(), expectWorkload)
 	}
 
 	// If for whatever reason the application isn't yet in the cache,
@@ -1349,7 +1397,8 @@ func (context *statusContext) processApplication(application *state.Application)
 	return processedStatus
 }
 
-func (context *statusContext) mapExposedEndpointsFromState(exposedEndpoints map[string]state.ExposedEndpoint) (map[string]params.ExposedEndpoint, error) {
+func (context *statusContext) mapExposedEndpointsFromState(exposedEndpoints map[string]state.ExposedEndpoint) (map[string]params.ExposedEndpoint,
+	error) {
 	if len(exposedEndpoints) == 0 {
 		return nil, nil
 	}
@@ -1459,7 +1508,8 @@ func (context *statusContext) processUnitMeterStatuses(units map[string]*state.U
 			continue
 		}
 		if isColorStatus(meterStatus.Code) {
-			unitsMap[unit.Name()] = params.MeterStatus{Color: strings.ToLower(meterStatus.Code.String()), Message: meterStatus.Info}
+			unitsMap[unit.Name()] = params.MeterStatus{Color: strings.ToLower(meterStatus.Code.String()),
+				Message: meterStatus.Info}
 		}
 	}
 	if len(unitsMap) > 0 {
@@ -1468,7 +1518,8 @@ func (context *statusContext) processUnitMeterStatuses(units map[string]*state.U
 	return nil
 }
 
-func (context *statusContext) processUnits(units map[string]*state.Unit, applicationCharm string, expectWorkload bool) map[string]params.UnitStatus {
+func (context *statusContext) processUnits(units map[string]*state.Unit, applicationCharm string,
+	expectWorkload bool) map[string]params.UnitStatus {
 	unitsMap := make(map[string]params.UnitStatus)
 	for _, unit := range units {
 		unitsMap[unit.Name()] = context.processUnit(unit, applicationCharm, expectWorkload)
@@ -1501,7 +1552,8 @@ func (context *statusContext) unitPublicAddress(unit *state.Unit) string {
 	return addr.Value
 }
 
-func (context *statusContext) processUnit(unit *state.Unit, applicationCharm string, expectWorkload bool) params.UnitStatus {
+func (context *statusContext) processUnit(unit *state.Unit, applicationCharm string,
+	expectWorkload bool) params.UnitStatus {
 	var result params.UnitStatus
 	if context.model.Type() == state.ModelTypeIAAS {
 		result.PublicAddress = context.unitPublicAddress(unit)
@@ -1531,9 +1583,9 @@ func (context *statusContext) processUnit(unit *state.Unit, applicationCharm str
 	if unit.IsPrincipal() {
 		result.Machine, _ = unit.AssignedMachineId()
 	}
-	curl, _ := unit.CharmURL()
-	if applicationCharm != "" && curl != nil && curl.String() != applicationCharm {
-		result.Charm = curl.String()
+	unitCharm := unit.CharmURL()
+	if applicationCharm != "" && unitCharm != nil && *unitCharm != applicationCharm {
+		result.Charm = *unitCharm
 	}
 	workloadVersion, err := context.status.UnitWorkloadVersion(unit.Name())
 	if err == nil {
@@ -1550,7 +1602,20 @@ func (context *statusContext) processUnit(unit *state.Unit, applicationCharm str
 			subUnit := context.unitByName(name)
 			// subUnit may be nil if subordinate was filtered out.
 			if subUnit != nil {
-				result.Subordinates[name] = context.processUnit(subUnit, applicationCharm, true)
+				subUnitAppCharm := ""
+				subUnitApp, err := subUnit.Application()
+				if err == nil {
+					if subUnitAppCh, _, err := subUnitApp.Charm(); err == nil {
+						subUnitAppCharm = subUnitAppCh.String()
+					} else {
+						logger.Debugf("error fetching subordinate application charm for %q: %q", subUnit.ApplicationName(), err.Error())
+					}
+				} else {
+					// We can still run processUnit with an empty string for
+					// the ApplicationCharm.
+					logger.Debugf("error fetching subordinate application for %q: %q", subUnit.ApplicationName(), err.Error())
+				}
+				result.Subordinates[name] = context.processUnit(subUnit, subUnitAppCharm, true)
 			}
 		}
 	}
@@ -1565,7 +1630,8 @@ func (context *statusContext) unitByName(name string) *state.Unit {
 	return context.allAppsUnitsCharmBindings.units[applicationName][name]
 }
 
-func (context *statusContext) processApplicationRelations(application *state.Application) (related map[string][]string, subord []string, err error) {
+func (context *statusContext) processApplicationRelations(application *state.Application) (related map[string][]string,
+	subord []string, err error) {
 	subordSet := make(set.Strings)
 	related = make(map[string][]string)
 	relations := context.relations[application.Name()]
@@ -1593,7 +1659,8 @@ func (context *statusContext) processApplicationRelations(application *state.App
 	return related, subordSet.SortedValues(), nil
 }
 
-func (context *statusContext) processRemoteApplicationRelations(application *state.RemoteApplication) (related map[string][]string, err error) {
+func (context *statusContext) processRemoteApplicationRelations(application *state.RemoteApplication) (related map[string][]string,
+	err error) {
 	related = make(map[string][]string)
 	relations := context.relations[application.Name()]
 	for _, relation := range relations {
@@ -1652,7 +1719,8 @@ func (c *contextUnit) Status() (status.StatusInfo, error) {
 }
 
 // processUnitAndAgentStatus retrieves status information for both unit and unitAgents.
-func (c *statusContext) processUnitAndAgentStatus(unit *state.Unit, expectWorkload bool) (agentStatus, workloadStatus params.DetailedStatus) {
+func (c *statusContext) processUnitAndAgentStatus(unit *state.Unit,
+	expectWorkload bool) (agentStatus, workloadStatus params.DetailedStatus) {
 	wrapped := &contextUnit{unit, expectWorkload, c}
 	agent, workload := c.presence.UnitStatus(wrapped)
 	populateStatusFromStatusInfoAndErr(&agentStatus, agent.Status, agent.Err)

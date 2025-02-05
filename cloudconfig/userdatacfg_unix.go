@@ -21,6 +21,7 @@ import (
 	"github.com/juju/names/v4"
 	"github.com/juju/os/v2/series"
 	"github.com/juju/proxy"
+	"github.com/juju/utils/v3"
 	"github.com/juju/version/v2"
 
 	"github.com/juju/juju/agent"
@@ -40,7 +41,7 @@ const (
 	FileNameBootstrapParams = "bootstrap-params"
 
 	// curlCommand is the base curl command used to download tools.
-	curlCommand = "curl -sSfw 'agent binaries from %{url_effective} downloaded: HTTP %{http_code}; time %{time_total}s; size %{size_download} bytes; speed %{speed_download} bytes/s '"
+	curlCommand = "curl -sSf"
 
 	// toolsDownloadWaitTime is the number of seconds to wait between
 	// each iterations of download attempts.
@@ -52,7 +53,7 @@ const (
 n=1
 while true; do
 {{range .URLs}}
-    printf "Attempt $n to download agent binaries from %s...\n" {{shquote .}}
+    echo "Attempt $n to download agent binaries from {{shquote .}}...\n"
     {{$curl}} {{shquote .}} && echo "Agent binaries downloaded successfully." && break
 {{end}}
     echo "Download failed, retrying in {{.ToolsDownloadWaitTime}}s"
@@ -96,6 +97,25 @@ has_juju_db_snap=$(snap info juju-db | grep installed:)
 if [ ! -z "$has_juju_db_snap" ]; then
   echo "removing juju-db snap and any persisted database data"
   snap remove --purge juju-db
+fi
+`
+	// We look to see if the proxy line is there already as
+	// the manual provider may have had it already.
+	// We write this file out whether we are using the legacy proxy
+	// or the juju proxy to deal with runtime changes. The proxy updater worker
+	// only modifies /etc/juju-proxy.conf, so if changes are written to that file
+	// we need to make sure the profile.d file exists to reflect these changes.
+	// If the new juju proxies are used, the legacy proxies will not be set, and the
+	// /etc/juju-proxy.conf file will be empty.
+	JujuProxyProfileScript = `
+if [ ! -e /etc/profile.d/juju-proxy.sh ]; then
+  (
+    echo
+    echo '# Added by juju'
+    echo
+    echo '[ -f /etc/juju-proxy.conf ] && . /etc/juju-proxy.conf'
+    echo
+  ) >> /etc/profile.d/juju-proxy.sh
 fi
 `
 )
@@ -149,9 +169,11 @@ func (w *unixConfigure) ConfigureBasic() error {
 	// Keep preruncmd at the beginning of any runcmd's that juju adds
 	if preruncmds, ok := w.icfg.CloudInitUserData["preruncmd"].([]interface{}); ok {
 		for i := len(preruncmds) - 1; i >= 0; i -= 1 {
-			if cmd, ok := preruncmds[i].(string); ok {
-				w.conf.PrependRunCmd(cmd)
+			cmd, err := runCmdToString(preruncmds[i])
+			if err != nil {
+				return errors.Annotate(err, "invalid preruncmd")
 			}
+			w.conf.PrependRunCmd(cmd)
 		}
 	}
 	w.conf.AddRunCmd(
@@ -257,7 +279,11 @@ func (w *unixConfigure) ConfigureJuju() error {
 	if postruncmds, ok := w.icfg.CloudInitUserData["postruncmd"].([]interface{}); ok {
 		cmds := make([]string, len(postruncmds))
 		for i, v := range postruncmds {
-			cmds[i] = v.(string)
+			cmd, err := runCmdToString(v)
+			if err != nil {
+				return errors.Annotate(err, "invalid postruncmd")
+			}
+			cmds[i] = cmd
 		}
 		defer w.conf.AddScripts(cmds...)
 	}
@@ -310,27 +336,17 @@ func (w *unixConfigure) ConfigureJuju() error {
 
 	// Write out the normal proxy settings so that the settings are
 	// sourced by bash, and ssh through that.
-	w.conf.AddScripts(
-		// We look to see if the proxy line is there already as
-		// the manual provider may have had it already.
-		// We write this file out whether we are using the legacy proxy
-		// or the juju proxy to deal with runtime changes. The proxy updater worker
-		// only modifies /etc/juju-proxy.conf, so if changes are written to that file
-		// we need to make sure the profile.d file exists to reflect these changes.
-		// If the new juju proxies are used, the legacy proxies will not be set, and the
-		// /etc/juju-proxy.conf file will be empty.
-		`[ -e /etc/profile.d/juju-proxy.sh ] || ` +
-			`printf '\n# Added by juju\n[ -f "/etc/juju-proxy.conf" ] && . "/etc/juju-proxy.conf"\n' >> /etc/profile.d/juju-proxy.sh`)
+	w.conf.AddScripts(JujuProxyProfileScript)
 	if w.icfg.LegacyProxySettings.HasProxySet() {
 		exportedProxyEnv := w.icfg.LegacyProxySettings.AsScriptEnvironment()
 		w.conf.AddScripts(strings.Split(exportedProxyEnv, "\n")...)
 		w.conf.AddScripts(
 			fmt.Sprintf(
-				`(printf '%%s\n' %s > /etc/juju-proxy.conf && chmod 0644 /etc/juju-proxy.conf)`,
+				`(echo %s > /etc/juju-proxy.conf && chmod 0644 /etc/juju-proxy.conf)`,
 				shquote(w.icfg.LegacyProxySettings.AsScriptEnvironment())))
 
 		// Write out systemd proxy settings
-		w.conf.AddScripts(fmt.Sprintf(`printf '%%s\n' %[1]s > /etc/juju-proxy-systemd.conf`,
+		w.conf.AddScripts(fmt.Sprintf(`echo %[1]s > /etc/juju-proxy-systemd.conf`,
 			shquote(w.icfg.LegacyProxySettings.AsSystemdDefaultEnv())))
 	}
 
@@ -411,6 +427,28 @@ func (w *unixConfigure) ConfigureJuju() error {
 	w.conf.AddRunTextFile("/sbin/remove-juju-services", removeServicesScript, 0755)
 
 	return w.addMachineAgentToBoot()
+}
+
+// runCmdToString converts a postruncmd or preruncmd value to a string.
+// Per https://cloudinit.readthedocs.io/en/latest/topics/examples.html,
+// these run commands can be either a string or a list of strings.
+func runCmdToString(v any) (string, error) {
+	switch v := v.(type) {
+	case string:
+		return v, nil
+	case []any: // beware! won't be be []string
+		strs := make([]string, len(v))
+		for i, sv := range v {
+			ss, ok := sv.(string)
+			if !ok {
+				return "", errors.Errorf("expected list of strings, got list containing %T", sv)
+			}
+			strs[i] = ss
+		}
+		return utils.CommandString(strs...), nil
+	default:
+		return "", errors.Errorf("expected string or list of strings, got %T", v)
+	}
 }
 
 // Not all cloudinit-userdata attr are allowed to override, these attr have been
@@ -603,7 +641,7 @@ func (w *unixConfigure) addDownloadToolsCmds() error {
 		return err
 	}
 	w.conf.AddScripts(
-		fmt.Sprintf("printf %%s %s > $bin/downloaded-tools.txt", shquote(string(toolsJson))),
+		fmt.Sprintf("echo -n %s > $bin/downloaded-tools.txt", shquote(string(toolsJson))),
 	)
 
 	return nil
@@ -655,7 +693,7 @@ func (w *unixConfigure) setUpGUI() (func(), error) {
 	w.conf.AddScripts(
 		"[ -f $gui/gui.tar.bz2 ] && sha256sum $gui/gui.tar.bz2 > $gui/jujugui.sha256",
 		fmt.Sprintf(
-			`[ -f $gui/jujugui.sha256 ] && (grep '%s' $gui/jujugui.sha256 && printf %%s %s > $gui/downloaded-gui.txt || echo Juju GUI checksum mismatch)`,
+			`[ -f $gui/jujugui.sha256 ] && (grep '%s' $gui/jujugui.sha256 && echo -n %s > $gui/downloaded-gui.txt || echo Juju GUI checksum mismatch)`,
 			w.icfg.Bootstrap.GUI.SHA256, shquote(string(guiJson))),
 	)
 	return func() {

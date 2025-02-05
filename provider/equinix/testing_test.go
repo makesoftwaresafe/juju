@@ -1,14 +1,16 @@
 // Copyright 2021 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package equinix_test
 
 import (
+	jc "github.com/juju/testing/checkers"
+	gc "gopkg.in/check.v1"
+
 	"github.com/juju/juju/cloud"
 	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/testing"
-	jc "github.com/juju/testing/checkers"
-	gc "gopkg.in/check.v1"
 )
 
 func fakeConfig(c *gc.C, attrs ...testing.Attrs) *config.Config {

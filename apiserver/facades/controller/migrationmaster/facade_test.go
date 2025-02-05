@@ -7,15 +7,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/juju/juju/controller"
-
-	"github.com/golang/mock/gomock"
 	"github.com/juju/description/v3"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
 	"github.com/juju/version/v2"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/macaroon.v2"
 
@@ -25,8 +23,11 @@ import (
 	"github.com/juju/juju/apiserver/facades/controller/migrationmaster"
 	"github.com/juju/juju/apiserver/facades/controller/migrationmaster/mocks"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
+	"github.com/juju/juju/controller"
 	coremigration "github.com/juju/juju/core/migration"
+	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/presence"
+	environscloudspec "github.com/juju/juju/environs/cloudspec"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/state"
 	coretesting "github.com/juju/juju/testing"
@@ -36,14 +37,16 @@ import (
 type Suite struct {
 	coretesting.BaseSuite
 
-	backend         *mocks.MockBackend
-	precheckBackend *mocks.MockPrecheckBackend
+	controllerBackend *mocks.MockControllerState
+	backend           *mocks.MockBackend
+	precheckBackend   *mocks.MockPrecheckBackend
 
 	controllerUUID string
 	modelUUID      string
 	model          description.Model
 	resources      *common.Resources
 	authorizer     apiservertesting.FakeAuthorizer
+	cloudSpec      environscloudspec.CloudSpec
 }
 
 var _ = gc.Suite(&Suite{})
@@ -65,6 +68,7 @@ func (s *Suite) SetUpTest(c *gc.C) {
 	s.AddCleanup(func(*gc.C) { s.resources.StopAll() })
 
 	s.authorizer = apiservertesting.FakeAuthorizer{Controller: true}
+	s.cloudSpec = environscloudspec.CloudSpec{Type: "lxd"}
 }
 
 func (s *Suite) TestNotController(c *gc.C) {
@@ -173,6 +177,36 @@ func (s *Suite) TestModelInfo(c *gc.C) {
 	c.Assert(mod.AgentVersion, gc.Equals, version.MustParse("1.2.3"))
 }
 
+func (s *Suite) TestSourceControllerInfo(c *gc.C) {
+	defer s.setupMocks(c).Finish()
+
+	exp := s.backend.EXPECT()
+	exp.AllLocalRelatedModels().Return([]string{"related-model-uuid"}, nil)
+	s.backend.EXPECT().ControllerConfig().Return(controller.Config{
+		controller.ControllerUUIDKey: coretesting.ControllerTag.Id(),
+		controller.ControllerName:    "mycontroller",
+		controller.CACertKey:         "cacert",
+	}, nil)
+	apiAddr := []network.SpaceHostPorts{{{
+		SpaceAddress: network.SpaceAddress{
+			MachineAddress: network.MachineAddress{Value: "10.0.0.1"},
+		},
+		NetPort: 666,
+	}}}
+	s.controllerBackend.EXPECT().APIHostPortsForClients().Return(apiAddr, nil)
+
+	info, err := s.mustMakeAPI(c).SourceControllerInfo()
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Assert(info, jc.DeepEquals, params.MigrationSourceInfo{
+		LocalRelatedModels: []string{"related-model-uuid"},
+		ControllerTag:      coretesting.ControllerTag.String(),
+		ControllerAlias:    "mycontroller",
+		Addrs:              []string{"10.0.0.1:666"},
+		CACert:             "cacert",
+	})
+}
+
 func (s *Suite) TestSetPhase(c *gc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
@@ -254,7 +288,7 @@ func (s *Suite) TestPrechecksModelError(c *gc.C) {
 
 	s.precheckBackend.EXPECT().Model().Return(nil, errors.New("boom"))
 
-	err := s.mustMakeAPI(c).Prechecks()
+	err := s.mustMakeAPI(c).Prechecks(params.PrechecksArgs{TargetControllerVersion: version.MustParse("2.9.32")})
 	c.Assert(err, gc.ErrorMatches, "retrieving model: boom")
 }
 
@@ -397,7 +431,6 @@ func (s *Suite) assertExport(c *gc.C, modelType string) {
 			},
 		},
 	}})
-
 }
 
 func (s *Suite) TestReap(c *gc.C) {
@@ -541,9 +574,9 @@ func (s *Suite) TestMinionReportTimeout(c *gc.C) {
 func (s *Suite) setupMocks(c *gc.C) *gomock.Controller {
 	ctrl := gomock.NewController(c)
 
+	s.controllerBackend = mocks.NewMockControllerState(ctrl)
 	s.backend = mocks.NewMockBackend(ctrl)
 	s.precheckBackend = mocks.NewMockPrecheckBackend(ctrl)
-
 	return ctrl
 }
 
@@ -555,12 +588,16 @@ func (s *Suite) mustMakeAPI(c *gc.C) *migrationmaster.API {
 
 func (s *Suite) makeAPI() (*migrationmaster.API, error) {
 	return migrationmaster.NewAPI(
+		s.controllerBackend,
 		s.backend,
 		s.precheckBackend,
 		nil, // pool
 		s.resources,
 		s.authorizer,
 		&stubPresence{},
+		func(names.ModelTag) (environscloudspec.CloudSpec, error) {
+			return s.cloudSpec, nil
+		},
 	)
 }
 

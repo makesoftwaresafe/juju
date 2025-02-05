@@ -4,11 +4,10 @@
 package operation_test
 
 import (
-	"github.com/golang/mock/gomock"
-	"github.com/juju/charm/v8"
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/yaml.v2"
 
@@ -24,7 +23,7 @@ type StateOpsSuite struct {
 
 var _ = gc.Suite(&StateOpsSuite{})
 
-var stcurl = charm.MustParseURL("cs:quantal/application-name-123")
+var stcurl = "cs:quantal/application-name-123"
 var relhook = &hook.Info{
 	Kind:              hooks.RelationJoined,
 	RemoteUnit:        "some-thing/123",

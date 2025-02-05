@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	jujuclock "github.com/juju/clock"
 	"github.com/juju/clock/testclock"
 	"github.com/juju/cmd/v3/cmdtesting"
@@ -17,6 +16,7 @@ import (
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version/v2"
 	"github.com/juju/worker/v3/workertest"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
@@ -332,7 +332,8 @@ func (s *bootstrapSuite) TestBootstrap(c *gc.C) {
 	_, err := s.mockNamespaces.Get(context.TODO(), s.namespace, v1.GetOptions{})
 	c.Assert(err, jc.Satisfies, k8serrors.IsNotFound)
 
-	s.setupBroker(c, coretesting.ControllerTag.Id(), newK8sClientFunc, newK8sRestClientFunc, randomPrefixFunc)
+	var bootstrapWatchers []k8swatcher.KubernetesNotifyWatcher
+	s.setupBroker(c, newK8sClientFunc, newK8sRestClientFunc, randomPrefixFunc, &bootstrapWatchers)
 
 	// Broker's namespace is "controller" now - controllerModelConfig.Name()
 	c.Assert(s.broker.GetCurrentNamespace(), jc.DeepEquals, s.namespace)
@@ -606,7 +607,11 @@ func (s *bootstrapSuite) TestBootstrap(c *gc.C) {
 		`if [ $ipv6Disabled -eq 0 ]; then`,
 		`  args="${args} --ipv6"`,
 		`fi`,
-		`$(mongod ${args})`,
+		`while [ ! -f "/var/lib/juju/server.pem" ]; do`,
+		`  echo "Waiting for /var/lib/juju/server.pem to be created..."`,
+		`  sleep 1`,
+		`done`,
+		`exec mongod ${args}`,
 		`'>/root/mongo.sh && chmod a+x /root/mongo.sh && /root/mongo.sh`,
 	}
 	statefulSetSpec.Spec.Template.Spec.Containers = []core.Container{
@@ -649,6 +654,9 @@ func (s *bootstrapSuite) TestBootstrap(c *gc.C) {
 				TimeoutSeconds:      5,
 			},
 			Resources: core.ResourceRequirements{
+				Requests: core.ResourceList{
+					core.ResourceMemory: resource.MustParse("4000Mi"),
+				},
 				Limits: core.ResourceList{
 					core.ResourceMemory: resource.MustParse("4000Mi"),
 				},
@@ -890,9 +898,9 @@ JUJU_DEV_FEATURE_FLAGS=developer-mode $JUJU_TOOLS_DIR/jujud machine --data-dir $
 		c.Assert(err, jc.ErrorIsNil)
 		c.Assert(crb, gc.DeepEquals, controllerServiceCRB)
 
-		c.Assert(s.watchers, gc.HasLen, 2)
-		c.Assert(workertest.CheckKilled(c, s.watchers[0]), jc.ErrorIsNil)
-		c.Assert(workertest.CheckKilled(c, s.watchers[1]), jc.ErrorIsNil)
+		c.Assert(bootstrapWatchers, gc.HasLen, 2)
+		c.Assert(workertest.CheckKilled(c, bootstrapWatchers[0]), jc.ErrorIsNil)
+		c.Assert(workertest.CheckKilled(c, bootstrapWatchers[1]), jc.ErrorIsNil)
 	case <-time.After(coretesting.LongWait):
 		c.Fatalf("timed out waiting for deploy return")
 	}
@@ -911,7 +919,8 @@ func (s *bootstrapSuite) TestBootstrapFailedTimeout(c *gc.C) {
 	_, err := s.mockNamespaces.Get(context.TODO(), s.namespace, v1.GetOptions{})
 	c.Assert(err, jc.Satisfies, k8serrors.IsNotFound)
 
-	s.setupBroker(c, coretesting.ControllerTag.Id(), newK8sClientFunc, newK8sRestClientFunc, randomPrefixFunc)
+	var watchers []k8swatcher.KubernetesNotifyWatcher
+	s.setupBroker(c, newK8sClientFunc, newK8sRestClientFunc, randomPrefixFunc, &watchers)
 
 	// Broker's namespace is "controller" now - controllerModelConfig.Name()
 	c.Assert(s.broker.GetCurrentNamespace(), jc.DeepEquals, s.namespace)
@@ -969,7 +978,7 @@ func (s *bootstrapSuite) TestBootstrapFailedTimeout(c *gc.C) {
 	select {
 	case err := <-errChan:
 		c.Assert(err, gc.ErrorMatches, `creating service for controller: waiting for controller service address fully provisioned timeout`)
-		c.Assert(s.watchers, gc.HasLen, 0)
+		c.Assert(watchers, gc.HasLen, 0)
 	case <-time.After(coretesting.LongWait):
 		c.Fatalf("timed out waiting for deploy return")
 	}

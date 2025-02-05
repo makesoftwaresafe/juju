@@ -7,7 +7,7 @@
 // to a container.
 //
 // More information about a type of LXD configuration profile can found
-// https://github.com/lxc/lxd/blob/master/doc/containers.md
+// https://github.com/canonical/lxd/blob/master/doc/containers.md
 //
 // LXDProfile package defines core concepts that can be utilised from different
 // packages of the codebase, that want to work with a LXD profile. Not all
@@ -29,5 +29,4 @@
 //     an upgrade of the charm or the complete removal of the charm. Either way,
 //     the removal of the charms from the LXC profile list is to prevent orphan
 //     profiles from being left dangling.
-//
 package lxdprofile

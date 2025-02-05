@@ -24,6 +24,8 @@ import (
 	"gopkg.in/juju/environschema.v1"
 	"gopkg.in/macaroon.v2"
 
+	"github.com/juju/juju/cloud"
+	corecharm "github.com/juju/juju/core/charm"
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/instance"
@@ -219,6 +221,29 @@ func (s *MigrationExportSuite) TestModelInfo(c *gc.C) {
 	})
 }
 
+func (s *MigrationExportSuite) TestModelRegionForOCICLoud(c *gc.C) {
+	cl, err := s.Model.Cloud()
+	c.Assert(err, jc.ErrorIsNil)
+
+	cl.Type = "oci"
+	err = s.State.UpdateCloud(cl)
+	c.Assert(err, jc.ErrorIsNil)
+
+	tag := names.NewCloudCredentialTag(fmt.Sprintf("%s/owner/name", cl.Name))
+	err = s.State.UpdateCloudCredential(tag, cloud.NewCredential(cloud.EmptyAuthType, map[string]string{
+		"region": "nether",
+	}))
+	c.Assert(err, jc.ErrorIsNil)
+
+	_, err = s.Model.SetCloudCredential(tag)
+	c.Assert(err, jc.ErrorIsNil)
+
+	model, err := s.State.Export()
+	c.Assert(err, jc.ErrorIsNil)
+
+	c.Check(model.CloudRegion(), gc.Equals, "nether")
+}
+
 func (s *MigrationExportSuite) TestModelUsers(c *gc.C) {
 	// Make sure we have some last connection times for the admin user,
 	// and create a few other users.
@@ -330,8 +355,13 @@ func (s *MigrationExportSuite) assertMachinesMigrated(c *gc.C, cons constraints.
 	c.Assert(machines, gc.HasLen, 1)
 
 	exported := machines[0]
+	base, err := coreseries.ParseBaseFromString(exported.Base())
+	c.Assert(err, jc.ErrorIsNil)
+	series, err := coreseries.GetSeriesFromBase(base)
+	c.Assert(err, jc.ErrorIsNil)
+
 	c.Assert(exported.Tag(), gc.Equals, machine1.MachineTag())
-	c.Assert(exported.Series(), gc.Equals, machine1.Series())
+	c.Assert(series, gc.Equals, machine1.Series())
 	c.Assert(exported.Annotations(), jc.DeepEquals, testAnnotations)
 
 	expCons := exported.Constraints()
@@ -477,7 +507,7 @@ func (s *MigrationExportSuite) assertMigrateApplications(c *gc.C, isSidecar bool
 			},
 			Platform: &state.Platform{
 				Architecture: "amd64",
-				Series:       "focal",
+				Series:       "quantal",
 			},
 		},
 		ApplicationConfig: map[string]interface{}{
@@ -512,6 +542,14 @@ func (s *MigrationExportSuite) assertMigrateApplications(c *gc.C, isSidecar bool
 		addr := network.NewSpaceAddress("192.168.1.1", network.WithScope(network.ScopeCloudLocal))
 		err = application.UpdateCloudService("provider-id", []network.SpaceAddress{addr})
 		c.Assert(err, jc.ErrorIsNil)
+
+		if isSidecar {
+			err = application.SetProvisioningState(state.ApplicationProvisioningState{
+				Scaling:     true,
+				ScaleTarget: 3,
+			})
+			c.Assert(err, jc.ErrorIsNil)
+		}
 	}
 
 	agentVer, err := version.ParseBinary("2.9.1-ubuntu-amd64")
@@ -537,15 +575,24 @@ func (s *MigrationExportSuite) assertMigrateApplications(c *gc.C, isSidecar bool
 	c.Assert(applications, gc.HasLen, 1)
 
 	exported := applications[0]
+	platform, err := corecharm.ParsePlatform(exported.CharmOrigin().Platform())
+	c.Assert(err, jc.ErrorIsNil)
+	exportedSeries, err := coreseries.GetSeriesFromChannel(platform.OS, platform.Channel)
+	c.Assert(err, jc.ErrorIsNil)
+
 	c.Assert(exported.Name(), gc.Equals, application.Name())
 	c.Assert(exported.Tag(), gc.Equals, application.ApplicationTag())
 	c.Assert(exported.Type(), gc.Equals, string(dbModel.Type()))
-	c.Assert(exported.Series(), gc.Equals, application.Series())
+	if series == "kubernetes" {
+		c.Assert(exportedSeries, gc.Equals, "quantal")
+	} else {
+		c.Assert(exportedSeries, gc.Equals, application.Series())
+	}
 	c.Assert(exported.Annotations(), jc.DeepEquals, testAnnotations)
 
 	origin := exported.CharmOrigin()
 	c.Assert(origin.Channel(), gc.Equals, "beta")
-	c.Assert(origin.Platform(), gc.Equals, "amd64/ubuntu/focal")
+	c.Assert(origin.Platform(), gc.Equals, "amd64/ubuntu/quantal")
 
 	c.Assert(exported.CharmConfig(), jc.DeepEquals, map[string]interface{}{
 		"foo": "bar",
@@ -609,6 +656,15 @@ func (s *MigrationExportSuite) assertMigrateApplications(c *gc.C, isSidecar bool
 		_, err := application.AgentTools()
 		c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	}
+
+	if dbModel.Type() == state.ModelTypeCAAS && isSidecar {
+		ps := exported.ProvisioningState()
+		c.Assert(ps, gc.NotNil)
+		c.Assert(ps.Scaling(), jc.IsTrue)
+		c.Assert(ps.ScaleTarget(), gc.Equals, 3)
+	} else {
+		c.Assert(exported.ProvisioningState(), gc.IsNil)
+	}
 }
 
 func (s *MigrationExportSuite) TestMalformedApplications(c *gc.C) {
@@ -628,7 +684,7 @@ func (s *MigrationExportSuite) TestMalformedApplications(c *gc.C) {
 			Channel: &state.Channel{},
 			Platform: &state.Platform{
 				Architecture: "amd64",
-				Series:       "focal",
+				Series:       "quantal",
 			},
 		},
 		ApplicationConfig: map[string]interface{}{
@@ -667,15 +723,20 @@ func (s *MigrationExportSuite) TestMalformedApplications(c *gc.C) {
 	c.Assert(applications, gc.HasLen, 1)
 
 	exported := applications[0]
+	platform, err := corecharm.ParsePlatform(exported.CharmOrigin().Platform())
+	c.Assert(err, jc.ErrorIsNil)
+	exportedSeries, err := coreseries.GetSeriesFromChannel(platform.OS, platform.Channel)
+	c.Assert(err, jc.ErrorIsNil)
+
 	c.Assert(exported.Name(), gc.Equals, application.Name())
 	c.Assert(exported.Tag(), gc.Equals, application.ApplicationTag())
 	c.Assert(exported.Type(), gc.Equals, string(dbModel.Type()))
-	c.Assert(exported.Series(), gc.Equals, application.Series())
+	c.Assert(exportedSeries, gc.Equals, application.Series())
 	c.Assert(exported.Annotations(), jc.DeepEquals, testAnnotations)
 
 	origin := exported.CharmOrigin()
 	c.Assert(origin.Channel(), gc.Equals, "stable")
-	c.Assert(origin.Platform(), gc.Equals, "amd64/ubuntu/focal")
+	c.Assert(origin.Platform(), gc.Equals, "amd64/ubuntu/quantal")
 }
 
 func (s *MigrationExportSuite) TestMultipleApplications(c *gc.C) {
@@ -2592,7 +2653,7 @@ func (s *MigrationExportSuite) TestRelationWithNoStatus(c *gc.C) {
 	c.Assert(rels[0].Status(), gc.IsNil)
 }
 
-func (s *MigrationExportSuite) TestRemoteRelationSettingsForLocalUnitInCMR(c *gc.C) {
+func (s *MigrationExportSuite) TestRemoteRelationSettingsForUnitsInCMR(c *gc.C) {
 	mac, err := newMacaroon("apimac")
 	c.Assert(err, gc.IsNil)
 
@@ -2638,10 +2699,18 @@ func (s *MigrationExportSuite) TestRemoteRelationSettingsForLocalUnitInCMR(c *gc
 	c.Assert(err, jc.ErrorIsNil)
 
 	wordpress0 := s.Factory.MakeUnit(c, &factory.UnitParams{Application: wordpress})
-	ru, err := rel.Unit(wordpress0)
+	localRU, err := rel.Unit(wordpress0)
 	c.Assert(err, jc.ErrorIsNil)
+
 	wordpressSettings := map[string]interface{}{"name": "wordpress/0"}
-	err = ru.EnterScope(wordpressSettings)
+	err = localRU.EnterScope(wordpressSettings)
+	c.Assert(err, jc.ErrorIsNil)
+
+	remoteRU, err := rel.RemoteUnit("gravy-rainbow/0")
+	c.Assert(err, jc.ErrorIsNil)
+
+	gravySettings := map[string]interface{}{"name": "gravy-rainbow/0"}
+	err = remoteRU.EnterScope(gravySettings)
 	c.Assert(err, jc.ErrorIsNil)
 
 	model, err := s.State.Export()
@@ -2653,14 +2722,11 @@ func (s *MigrationExportSuite) TestRemoteRelationSettingsForLocalUnitInCMR(c *gc
 	c.Assert(exRel.Endpoints(), gc.HasLen, 2)
 
 	for _, exEp := range exRel.Endpoints() {
-		// We expect that the relation settings for the local application unit
-		// are recorded against its relation endpoint,
-		// but the remote application has no unit settings.
 		if exEp.ApplicationName() == "wordpress" {
 			c.Check(exEp.Settings(wordpress0.Name()), jc.DeepEquals, wordpressSettings)
 		} else {
 			c.Check(exEp.ApplicationName(), gc.Equals, "gravy-rainbow")
-			c.Check(exEp.AllSettings(), gc.HasLen, 0)
+			c.Check(exEp.Settings("gravy-rainbow/0"), jc.DeepEquals, gravySettings)
 		}
 	}
 }

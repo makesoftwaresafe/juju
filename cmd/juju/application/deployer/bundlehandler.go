@@ -24,6 +24,7 @@ import (
 
 	"github.com/juju/juju/api"
 	"github.com/juju/juju/api/client/application"
+	"github.com/juju/juju/api/client/charms"
 	"github.com/juju/juju/api/client/resources"
 	commoncharm "github.com/juju/juju/api/common/charm"
 	app "github.com/juju/juju/apiserver/facades/client/application"
@@ -328,13 +329,13 @@ func (h *bundleHandler) updateChannelsModelStatus(status *params.FullStatus) (*p
 // resolve the charm URLs. From the model the charm names are
 // fully qualified, meaning they have a source and revision id.
 // Effectively the logic this method follows is:
-//   * if the bundle specifies a local charm, and the application
+//   - if the bundle specifies a local charm, and the application
 //     exists already, then override the charm URL in the bundle
 //     spec to match the charm name from the model. We don't
 //     upgrade local charms as part of a bundle deploy.
-//   * the charm URL is resolved and the bundle spec is replaced
+//   - the charm URL is resolved and the bundle spec is replaced
 //     with the fully resolved charm URL - i.e.: with rev id.
-//   * check all endpoints, and if any of them have implicit endpoints,
+//   - check all endpoints, and if any of them have implicit endpoints,
 //     and if they do, resolve the implicitness in order to compare
 //     with relations in the model.
 func (h *bundleHandler) resolveCharmsAndEndpoints() error {
@@ -399,10 +400,6 @@ func (h *bundleHandler) resolveCharmsAndEndpoints() error {
 				ch = ch.WithRevision(*spec.Revision)
 			}
 		}
-		urlForOrigin := ch
-		if spec.Revision != nil && *spec.Revision != -1 {
-			urlForOrigin = urlForOrigin.WithRevision(*spec.Revision)
-		}
 
 		channel, origin, err := h.constructChannelAndOrigin(ch, spec.Series, spec.Channel, cons)
 		if err != nil {
@@ -414,7 +411,7 @@ func (h *bundleHandler) resolveCharmsAndEndpoints() error {
 		}
 		if charm.CharmHub.Matches(url.Schema) {
 			// Although we've resolved the charm URL, we actually don't want the
-			// whole URL (architecture, series and revision), only the name is
+			// whole URL (architecture, channel and revision), only the name is
 			// verified that it exists.
 			url = &charm.URL{
 				Schema:   charm.CharmHub.String(),
@@ -539,7 +536,7 @@ func (h *bundleHandler) getChanges() error {
 		Bundle:           h.data,
 		BundleURL:        bundleURL,
 		Model:            h.model,
-		ConstraintGetter: addCharmConstraintsParser,
+		ConstraintGetter: addCharmConstraintsParser(h.modelConstraints),
 		CharmResolver:    h.resolveCharmChannelAndRevision,
 		Logger:           logger,
 		Force:            h.force,
@@ -659,43 +656,7 @@ func (h *bundleHandler) addCharm(change *bundlechanges.AddCharmChange) error {
 
 	// First attempt to interpret as a local path.
 	if h.isLocalCharm(chParams.Charm) {
-		// The charm path could contain the local schema prefix. If that's the
-		// case we should remove that before attempting to join with the bundle
-		// directory.
-		charmPath := chParams.Charm
-		if strings.HasPrefix(charmPath, "local:") {
-			path, err := charm.ParseURL(charmPath)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			charmPath = path.Name
-		}
-		if !filepath.IsAbs(charmPath) {
-			charmPath = filepath.Join(h.bundleDir, charmPath)
-		}
-
-		ch, curl, err := corecharm.NewCharmAtPathForceSeries(charmPath, chSeries, h.force)
-		if err != nil {
-			return errors.Annotatef(err, "cannot deploy local charm at %q", charmPath)
-		}
-
-		if err := lxdprofile.ValidateLXDProfile(lxdCharmProfiler{
-			Charm: ch,
-		}); err != nil && !h.force {
-			return errors.Annotatef(err, "cannot deploy local charm at %q", charmPath)
-		}
-		if curl, err = h.deployAPI.AddLocalCharm(curl, ch, h.force); err != nil {
-			return err
-		}
-		logger.Debugf("added charm %s", curl)
-		h.results[id] = curl.String()
-		// We know we're a local charm and local charms don't require an
-		// explicit tailored origin. Instead we can just use a placeholder
-		// to ensure correctness for later on in addApplication.
-		h.addOrigin(*curl, corecharm.DefaultRiskChannel, commoncharm.Origin{
-			Source: commoncharm.OriginLocal,
-		})
-		return nil
+		return h.addLocalCharm(chParams, chSeries, id)
 	}
 
 	// Not a local charm, so grab from the store.
@@ -745,12 +706,36 @@ func (h *bundleHandler) addCharm(change *bundlechanges.AddCharmChange) error {
 		return errors.Trace(err)
 	}
 
-	url, resolvedOrigin, _, err := h.bundleResolver.ResolveCharm(ch, origin, false) // no --switch possible.
+	url, resolvedOrigin, supportedSeries, err := h.bundleResolver.ResolveCharm(ch, origin, false) // no --switch possible.
 	if err != nil {
 		return errors.Annotatef(err, "cannot resolve %q", ch.Name)
 	}
-	if url.Series == "bundle" || resolvedOrigin.Type == "bundle" {
+	switch {
+	case url.Series == "bundle" || resolvedOrigin.Type == "bundle":
 		return errors.Errorf("expected charm, got bundle %q %v", ch.Name, resolvedOrigin)
+	case resolvedOrigin.Series == "":
+		modelCfg, workloadSeries, err := seriesSelectorRequirements(h.deployAPI, h.clock, url)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		selector := seriesSelector{
+			charmURLSeries:      url.Series,
+			seriesFlag:          change.Params.Series,
+			supportedSeries:     supportedSeries,
+			supportedJujuSeries: workloadSeries,
+			conf:                modelCfg,
+			fromBundle:          true,
+		}
+
+		// Get the series to use.
+		resolvedOrigin.Series, err = selector.charmSeries()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if url.Schema != charm.CharmStore.String() {
+			url = url.WithSeries(resolvedOrigin.Series)
+		}
+		logger.Tracef("Using series %s from %v to deploy %v", resolvedOrigin.Series, supportedSeries, url)
 	}
 
 	var macaroon *macaroon.Macaroon
@@ -767,6 +752,46 @@ func (h *bundleHandler) addCharm(change *bundlechanges.AddCharmChange) error {
 	h.results[id] = charmAlias
 	h.macaroons[*url] = macaroon
 	h.addOrigin(*url, channel, charmOrigin)
+	return nil
+}
+
+func (h *bundleHandler) addLocalCharm(chParams bundlechanges.AddCharmParams, chSeries, id string) error {
+	// The charm path could contain the local schema prefix. If that's the
+	// case we should remove that before attempting to join with the bundle
+	// directory.
+	charmPath := chParams.Charm
+	if strings.HasPrefix(charmPath, "local:") {
+		path, err := charm.ParseURL(charmPath)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		charmPath = path.Name
+	}
+	if !filepath.IsAbs(charmPath) {
+		charmPath = filepath.Join(h.bundleDir, charmPath)
+	}
+
+	ch, curl, err := corecharm.NewCharmAtPathForceSeries(charmPath, chSeries, h.force)
+	if err != nil {
+		return errors.Annotatef(err, "cannot deploy local charm at %q", charmPath)
+	}
+
+	if err := lxdprofile.ValidateLXDProfile(lxdCharmProfiler{
+		Charm: ch,
+	}); err != nil && !h.force {
+		return errors.Annotatef(err, "cannot deploy local charm at %q", charmPath)
+	}
+	if curl, err = h.deployAPI.AddLocalCharm(curl, ch, h.force); err != nil {
+		return err
+	}
+	logger.Debugf("added charm %s", curl)
+	h.results[id] = curl.String()
+	// We know we're a local charm and local charms don't require an
+	// explicit tailored origin. Instead we can just use a placeholder
+	// to ensure correctness for later on in addApplication.
+	h.addOrigin(*curl, corecharm.DefaultRiskChannel, commoncharm.Origin{
+		Source: commoncharm.OriginLocal,
+	})
 	return nil
 }
 
@@ -905,12 +930,6 @@ func (h *bundleHandler) addApplication(change *bundlechanges.AddApplicationChang
 		return errors.Trace(err)
 	}
 
-	// Figure out what series we need to deploy with.
-	selectedSeries, err := h.selectedSeries(charmInfo.Charm(), chID, curl, p.Series)
-	if err != nil {
-		return errors.Trace(err)
-	}
-
 	// Only Kubernetes bundles send the unit count and placement with the deploy API call.
 	numUnits := 0
 	var placement []*instance.Placement
@@ -923,30 +942,41 @@ func (h *bundleHandler) addApplication(change *bundlechanges.AddApplicationChang
 	// charmhub).
 	// We should remove this when charmstore charms are defunct and remove this
 	// specialization.
-	if charm.CharmStore.Matches(chID.URL.Schema) {
-		var track string
-		if origin.Track != nil {
-			track = *origin.Track
+	switch {
+	case charm.Local.Matches(chID.URL.Schema):
+		// Figure out what series we need to deploy with. For Local charms,
+		// this was determined when addcharm was called.
+		selectedSeries, err := h.selectedSeries(charmInfo.Charm(), chID, curl, p.Series)
+		if err != nil {
+			return errors.Trace(err)
 		}
+		origin.Series = selectedSeries
+	case charm.CharmStore.Matches(chID.URL.Schema):
+		// Figure out what series we need to deploy with. For CharmHub charms,
+		// this was determined when addcharm was called.
+		selectedSeries, err := h.selectedSeries(charmInfo.Charm(), chID, curl, p.Series)
+		if err != nil {
+			return errors.Trace(err)
+		}
+
 		platform, err := utils.DeducePlatform(cons, selectedSeries, h.modelConstraints)
 		if err != nil {
 			return errors.Trace(err)
 		}
 		// A channel is needed whether the risk is valid or not.
-		channel, _ := charm.MakeChannel(track, origin.Risk, "")
+		channel, _ := charm.MakeChannel("", origin.Risk, "")
 		origin, err = utils.DeduceOrigin(chID.URL, channel, platform)
 		if err != nil {
 			return errors.Trace(err)
 		}
 	}
 
-	// Deploy the application.
-	if err := h.deployAPI.Deploy(application.DeployArgs{
+	args := application.DeployArgs{
 		CharmID:          chID,
 		CharmOrigin:      origin,
 		Cons:             cons,
 		ApplicationName:  p.Application,
-		Series:           selectedSeries,
+		Series:           origin.Series,
 		NumUnits:         numUnits,
 		Placement:        placement,
 		ConfigYAML:       configYAML,
@@ -955,7 +985,9 @@ func (h *bundleHandler) addApplication(change *bundlechanges.AddApplicationChang
 		Resources:        resNames2IDs,
 		EndpointBindings: p.EndpointBindings,
 		Force:            h.force,
-	}); err != nil {
+	}
+	// Deploy the application.
+	if err := h.deployAPI.Deploy(args); err != nil {
 		return errors.Annotatef(err, "cannot deploy application %q", p.Application)
 	}
 	h.writeAddedResources(resNames2IDs)
@@ -1109,9 +1141,22 @@ func (h *bundleHandler) addMachine(change *bundlechanges.AddMachineChange) error
 		// This should never happen, as the bundle is already verified.
 		return errors.Annotate(err, "invalid constraints for machine")
 	}
+	var base *params.Base
+	if p.Series != "" && h.deployAPI.BestAPIVersion() >= 8 {
+		info, err := series.GetBaseFromSeries(p.Series)
+		if err != nil {
+			return errors.NotValidf("machine series %q", p.Series)
+		}
+		p.Series = ""
+		base = &params.Base{
+			Name:    info.Name,
+			Channel: info.Channel.String(),
+		}
+	}
 	machineParams := params.AddMachineParams{
 		Constraints: cons,
 		Series:      p.Series,
+		Base:        base,
 		Jobs:        []model.MachineJob{model.JobHostUnits},
 	}
 	if ct := p.ContainerType; ct != "" {
@@ -1289,7 +1334,7 @@ func (h *bundleHandler) upgradeCharm(change *bundlechanges.UpgradeCharmChange) e
 	if err != nil {
 		return errors.Trace(err)
 	}
-	filtered, err := utils.GetUpgradeResources(curl, resourceLister, p.Application, resMap, meta)
+	filtered, err := utils.GetUpgradeResources(chID, charms.NewClient(h.deployAPI), resourceLister, p.Application, resMap, meta)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -1705,8 +1750,18 @@ func isUserAlreadyHasAccessErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "user already has")
 }
 
+func addCharmConstraintsParser(defaultConstraints constraints.Value) func(string) bundlechanges.ArchConstraint {
+	return func(s string) bundlechanges.ArchConstraint {
+		return bundleArchConstraint{
+			constraints:        s,
+			defaultConstraints: defaultConstraints,
+		}
+	}
+}
+
 type bundleArchConstraint struct {
-	constraints string
+	constraints        string
+	defaultConstraints constraints.Value
 }
 
 func (b bundleArchConstraint) Arch() (string, error) {
@@ -1714,13 +1769,7 @@ func (b bundleArchConstraint) Arch() (string, error) {
 	if err != nil {
 		return "", errors.Trace(err)
 	}
-	return arch.ConstraintArch(cons, nil), nil
-}
-
-func addCharmConstraintsParser(s string) bundlechanges.ArchConstraint {
-	return bundleArchConstraint{
-		constraints: s,
-	}
+	return arch.ConstraintArch(cons, &b.defaultConstraints), nil
 }
 
 func verifyEndpointBindings(endpointBindings map[string]string, knownSpaceNames set.Strings) error {

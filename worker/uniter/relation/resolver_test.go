@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
@@ -17,6 +16,7 @@ import (
 	"github.com/juju/names/v4"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/uniter"
@@ -1697,11 +1697,6 @@ func (s *mockRelationResolverSuite) expectStateUnknown(id int) {
 func (s *mockRelationResolverSuite) expectState(st relation.State) {
 	exp := s.mockRelStTracker.EXPECT()
 	exp.State(st.RelationId).Return(&st, nil)
-}
-
-func (s *mockRelationResolverSuite) expectStateMaybe(st relation.State) {
-	exp := s.mockRelStTracker.EXPECT()
-	exp.State(st.RelationId).Return(&st, nil).AnyTimes()
 }
 
 func (s *mockRelationResolverSuite) expectIsPeerRelationFalse(id int) {

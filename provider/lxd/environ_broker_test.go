@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/golang/mock/gomock"
+	"github.com/canonical/lxd/shared/api"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3/arch"
-	"github.com/lxc/lxd/shared/api"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/cloudconfig/cloudinit"
@@ -41,10 +41,8 @@ func (s *environBrokerSuite) SetUpTest(c *gc.C) {
 		},
 	}
 	s.defaultProfile = &api.Profile{
-		ProfilePut: api.ProfilePut{
-			Devices: map[string]map[string]string{
-				"eth0": {},
-			},
+		Devices: map[string]map[string]string{
+			"eth0": {},
 		},
 	}
 }
@@ -238,7 +236,7 @@ func (s *environBrokerSuite) TestStartInstanceWithPlacementAvailable(c *gc.C) {
 	defer ctrl.Finish()
 	svr := lxd.NewMockServer(ctrl)
 
-	target := lxdtesting.NewMockContainerServer(ctrl)
+	target := lxdtesting.NewMockInstanceServer(ctrl)
 	tExp := target.EXPECT()
 	serverRet := &api.Server{}
 	image := &api.Image{Filename: "container-image"}
@@ -280,9 +278,9 @@ func (s *environBrokerSuite) TestStartInstanceWithPlacementAvailable(c *gc.C) {
 
 	// CreateContainerFromSpec is tested in container/lxd.
 	// we don't bother with detailed parameter assertions here.
-	tExp.CreateContainerFromImage(gomock.Any(), gomock.Any(), gomock.Any()).Return(createOp, nil)
-	tExp.UpdateContainerState(gomock.Any(), gomock.Any(), "").Return(startOp, nil)
-	tExp.GetContainer(gomock.Any()).Return(&api.Container{}, lxdtesting.ETag, nil)
+	tExp.CreateInstanceFromImage(gomock.Any(), gomock.Any(), gomock.Any()).Return(createOp, nil)
+	tExp.UpdateInstanceState(gomock.Any(), gomock.Any(), "").Return(startOp, nil)
+	tExp.GetInstance(gomock.Any()).Return(&api.Instance{Type: "container"}, lxdtesting.ETag, nil)
 
 	env := s.NewEnviron(c, svr, nil)
 

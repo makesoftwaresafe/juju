@@ -15,12 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/canonical/lxd/shared"
 	"github.com/juju/collections/set"
 	"github.com/juju/errors"
 	"github.com/juju/os/v2/series"
 	"github.com/juju/packaging/v2/manager"
 	"github.com/juju/proxy"
-	"github.com/lxc/lxd/shared"
 
 	"github.com/juju/juju/container"
 	"github.com/juju/juju/packaging"
@@ -40,7 +40,7 @@ type containerInitialiser struct {
 	lxdSnapChannel      string
 }
 
-//go:generate go run github.com/golang/mock/mockgen -package mocks -destination mocks/snap_manager_mock.go github.com/juju/juju/container/lxd SnapManager
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination mocks/snap_manager_mock.go github.com/juju/juju/container/lxd SnapManager
 
 // SnapManager defines an interface implemented by types that can query and/or
 // change the channel for installed snaps.

@@ -105,14 +105,19 @@ Examples:
     # (-- -3):
     juju scp -- -3 0:file.dat foo/0:
 
+    # Copy a file ('chunks-inspect') from localhost to /loki directory
+    # in a specific container in a juju unit running in Kubernetes:
+    juju scp --container loki chunks-inspect loki-k8s/0:/loki
+
 See also: 
 	ssh
 `
 
-func newSCPCommand(hostChecker jujussh.ReachableChecker, retryStrategy retry.CallArgs) cmd.Command {
+func newSCPCommand(hostChecker jujussh.ReachableChecker, retryStrategy retry.CallArgs, publicKeyRetryStrategy retry.CallArgs) cmd.Command {
 	c := new(scpCommand)
 	c.hostChecker = hostChecker
 	c.retryStrategy = retryStrategy
+	c.publicKeyRetryStrategy = publicKeyRetryStrategy
 	return modelcmd.Wrap(c)
 }
 
@@ -129,7 +134,8 @@ type scpCommand struct {
 
 	hostChecker jujussh.ReachableChecker
 
-	retryStrategy retry.CallArgs
+	retryStrategy          retry.CallArgs
+	publicKeyRetryStrategy retry.CallArgs
 }
 
 func (c *scpCommand) SetFlags(f *gnuflag.FlagSet) {
@@ -158,10 +164,11 @@ func (c *scpCommand) Init(args []string) (err error) {
 	} else {
 		c.provider = &c.sshMachine
 	}
-
+	c.provider.setModelType(c.modelType)
 	c.provider.setArgs(args)
 	c.provider.setHostChecker(c.hostChecker)
 	c.provider.setRetryStrategy(c.retryStrategy)
+	c.provider.setPublicKeyRetryStrategy(c.publicKeyRetryStrategy)
 	return nil
 }
 

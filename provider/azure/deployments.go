@@ -13,13 +13,16 @@ import (
 	"github.com/juju/juju/provider/azure/internal/errorutils"
 )
 
-func createDeployment(
+func (env *azureEnviron) createDeployment(
 	ctx context.ProviderCallContext,
-	client *armresources.DeploymentsClient,
 	resourceGroup string,
 	deploymentName string,
 	t armtemplates.Template,
 ) error {
+	deploy, err := env.deployClient()
+	if err != nil {
+		return errors.Trace(err)
+	}
 	templateMap, err := t.Map()
 	if err != nil {
 		return errors.Trace(err)
@@ -30,7 +33,7 @@ func createDeployment(
 			Mode:     to.Ptr(armresources.DeploymentModeIncremental),
 		},
 	}
-	poller, err := client.BeginCreateOrUpdate(
+	poller, err := deploy.BeginCreateOrUpdate(
 		ctx,
 		resourceGroup,
 		deploymentName,
@@ -39,8 +42,12 @@ func createDeployment(
 	)
 	// We only want to wait for deployments which are not shared
 	// resources, otherwise add model operations will be held up.
+	var result armresources.DeploymentsClientCreateOrUpdateResponse
 	if err == nil && deploymentName != commonDeployment {
-		_, err = poller.PollUntilDone(ctx, nil)
+		result, err = poller.PollUntilDone(ctx, nil)
+		if err == nil && result.Properties != nil && result.Properties.Error != nil {
+			err = errors.New(toValue(result.Properties.Error.Message))
+		}
 	}
 	return errorutils.HandleCredentialError(errors.Annotatef(err, "creating Azure deployment %q", deploymentName), ctx)
 }

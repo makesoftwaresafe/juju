@@ -8,7 +8,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	gomock "github.com/golang/mock/gomock"
+	gomock "go.uber.org/mock/gomock"
 	v1beta1 "k8s.io/api/admissionregistration/v1beta1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
@@ -67,6 +67,34 @@ func (m *MockAdmissionregistrationV1beta1Interface) RESTClient() rest.Interface 
 func (mr *MockAdmissionregistrationV1beta1InterfaceMockRecorder) RESTClient() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RESTClient", reflect.TypeOf((*MockAdmissionregistrationV1beta1Interface)(nil).RESTClient))
+}
+
+// ValidatingAdmissionPolicies mocks base method.
+func (m *MockAdmissionregistrationV1beta1Interface) ValidatingAdmissionPolicies() v1beta11.ValidatingAdmissionPolicyInterface {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ValidatingAdmissionPolicies")
+	ret0, _ := ret[0].(v1beta11.ValidatingAdmissionPolicyInterface)
+	return ret0
+}
+
+// ValidatingAdmissionPolicies indicates an expected call of ValidatingAdmissionPolicies.
+func (mr *MockAdmissionregistrationV1beta1InterfaceMockRecorder) ValidatingAdmissionPolicies() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidatingAdmissionPolicies", reflect.TypeOf((*MockAdmissionregistrationV1beta1Interface)(nil).ValidatingAdmissionPolicies))
+}
+
+// ValidatingAdmissionPolicyBindings mocks base method.
+func (m *MockAdmissionregistrationV1beta1Interface) ValidatingAdmissionPolicyBindings() v1beta11.ValidatingAdmissionPolicyBindingInterface {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ValidatingAdmissionPolicyBindings")
+	ret0, _ := ret[0].(v1beta11.ValidatingAdmissionPolicyBindingInterface)
+	return ret0
+}
+
+// ValidatingAdmissionPolicyBindings indicates an expected call of ValidatingAdmissionPolicyBindings.
+func (mr *MockAdmissionregistrationV1beta1InterfaceMockRecorder) ValidatingAdmissionPolicyBindings() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidatingAdmissionPolicyBindings", reflect.TypeOf((*MockAdmissionregistrationV1beta1Interface)(nil).ValidatingAdmissionPolicyBindings))
 }
 
 // ValidatingWebhookConfigurations mocks base method.

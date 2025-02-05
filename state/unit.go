@@ -296,18 +296,22 @@ func (u *Unit) SetPassword(password string) error {
 // to the value supplied. This is split out from SetPassword to allow direct
 // manipulation in tests (to check for backwards compatibility).
 func (u *Unit) setPasswordHash(passwordHash string) error {
-	ops := []txn.Op{{
-		C:      unitsC,
-		Id:     u.doc.DocID,
-		Assert: notDeadDoc,
-		Update: bson.D{{"$set", bson.D{{"passwordhash", passwordHash}}}},
-	}}
+	ops := u.setPasswordHashOps(passwordHash)
 	err := u.st.db().RunTransaction(ops)
 	if err != nil {
 		return fmt.Errorf("cannot set password of unit %q: %v", u, onAbort(err, stateerrors.ErrDead))
 	}
 	u.doc.PasswordHash = passwordHash
 	return nil
+}
+
+func (u *Unit) setPasswordHashOps(passwordHash string) []txn.Op {
+	return []txn.Op{{
+		C:      unitsC,
+		Id:     u.doc.DocID,
+		Assert: notDeadDoc,
+		Update: bson.D{{"$set", bson.D{{"passwordhash", passwordHash}}}},
+	}}
 }
 
 // PasswordValid returns whether the given password is valid
@@ -1048,7 +1052,7 @@ func (op *RemoveUnitOperation) removeOps() (ops []txn.Op, err error) {
 	// EnsureDead does not require that it already be Dying, so this is the
 	// only point at which we can safely backstop lp:1233457 and mitigate
 	// the impact of unit agent bugs that leave relation scopes occupied).
-	relations, err := applicationRelations(op.unit.st, op.unit.doc.Application)
+	relations, err := matchingRelations(op.unit.st, op.unit.doc.Application)
 	if op.FatalError(err) {
 		return nil, err
 	} else {
@@ -1119,7 +1123,7 @@ type relationPredicate func(ru *RelationUnit) (bool, error)
 
 // relations implements RelationsJoined and RelationsInScope.
 func (u *Unit) relations(predicate relationPredicate) ([]*Relation, error) {
-	candidates, err := applicationRelations(u.st, u.doc.Application)
+	candidates, err := matchingRelations(u.st, u.doc.Application)
 	if err != nil {
 		return nil, err
 	}
@@ -1458,13 +1462,8 @@ func (u *Unit) OpenedPortRanges() (UnitPortRanges, error) {
 }
 
 // CharmURL returns the charm URL this unit is currently using.
-func (u *Unit) CharmURL() (*charm.URL, error) {
-	if u.doc.CharmURL == nil {
-		return nil, nil
-	}
-
-	cURL, err := charm.ParseURL(*u.doc.CharmURL)
-	return cURL, errors.Trace(err)
+func (u *Unit) CharmURL() *string {
+	return u.doc.CharmURL
 }
 
 // SetCharmURL marks the unit as currently using the supplied charm URL.
@@ -1494,7 +1493,7 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 				return nil, stateerrors.ErrDead
 			}
 		}
-		sel := bson.D{{"_id", u.doc.DocID}, {"charmurl", curl}}
+		sel := bson.D{{"_id", u.doc.DocID}, {"charmurl", curl.String()}}
 		if count, err := units.Find(sel).Count(); err != nil {
 			return nil, errors.Trace(err)
 		} else if count == 1 {
@@ -1515,13 +1514,13 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 		}
 
 		// Set the new charm URL.
-		differentCharm := bson.D{{"charmurl", bson.D{{"$ne", curl}}}}
+		differentCharm := bson.D{{"charmurl", bson.D{{"$ne", curl.String()}}}}
 		ops := append(incOps,
 			txn.Op{
 				C:      unitsC,
 				Id:     u.doc.DocID,
 				Assert: append(notDeadDoc, differentCharm...),
-				Update: bson.D{{"$set", bson.D{{"charmurl", curl}}}},
+				Update: bson.D{{"$set", bson.D{{"charmurl", curl.String()}}}},
 			})
 
 		unitCURL := u.doc.CharmURL
@@ -1552,23 +1551,22 @@ func (u *Unit) SetCharmURL(curl *charm.URL) error {
 // charm returns the charm for the unit, or the application if the unit's charm
 // has not been set yet.
 func (u *Unit) charm() (*Charm, error) {
-	cURL, err := u.CharmURL()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	if cURL == nil {
+	cURLStr := u.CharmURL()
+	if cURLStr == nil {
 		app, err := u.Application()
 		if err != nil {
 			return nil, err
 		}
-		appCURLStr, _ := app.CharmURL()
-		cURL, err = charm.ParseURL(*appCURLStr)
-		if err != nil {
-			return nil, errors.NotValidf("application charm url")
-		}
+		cURLStr, _ = app.CharmURL()
 	}
 
+	if cURLStr == nil {
+		return nil, errors.Errorf("missing charm URL for %q", u.Name())
+	}
+	cURL, err := charm.ParseURL(*cURLStr)
+	if err != nil {
+		return nil, errors.NotValidf("charm url %q", *cURLStr)
+	}
 	ch, err := u.st.Charm(cURL)
 	return ch, errors.Annotatef(err, "getting charm for %s", u)
 }
@@ -1587,7 +1585,7 @@ func (u *Unit) assertCharmOps(ch *Charm) []txn.Op {
 		ops = append(ops, txn.Op{
 			C:      applicationsC,
 			Id:     appName,
-			Assert: bson.D{{"charmurl", ch.URL()}},
+			Assert: bson.D{{"charmurl", ch.String()}},
 		})
 	}
 	return ops

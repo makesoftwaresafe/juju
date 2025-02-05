@@ -6,10 +6,8 @@ package client_test
 import (
 	"fmt"
 	"net/url"
-	"sort"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/charmrepo/v6"
 	"github.com/juju/errors"
@@ -19,6 +17,7 @@ import (
 	jtesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version/v2"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/agent"
@@ -32,12 +31,10 @@ import (
 	"github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/controller"
 	corecharm "github.com/juju/juju/core/charm"
-	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/multiwatcher"
-	"github.com/juju/juju/core/network"
 	coreos "github.com/juju/juju/core/os"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/status"
@@ -176,93 +173,6 @@ func (s *serverSuite) TestAddMachineVariantsReadOnlyDenied(c *gc.C) {
 	c.Check(err, gc.ErrorMatches, "permission denied")
 }
 
-func (s *serverSuite) TestModelUsersInfo(c *gc.C) {
-	testAdmin := s.AdminUserTag(c)
-	owner, err := s.State.UserAccess(testAdmin, s.Model.ModelTag())
-	c.Assert(err, jc.ErrorIsNil)
-
-	localUser1 := s.makeLocalModelUser(c, "ralphdoe", "Ralph Doe")
-	localUser2 := s.makeLocalModelUser(c, "samsmith", "Sam Smith")
-	remoteUser1 := s.Factory.MakeModelUser(c, &factory.ModelUserParams{User: "bobjohns@ubuntuone", DisplayName: "Bob Johns", Access: permission.WriteAccess})
-	remoteUser2 := s.Factory.MakeModelUser(c, &factory.ModelUserParams{User: "nicshaw@idprovider", DisplayName: "Nic Shaw", Access: permission.WriteAccess})
-
-	results, err := s.client.ModelUserInfo()
-	c.Assert(err, jc.ErrorIsNil)
-	var expected params.ModelUserInfoResults
-	for _, r := range []struct {
-		user permission.UserAccess
-		info *params.ModelUserInfo
-	}{
-		{
-			owner,
-			&params.ModelUserInfo{
-				UserName:    owner.UserName,
-				DisplayName: owner.DisplayName,
-				Access:      "admin",
-			},
-		}, {
-			localUser1,
-			&params.ModelUserInfo{
-				UserName:    "ralphdoe",
-				DisplayName: "Ralph Doe",
-				Access:      "admin",
-			},
-		}, {
-			localUser2,
-			&params.ModelUserInfo{
-				UserName:    "samsmith",
-				DisplayName: "Sam Smith",
-				Access:      "admin",
-			},
-		}, {
-			remoteUser1,
-			&params.ModelUserInfo{
-				UserName:    "bobjohns@ubuntuone",
-				DisplayName: "Bob Johns",
-				Access:      "write",
-			},
-		}, {
-			remoteUser2,
-			&params.ModelUserInfo{
-				UserName:    "nicshaw@idprovider",
-				DisplayName: "Nic Shaw",
-				Access:      "write",
-			},
-		},
-	} {
-		r.info.LastConnection = lastConnPointer(c, r.user, s.State)
-		expected.Results = append(expected.Results, params.ModelUserInfoResult{Result: r.info})
-	}
-
-	sort.Sort(ByUserName(expected.Results))
-	sort.Sort(ByUserName(results.Results))
-	c.Assert(results, jc.DeepEquals, expected)
-}
-
-func lastConnPointer(c *gc.C, modelUser permission.UserAccess, st *state.State) *time.Time {
-	model, err := st.Model()
-	if err != nil {
-		c.Fatal(err)
-	}
-
-	lastConn, err := model.LastModelConnection(modelUser.UserTag)
-	if err != nil {
-		if state.IsNeverConnectedError(err) {
-			return nil
-		}
-		c.Fatal(err)
-	}
-	return &lastConn
-}
-
-// ByUserName implements sort.Interface for []params.ModelUserInfoResult based on
-// the UserName field.
-type ByUserName []params.ModelUserInfoResult
-
-func (a ByUserName) Len() int           { return len(a) }
-func (a ByUserName) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByUserName) Less(i, j int) bool { return a[i].Result.UserName < a[j].Result.UserName }
-
 func (s *serverSuite) makeLocalModelUser(c *gc.C, username, displayname string) permission.UserAccess {
 	// factory.MakeUser will create an ModelUser for a local user by default.
 	user := s.Factory.MakeUser(c, &factory.UserParams{Name: username, DisplayName: displayname})
@@ -300,12 +210,15 @@ func (s *serverSuite) TestSetModelAgentVersionOldModels(c *gc.C) {
 	err := s.State.SetModelAgentVersion(version.MustParse("2.8.0"), nil, false)
 	c.Assert(err, jc.ErrorIsNil)
 	args := params.SetModelAgentVersion{
-		Version: version.MustParse(fmt.Sprintf("%d.0.0", jujuversion.Current.Major+1)),
+		Version: version.MustParse("3.0.0"),
 	}
 	err = s.client.SetModelAgentVersion(args)
-	c.Assert(err, gc.ErrorMatches, `
-these models must first be upgraded to at least 2.8.9 before upgrading the controller:
- -admin/controller`[1:])
+	// TODO: (hml) 18-10-2022
+	// Change back when upgrades from 2.9 to 3.0 enabled again.
+	//	c.Assert(err, gc.ErrorMatches, `
+	//these models must first be upgraded to at least 2.9.35 before upgrading the controller:
+	// -admin/controller`[1:])
+	c.Assert(err, gc.ErrorMatches, `upgrade to \"3.0.0\" is not supported from \"2.8.0\"`)
 }
 
 func (s *serverSuite) TestSetModelAgentVersionForced(c *gc.C) {
@@ -687,7 +600,7 @@ func (s *clientSuite) TestClientStatus(c *gc.C) {
 	loggo.GetLogger("juju.core.cache").SetLogLevel(loggo.TRACE)
 	loggo.GetLogger("juju.state.allwatcher").SetLogLevel(loggo.TRACE)
 	s.setUpScenario(c)
-	status, err := apiclient.NewClient(s.APIState).Status(nil)
+	status, err := apiclient.NewClient(s.APIState, coretesting.NoopLogger{}).Status(nil)
 	clearSinceTimes(status)
 	clearContollerTimestamp(status)
 	c.Assert(err, jc.ErrorIsNil)
@@ -696,34 +609,10 @@ func (s *clientSuite) TestClientStatus(c *gc.C) {
 
 func (s *clientSuite) TestClientStatusControllerTimestamp(c *gc.C) {
 	s.setUpScenario(c)
-	status, err := apiclient.NewClient(s.APIState).Status(nil)
+	status, err := apiclient.NewClient(s.APIState, coretesting.NoopLogger{}).Status(nil)
 	clearSinceTimes(status)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(status.ControllerTimestamp, gc.NotNil)
-}
-
-func assertLife(c *gc.C, entity state.Living, life state.Life) {
-	err := entity.Refresh()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(entity.Life(), gc.Equals, life)
-}
-
-func (s *clientSuite) setupDestroyMachinesTest(c *gc.C) (*state.Machine, *state.Machine, *state.Machine, *state.Unit) {
-	m0, err := s.State.AddMachine("quantal", state.JobManageModel)
-	c.Assert(err, jc.ErrorIsNil)
-	m1, err := s.State.AddMachine("quantal", state.JobHostUnits)
-	c.Assert(err, jc.ErrorIsNil)
-	m2, err := s.State.AddMachine("quantal", state.JobHostUnits)
-	c.Assert(err, jc.ErrorIsNil)
-
-	sch := s.AddTestingCharm(c, "wordpress")
-	wordpress := s.AddTestingApplication(c, "wordpress", sch)
-	u, err := wordpress.AddUnit(state.AddUnitParams{})
-	c.Assert(err, jc.ErrorIsNil)
-	err = u.AssignToMachine(m1)
-	c.Assert(err, jc.ErrorIsNil)
-
-	return m0, m1, m2, u
 }
 
 func (s *clientSuite) testClientUnitResolved(c *gc.C, retry bool, expectedResolvedMode state.ResolvedMode) {
@@ -740,7 +629,7 @@ func (s *clientSuite) testClientUnitResolved(c *gc.C, retry bool, expectedResolv
 	err = u.SetAgentStatus(sInfo)
 	c.Assert(err, jc.ErrorIsNil)
 	// Code under test:
-	err = apiclient.NewClient(s.APIState).Resolved("wordpress/0", retry)
+	err = apiclient.NewClient(s.APIState, coretesting.NoopLogger{}).Resolved("wordpress/0", retry)
 	c.Assert(err, jc.ErrorIsNil)
 	// Freshen the unit's state.
 	err = u.Refresh()
@@ -775,7 +664,7 @@ func (s *clientSuite) setupResolved(c *gc.C) *state.Unit {
 }
 
 func (s *clientSuite) assertResolved(c *gc.C, u *state.Unit) {
-	err := apiclient.NewClient(s.APIState).Resolved("wordpress/0", true)
+	err := apiclient.NewClient(s.APIState, coretesting.NoopLogger{}).Resolved("wordpress/0", true)
 	c.Assert(err, jc.ErrorIsNil)
 	// Freshen the unit's state.
 	err = u.Refresh()
@@ -787,7 +676,7 @@ func (s *clientSuite) assertResolved(c *gc.C, u *state.Unit) {
 }
 
 func (s *clientSuite) assertResolvedBlocked(c *gc.C, u *state.Unit, msg string) {
-	err := apiclient.NewClient(s.APIState).Resolved("wordpress/0", false)
+	err := apiclient.NewClient(s.APIState, coretesting.NoopLogger{}).Resolved("wordpress/0", false)
 	s.AssertBlocked(c, err, msg)
 }
 
@@ -885,7 +774,7 @@ func (s *clientSuite) TestClientWatchAllReadPermission(c *gc.C) {
 		Password: "ro-password",
 	})
 	c.Assert(err, jc.ErrorIsNil)
-	roClient := apiclient.NewClient(s.OpenAPIAs(c, user.UserTag(), "ro-password"))
+	roClient := apiclient.NewClient(s.OpenAPIAs(c, user.UserTag(), "ro-password"), coretesting.NoopLogger{})
 	defer roClient.Close()
 
 	watcher, err := roClient.WatchAll()
@@ -919,6 +808,7 @@ func (s *clientSuite) TestClientWatchAllReadPermission(c *gc.C) {
 			},
 			Life:                    life.Alive,
 			Series:                  "quantal",
+			Base:                    "ubuntu@12.10",
 			Jobs:                    []model.MachineJob{state.JobManageModel.ToParams()},
 			Addresses:               []params.Address{},
 			HardwareCharacteristics: &instance.HardwareCharacteristics{},
@@ -984,7 +874,7 @@ func (s *clientSuite) TestClientWatchAllAdminPermission(c *gc.C) {
 	})
 	c.Assert(err, jc.ErrorIsNil)
 
-	watcher, err := apiclient.NewClient(s.APIState).WatchAll()
+	watcher, err := apiclient.NewClient(s.APIState, coretesting.NoopLogger{}).WatchAll()
 	c.Assert(err, jc.ErrorIsNil)
 	defer func() {
 		err := watcher.Stop()
@@ -1015,6 +905,7 @@ func (s *clientSuite) TestClientWatchAllAdminPermission(c *gc.C) {
 			},
 			Life:                    life.Alive,
 			Series:                  "quantal",
+			Base:                    "ubuntu@12.10",
 			Jobs:                    []model.MachineJob{state.JobManageModel.ToParams()},
 			Addresses:               []params.Address{},
 			HardwareCharacteristics: &instance.HardwareCharacteristics{},
@@ -1028,7 +919,6 @@ func (s *clientSuite) TestClientWatchAllAdminPermission(c *gc.C) {
 		equal, _ := jc.DeepEqual(got, &params.RemoteApplicationUpdate{
 			Name:      "remote-db2",
 			ModelUUID: s.State.ModelUUID(),
-			OfferUUID: "offer-uuid",
 			OfferURL:  "admin/prod.db2",
 			Life:      "alive",
 			Status: params.StatusInfo{
@@ -1074,216 +964,6 @@ func (s *clientSuite) TestClientWatchAllAdminPermission(c *gc.C) {
 			c.Fatal("timed out waiting for watcher deltas to be ready")
 		}
 	}
-}
-
-func (s *clientSuite) TestClientSetModelConstraints(c *gc.C) {
-	// Set constraints for the model.
-	cons, err := constraints.Parse("mem=4096", "cores=2")
-	c.Assert(err, jc.ErrorIsNil)
-	err = apiclient.NewClient(s.APIState).SetModelConstraints(cons)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Ensure the constraints have been correctly updated.
-	obtained, err := s.State.ModelConstraints()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(obtained, gc.DeepEquals, cons)
-}
-
-func (s *clientSuite) assertSetModelConstraints(c *gc.C) {
-	// Set constraints for the model.
-	cons, err := constraints.Parse("mem=4096", "cores=2")
-	c.Assert(err, jc.ErrorIsNil)
-	err = apiclient.NewClient(s.APIState).SetModelConstraints(cons)
-	c.Assert(err, jc.ErrorIsNil)
-	// Ensure the constraints have been correctly updated.
-	obtained, err := s.State.ModelConstraints()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(obtained, gc.DeepEquals, cons)
-}
-
-func (s *clientSuite) assertSetModelConstraintsBlocked(c *gc.C, msg string) {
-	// Set constraints for the model.
-	cons, err := constraints.Parse("mem=4096", "cores=2")
-	c.Assert(err, jc.ErrorIsNil)
-	err = apiclient.NewClient(s.APIState).SetModelConstraints(cons)
-	s.AssertBlocked(c, err, msg)
-}
-
-func (s *clientSuite) TestBlockDestroyClientSetModelConstraints(c *gc.C) {
-	s.BlockDestroyModel(c, "TestBlockDestroyClientSetModelConstraints")
-	s.assertSetModelConstraints(c)
-}
-
-func (s *clientSuite) TestBlockRemoveClientSetModelConstraints(c *gc.C) {
-	s.BlockRemoveObject(c, "TestBlockRemoveClientSetModelConstraints")
-	s.assertSetModelConstraints(c)
-}
-
-func (s *clientSuite) TestBlockChangesClientSetModelConstraints(c *gc.C) {
-	s.BlockAllChanges(c, "TestBlockChangesClientSetModelConstraints")
-	s.assertSetModelConstraintsBlocked(c, "TestBlockChangesClientSetModelConstraints")
-}
-
-func (s *clientSuite) TestClientGetModelConstraints(c *gc.C) {
-	// Set constraints for the model.
-	cons, err := constraints.Parse("mem=4096", "cores=2")
-	c.Assert(err, jc.ErrorIsNil)
-	err = s.State.SetModelConstraints(cons)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Check we can get the constraints.
-	obtained, err := apiclient.NewClient(s.APIState).GetModelConstraints()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(obtained, gc.DeepEquals, cons)
-}
-
-func (s *clientRepoSuite) TestResolveCharm(c *gc.C) {
-	resolveCharmTests := []struct {
-		about      string
-		url        string
-		resolved   string
-		parseErr   string
-		resolveErr string
-	}{{
-		about:    "wordpress resolved",
-		url:      "cs:wordpress",
-		resolved: "cs:trusty/wordpress",
-	}, {
-		about:    "mysql resolved",
-		url:      "cs:mysql",
-		resolved: "cs:precise/mysql",
-	}, {
-		about:    "fully qualified char reference",
-		url:      "cs:utopic/riak-5",
-		resolved: "cs:utopic/riak-5",
-	}, {
-		about:    "charm with series and no revision",
-		url:      "cs:precise/wordpress",
-		resolved: "cs:precise/wordpress",
-	}, {
-		about:      "fully qualified reference not found",
-		url:        "cs:utopic/riak-42",
-		resolveErr: `cannot resolve URL "cs:utopic/riak-42": charm not found`,
-	}, {
-		about:      "reference not found",
-		url:        "cs:no-such",
-		resolveErr: `cannot resolve URL "cs:no-such": charm or bundle not found`,
-	}, {
-		about: "invalid charm name",
-		url:   "cs:",
-		// go-1.9 replaces 'cs:' with 'cs://', but not go-1.10
-		parseErr: `cannot parse URL "cs:(\/\/)?": name "" not valid`,
-	}, {
-		about:      "local charm",
-		url:        "local:wordpress",
-		resolveErr: `only charm store charm references are supported, with cs: schema`,
-	}}
-
-	// Add some charms to be resolved later.
-	for _, url := range []string{
-		"cs:precise/wordpress-1",
-		"cs:trusty/wordpress-2",
-		"cs:precise/mysql-3",
-		"cs:trusty/riak-4",
-		"cs:utopic/riak-5",
-	} {
-		s.UploadCharm(url)
-	}
-
-	// Run the tests.
-	for i, test := range resolveCharmTests {
-		c.Logf("test %d: %s", i, test.about)
-
-		client := apiclient.NewClient(s.APIState)
-		ref, err := charm.ParseURL(test.url)
-		if test.parseErr == "" {
-			if c.Check(err, jc.ErrorIsNil) == false {
-				continue
-			}
-		} else {
-			if c.Check(err, gc.NotNil) == false {
-				continue
-			}
-			c.Check(err, gc.ErrorMatches, test.parseErr)
-			continue
-		}
-
-		curl, err := client.ResolveCharm(ref)
-		if test.resolveErr == "" {
-			if c.Check(err, jc.ErrorIsNil) == false {
-				continue
-			}
-			c.Check(curl.String(), gc.Equals, test.resolved)
-			continue
-		}
-		c.Check(err, gc.ErrorMatches, test.resolveErr)
-		c.Check(curl, gc.IsNil)
-	}
-}
-
-func (s *clientSuite) TestAPIHostPorts(c *gc.C) {
-	server1Addresses := []network.SpaceAddress{
-		network.NewSpaceAddress("server-1", network.WithScope(network.ScopePublic)),
-		network.NewSpaceAddress("10.0.0.1", network.WithScope(network.ScopeCloudLocal)),
-	}
-	server1Addresses[1].SpaceID = s.mgmtSpace.Id()
-
-	server2Addresses := []network.SpaceAddress{
-		network.NewSpaceAddress("::1", network.WithScope(network.ScopeMachineLocal)),
-	}
-	stateAPIHostPorts := []network.SpaceHostPorts{
-		network.SpaceAddressesWithPort(server1Addresses, 123),
-		network.SpaceAddressesWithPort(server2Addresses, 456),
-	}
-
-	err := s.State.SetAPIHostPorts(stateAPIHostPorts)
-	c.Assert(err, jc.ErrorIsNil)
-
-	// Ensure that address filtering by management space occurred.
-	systemState, err := s.StatePool.SystemState()
-	c.Assert(err, jc.ErrorIsNil)
-	agentHostPorts, err := systemState.APIHostPortsForAgents()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(agentHostPorts, gc.Not(gc.DeepEquals), stateAPIHostPorts)
-
-	apiHostPorts, err := apiclient.NewClient(s.APIState).APIHostPorts()
-	c.Assert(err, jc.ErrorIsNil)
-
-	// We need to compare SpaceHostPorts with MachineHostPorts.
-	// They should be congruent.
-	c.Assert(len(apiHostPorts), gc.Equals, len(stateAPIHostPorts))
-	for i, apiHPs := range apiHostPorts {
-		c.Assert(len(apiHPs), gc.Equals, len(stateAPIHostPorts[i]))
-		for j, apiHP := range apiHPs {
-			c.Assert(apiHP.MachineAddress, gc.DeepEquals, stateAPIHostPorts[i][j].MachineAddress)
-			c.Assert(apiHP.NetPort, gc.Equals, stateAPIHostPorts[i][j].NetPort)
-		}
-	}
-
-}
-
-func (s *clientSuite) TestClientAgentVersion(c *gc.C) {
-	current := version.MustParse("2.0.0")
-	s.PatchValue(&jujuversion.Current, current)
-	result, err := apiclient.NewClient(s.APIState).AgentVersion()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(result, gc.Equals, current)
-}
-
-func (s *clientSuite) assertBlockedErrorAndLiveliness(
-	c *gc.C,
-	err error,
-	msg string,
-	living1 state.Living,
-	living2 state.Living,
-	living3 state.Living,
-	living4 state.Living,
-) {
-	s.AssertBlocked(c, err, msg)
-	assertLife(c, living1, state.Alive)
-	assertLife(c, living2, state.Alive)
-	assertLife(c, living3, state.Alive)
-	assertLife(c, living4, state.Alive)
 }
 
 func (s *clientSuite) AssertBlocked(c *gc.C, err error, msg string) {

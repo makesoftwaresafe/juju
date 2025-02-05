@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juju/juju/testing"
-
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/worker/v3/workertest"
 	gc "gopkg.in/check.v1"
@@ -18,6 +16,7 @@ import (
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/status"
+	"github.com/juju/juju/testing"
 )
 
 type machineSuite struct {
@@ -278,6 +277,7 @@ var machineChange = cache.MachineChange{
 		"another": "foo",
 	},
 	Series:                   "bionic",
+	Base:                     "ubuntu@18.04",
 	SupportedContainers:      []instance.ContainerType{},
 	SupportedContainersKnown: false,
 	HasVote:                  true,

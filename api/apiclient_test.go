@@ -686,7 +686,7 @@ func (s *apiclientSuite) TestOpenWithNoCACert(c *gc.C) {
 		Timeout:    2 * time.Second,
 		RetryDelay: 200 * time.Millisecond,
 	})
-	c.Assert(err, gc.ErrorMatches, `unable to connect to API: x509: certificate signed by unknown authority`)
+	c.Assert(err, gc.ErrorMatches, `unable to connect to API:.*x509: certificate signed by unknown authority`)
 }
 
 func (s *apiclientSuite) TestOpenWithRedirect(c *gc.C) {
@@ -1185,24 +1185,6 @@ func (s *apiclientSuite) TestLoginCapturesCLIArgs(c *gc.C) {
 	c.Assert(call.Args, gc.HasLen, 2)
 	request := call.Args[1].(*params.LoginRequest)
 	c.Assert(request.CLIArgs, gc.Equals, `this is "the test" command`)
-}
-
-func (s *apiclientSuite) TestLoginIncompatibleClient(c *gc.C) {
-	clock := &fakeClock{}
-	conn := api.NewTestingState(api.TestingStateParams{
-		RPCConnection: newRPCConnection(&rpc.RequestError{
-			Code: "incompatible client",
-			Info: map[string]interface{}{"server-version": "99.0.0"},
-		}),
-		Clock: clock,
-	})
-
-	err := conn.APICall("facade", 1, "id", "method", nil, nil)
-	c.Check(clock.waits, gc.HasLen, 0)
-	c.Assert(err, gc.ErrorMatches, fmt.Sprintf(
-		"juju client with major version %d used with a controller having major version %d not supported\\n.*",
-		jujuversion.Current.Major, 99,
-	))
 }
 
 type clientDNSNameSuite struct {

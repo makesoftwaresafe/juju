@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/charm/v8"
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/uniter"
@@ -600,9 +600,7 @@ func (s *syncScopesSuite) TestSynchronizeScopesSeenNotDying(c *gc.C) {
 	c.Assert(rst.RemoteApplication(1), gc.Equals, "mysql")
 }
 
-//
 // Relationer
-//
 func (s *baseStateTrackerSuite) expectRelationerPrepareHook() {
 	s.relationer.EXPECT().PrepareHook(gomock.Any()).Return("testing", nil)
 }
@@ -627,24 +625,16 @@ func (s *baseStateTrackerSuite) expectRelationerSetDying() {
 	s.relationer.EXPECT().SetDying().Return(nil)
 }
 
-func (s *baseStateTrackerSuite) expectRelationerIsImplicitFalse() {
-	s.relationer.EXPECT().IsImplicit().Return(false)
-}
-
 func (s *baseStateTrackerSuite) expectRelationerIsImplicit(imp bool) {
 	s.relationer.EXPECT().IsImplicit().Return(imp)
 }
 
-//
 // RelationUnit
-//
 func (s *baseStateTrackerSuite) expectRelationUnitRelation() {
 	s.relationUnit.EXPECT().Relation().Return(s.relation)
 }
 
-//
 // Relation
-//
 func (s *baseStateTrackerSuite) expectRelationUpdateSuspended(suspend bool) {
 	s.relation.EXPECT().UpdateSuspended(suspend)
 }
@@ -673,9 +663,7 @@ func (s *syncScopesSuite) expectString() {
 	s.relation.EXPECT().String().Return("test me").AnyTimes()
 }
 
-//
 // StateManager
-//
 func (s *baseStateTrackerSuite) expectStateMgrRemoveRelation(id int) {
 	s.stateMgr.EXPECT().RemoveRelation(id, s.state, map[string]bool{}).Return(nil)
 }
@@ -688,9 +676,7 @@ func (s *baseStateTrackerSuite) expectStateMgrRelationFound(id int) {
 	s.stateMgr.EXPECT().RelationFound(id).Return(true)
 }
 
-//
 // State
-//
 func (s *baseStateTrackerSuite) expectRelation(relTag names.RelationTag) {
 	s.state.EXPECT().Relation(relTag).Return(s.relation, nil)
 }
@@ -699,9 +685,7 @@ func (s *syncScopesSuite) expectRelationById(id int) {
 	s.state.EXPECT().RelationById(id).Return(s.relation, nil)
 }
 
-//
 // Unit
-//
 func (s *baseStateTrackerSuite) expectUnitTag() {
 	s.unit.EXPECT().Tag().Return(s.unitTag)
 }

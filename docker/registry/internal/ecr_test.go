@@ -13,10 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
-	"github.com/golang/mock/gomock"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/version/v2"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/docker"
@@ -67,7 +67,7 @@ func (s *elasticContainerRegistrySuite) getRegistry(c *gc.C, ensureAsserts func(
 						{AuthorizationToken: aws.String(`xxxx===`)},
 					},
 				}, nil,
-			)
+			).AnyTimes()
 		}
 	}
 
@@ -153,7 +153,7 @@ func (s *elasticContainerRegistrySuite) TestShouldRefreshAuthAuthTokenMissing(c 
 	}
 	setImageRepoDetails(c, reg, repoDetails)
 	shouldRefreshAuth, tick := reg.ShouldRefreshAuth()
-	c.Assert(tick, gc.IsNil)
+	c.Assert(tick, gc.Equals, time.Duration(0))
 	c.Assert(shouldRefreshAuth, jc.IsTrue)
 }
 
@@ -172,7 +172,7 @@ func (s *elasticContainerRegistrySuite) TestShouldRefreshNoExpireTime(c *gc.C) {
 	repoDetails.Auth = docker.NewToken(`xxx===`)
 	setImageRepoDetails(c, reg, repoDetails)
 	shouldRefreshAuth, tick := reg.ShouldRefreshAuth()
-	c.Assert(tick, gc.IsNil)
+	c.Assert(tick, gc.Equals, time.Duration(0))
 	c.Assert(shouldRefreshAuth, jc.IsTrue)
 }
 
@@ -196,7 +196,7 @@ func (s *elasticContainerRegistrySuite) TestShouldRefreshTokenExpired(c *gc.C) {
 	}
 	setImageRepoDetails(c, reg, repoDetails)
 	shouldRefreshAuth, tick := reg.ShouldRefreshAuth()
-	c.Assert(tick, gc.IsNil)
+	c.Assert(tick, gc.Equals, time.Duration(0))
 	c.Assert(shouldRefreshAuth, jc.IsTrue)
 
 	// // already expired.
@@ -207,7 +207,7 @@ func (s *elasticContainerRegistrySuite) TestShouldRefreshTokenExpired(c *gc.C) {
 	}
 	setImageRepoDetails(c, reg, repoDetails)
 	shouldRefreshAuth, tick = reg.ShouldRefreshAuth()
-	c.Assert(tick, gc.IsNil)
+	c.Assert(tick, gc.Equals, time.Duration(0))
 	c.Assert(shouldRefreshAuth, jc.IsTrue)
 }
 

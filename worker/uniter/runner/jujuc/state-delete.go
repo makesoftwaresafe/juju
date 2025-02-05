@@ -5,6 +5,7 @@ package jujuc
 
 import (
 	"github.com/juju/cmd/v3"
+
 	jujucmd "github.com/juju/juju/cmd"
 )
 
@@ -13,7 +14,6 @@ type StateDeleteCommand struct {
 	cmd.CommandBase
 	ctx Context
 	Key string // The key to delete
-	out cmd.Output
 }
 
 // NewStateDeleteCommand returns a state-delete command.

@@ -275,6 +275,8 @@ const (
 	// The lack of a mode means it will default into compatibility mode.
 	//
 	//  - strict mode ensures that we handle any fallbacks as errors.
+	//  - requires-prompts mode has no effect and is only supported for
+	//    forwards compatibility
 	ModeKey = "mode"
 
 	//
@@ -297,6 +299,10 @@ const (
 	// LoggingOutputKey is a key for determining the destination of output for
 	// logging.
 	LoggingOutputKey = "logging-output"
+
+	// DefaultSeriesKey is a key for determining the series a model should
+	// explicitly use for charms unless otherwise provided.
+	DefaultSeriesKey = "default-series"
 )
 
 // ParseHarvestMode parses description of harvesting method and
@@ -416,8 +422,8 @@ const (
 // "ca-cert" and "ca-private-key" values.  If not specified, CA details
 // will be read from:
 //
-//     ~/.local/share/juju/<name>-cert.pem
-//     ~/.local/share/juju/<name>-private-key.pem
+//	~/.local/share/juju/<name>-cert.pem
+//	~/.local/share/juju/<name>-private-key.pem
 //
 // if $XDG_DATA_HOME is defined it will be used instead of ~/.local/share
 func New(withDefaults Defaulting, attrs map[string]interface{}) (*Config, error) {
@@ -468,6 +474,9 @@ const (
 
 	// DefaultActionResultsSize is the default size of the action results.
 	DefaultActionResultsSize = "5G"
+
+	// DefaultLxdSnapChannel is the default lxd snap channel to install on host vms.
+	DefaultLxdSnapChannel = "5.0/stable"
 )
 
 var defaultConfigValues = map[string]interface{}{
@@ -498,7 +507,7 @@ var defaultConfigValues = map[string]interface{}{
 	NetBondReconfigureDelayKey: 17,
 	ContainerNetworkingMethod:  "",
 
-	"default-series":                jujuversion.DefaultSupportedLTS(),
+	DefaultSeriesKey:                "",
 	ProvisionerHarvestModeKey:       HarvestDestroyed.String(),
 	NumProvisionWorkersKey:          16,
 	NumContainerProvisionWorkersKey: 4,
@@ -518,7 +527,7 @@ var defaultConfigValues = map[string]interface{}{
 	CloudInitUserDataKey:            "",
 	ContainerInheritPropertiesKey:   "",
 	BackupDirKey:                    "",
-	LXDSnapChannel:                  "latest/stable",
+	LXDSnapChannel:                  DefaultLxdSnapChannel,
 
 	CharmHubURLKey: charmhub.CharmHubServerURL,
 
@@ -807,6 +816,14 @@ func Validate(cfg, old *Config) error {
 		return errors.Trace(err)
 	}
 
+	if err := cfg.validateNumProvisionWorkers(); err != nil {
+		return errors.Trace(err)
+	}
+
+	if err := cfg.validateNumContainerProvisionWorkers(); err != nil {
+		return errors.Trace(err)
+	}
+
 	if old != nil {
 		// Check the immutable config values.  These can't change
 		for _, attr := range immutableAttributes {
@@ -935,10 +952,10 @@ func (c *Config) DefaultSpace() string {
 	return c.asString(DefaultSpace)
 }
 
-// DefaultSeries returns the configured default Ubuntu series for the model,
+// DefaultSeriesKey returns the configured default Ubuntu series for the model,
 // and whether the default series was explicitly configured on the environment.
 func (c *Config) DefaultSeries() (string, bool) {
-	s, ok := c.defined["default-series"]
+	s, ok := c.defined[DefaultSeriesKey]
 	if !ok {
 		return "", false
 	}
@@ -1326,11 +1343,42 @@ func (c *Config) NumProvisionWorkers() int {
 	return value
 }
 
+const (
+	MaxNumProvisionWorkers          = 100
+	MaxNumContainerProvisionWorkers = 25
+)
+
+// validateNumProvisionWorkers ensures the number cannot be set to
+// more than 100.
+// TODO: (hml) 26-Feb-2024
+// Once we can better link the controller config and the model config,
+// allow the max value to be set in the controller config.
+func (c *Config) validateNumProvisionWorkers() error {
+	value, ok := c.defined[NumProvisionWorkersKey].(int)
+	if ok && value > MaxNumProvisionWorkers {
+		return errors.Errorf("%s: must be less than %d", NumProvisionWorkersKey, MaxNumProvisionWorkers)
+	}
+	return nil
+}
+
 // NumContainerProvisionWorkers returns the number of container provisioner
 // workers to use.
 func (c *Config) NumContainerProvisionWorkers() int {
 	value, _ := c.defined[NumContainerProvisionWorkersKey].(int)
 	return value
+}
+
+// validateNumContainerProvisionWorkers ensures the number cannot be set to
+// more than 25.
+// TODO: (hml) 26-Feb-2024
+// Once we can better link the controller config and the model config,
+// allow the max value to be set in the controller config.
+func (c *Config) validateNumContainerProvisionWorkers() error {
+	value, ok := c.defined[NumContainerProvisionWorkersKey].(int)
+	if ok && value > MaxNumContainerProvisionWorkers {
+		return errors.Errorf("%s: must be less than %d", NumContainerProvisionWorkersKey, MaxNumContainerProvisionWorkers)
+	}
+	return nil
 }
 
 // ImageStream returns the simplestreams stream
@@ -1346,7 +1394,7 @@ func (c *Config) ImageStream() string {
 
 // AgentStream returns the simplestreams stream
 // used to identify which tools to use when
-// when bootstrapping or upgrading an environment.
+// bootstrapping or upgrading an environment.
 func (c *Config) AgentStream() string {
 	v, _ := c.defined[AgentStreamKey].(string)
 	if v != "" {
@@ -1367,7 +1415,7 @@ func (c *Config) ContainerImageStream() string {
 
 // GUIStream returns the simplestreams stream
 // used to identify which gui to use when
-// when fetching a gui tarball.
+// fetching a gui tarball.
 func (c *Config) GUIStream() string {
 	v, _ := c.defined[GUIStreamKey].(string)
 	if v != "" {
@@ -1397,8 +1445,9 @@ func (c *Config) validateCharmHubURL() error {
 }
 
 // Mode returns the mode type for the configuration.
-// Only two modes exist at the moment (strict or ""). Empty string
-// implies compatible mode.
+// Only three modes are supported at the moment (requires-prompts, strict or "").
+// Empty string implies compatible mode.
+// "requires-prompts" has no effect and is only supported for forwards compatibility.
 func (c *Config) Mode() ([]string, bool) {
 	modes, ok := c.defined[ModeKey]
 	if !ok {
@@ -1425,6 +1474,7 @@ func (c *Config) validateMode() error {
 	for _, mode := range modes {
 		switch strings.TrimSpace(mode) {
 		case "strict":
+		case "requires-prompts":
 		default:
 			return errors.NotValidf("mode %q", mode)
 		}
@@ -1725,7 +1775,7 @@ var alwaysOptional = schema.Defaults{
 	AgentMetadataURLKey:             schema.Omit,
 	ContainerImageStreamKey:         schema.Omit,
 	ContainerImageMetadataURLKey:    schema.Omit,
-	"default-series":                schema.Omit,
+	DefaultSeriesKey:                schema.Omit,
 	"development":                   schema.Omit,
 	"ssl-hostname-verification":     schema.Omit,
 	"proxy-ssh":                     schema.Omit,
@@ -1957,8 +2007,8 @@ var configSchema = environschema.Fields{
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},
-	"default-series": {
-		Description: "The default series of Ubuntu to use for deploying charms",
+	DefaultSeriesKey: {
+		Description: "The default series of Ubuntu to use for deploying charms, will act like --series when deploying charms",
 		Type:        environschema.Tstring,
 		Group:       environschema.EnvironGroup,
 	},

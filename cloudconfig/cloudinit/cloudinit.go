@@ -8,11 +8,12 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
-	jujupackaging "github.com/juju/juju/packaging"
 	"github.com/juju/packaging/v2/commands"
 	"github.com/juju/packaging/v2/config"
 	"github.com/juju/utils/v3/shell"
 	"github.com/juju/utils/v3/ssh"
+
+	jujupackaging "github.com/juju/juju/packaging"
 )
 
 // cloudConfig represents a set of cloud-init configuration options.
@@ -80,6 +81,16 @@ type cloudConfig struct {
 	// update_etc_hosts
 	// update_hostname
 	attrs map[string]interface{}
+
+	// omitNetplanHWAddrMatch if true, causes Netplan to be rendered without
+	// a stanza that matches by MAC address in order to apply configuration to
+	// a device.
+	// This will be recruited for LXD, where we have observed 22.04 containers
+	// being assigned a different MAC to the one configured.
+	// For these cases we fall back to the default match by ID (name).
+	// MAC address matching is still required by KVM where devices are assigned
+	// different names by the kernel to those we configured.
+	omitNetplanHWAddrMatch bool
 }
 
 // getPackagingConfigurer is defined on the AdvancedPackagingConfig interface.
@@ -131,9 +142,9 @@ func (cfg *cloudConfig) AddUser(user *User) {
 		newUser["shell"] = user.Shell
 	}
 	if user.SSHAuthorizedKeys != "" {
-		newUser["ssh-authorized-keys"] = annotateKeys(user.SSHAuthorizedKeys)
+		newUser["ssh_authorized_keys"] = annotateKeys(user.SSHAuthorizedKeys)
 	}
-	if user.Sudo != nil {
+	if user.Sudo != "" {
 		newUser["sudo"] = user.Sudo
 	}
 	cfg.SetAttr("users", append(users, newUser))

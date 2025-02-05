@@ -6,9 +6,10 @@
 package raftlease
 
 import (
-	"github.com/golang/mock/gomock"
+	"github.com/juju/errors"
 	"github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/base/mocks"
@@ -77,9 +78,10 @@ func (s *RaftLeaseSuite) TestApplyLeaseNotTheLeader(c *gc.C) {
 		Lease:     "do it",
 	})
 	c.Assert(err, gc.ErrorMatches, `not currently the leader, try "1"`)
-	c.Assert(apiservererrors.IsNotLeaderError(err), jc.IsTrue)
-	c.Assert(err.(*apiservererrors.NotLeaderError).ServerAddress(), gc.DeepEquals, "10.0.0.8")
-	c.Assert(err.(*apiservererrors.NotLeaderError).ServerID(), gc.DeepEquals, "1")
+	var notLeader *apiservererrors.NotLeaderError
+	c.Assert(errors.As(err, &notLeader), jc.IsTrue)
+	c.Assert(notLeader.ServerAddress(), gc.DeepEquals, "10.0.0.8")
+	c.Assert(notLeader.ServerID(), gc.DeepEquals, "1")
 }
 
 func (s *RaftLeaseSuite) TestApplyLeaseNotNotTheLeaderError(c *gc.C) {
@@ -107,7 +109,7 @@ func (s *RaftLeaseSuite) TestApplyLeaseNotNotTheLeaderError(c *gc.C) {
 		Lease:     "do it",
 	})
 	c.Assert(err, gc.ErrorMatches, "bad request")
-	c.Assert(apiservererrors.IsNotLeaderError(err), jc.IsFalse)
+	c.Assert(errors.HasType[*apiservererrors.NotLeaderError](err), jc.IsFalse)
 }
 
 func (s *RaftLeaseSuite) TestApplyLeaseToManyErrors(c *gc.C) {

@@ -24,8 +24,8 @@ var (
 		"api-config-watcher",
 		"clock",
 		"is-responsible-flag",
-		"model-upgrade-gate",
-		"model-upgraded-flag",
+		"environ-upgrade-gate",
+		"environ-upgraded-flag",
 		"not-alive-flag",
 		"not-dead-flag",
 		"valid-credential-flag",
@@ -43,10 +43,10 @@ var (
 		"logging-config-updater",  // tertiary dependency: will be inactive because migration workers will be inactive
 		"machine-undertaker",      // tertiary dependency: will be inactive because migration workers will be inactive
 		"metric-worker",           // tertiary dependency: will be inactive because migration workers will be inactive
-		"migration-fortress",      // secondary dependency: will be inactive because depends on model-upgrader
-		"migration-inactive-flag", // secondary dependency: will be inactive because depends on model-upgrader
-		"migration-master",        // secondary dependency: will be inactive because depends on model-upgrader
-		"model-upgrader",
+		"migration-fortress",      // secondary dependency: will be inactive because depends on environ-upgrader
+		"migration-inactive-flag", // secondary dependency: will be inactive because depends on environ-upgrader
+		"migration-master",        // secondary dependency: will be inactive because depends on environ-upgrader
+		"environ-upgrader",
 		"remote-relations",      // tertiary dependency: will be inactive because migration workers will be inactive
 		"state-cleaner",         // tertiary dependency: will be inactive because migration workers will be inactive
 		"status-history-pruner", // tertiary dependency: will be inactive because migration workers will be inactive
@@ -82,8 +82,8 @@ var (
 		"migration-fortress",
 		"migration-inactive-flag",
 		"migration-master",
-		"model-upgrade-gate",
-		"model-upgraded-flag",
+		"environ-upgrade-gate",
+		"environ-upgraded-flag",
 		"log-forwarder",
 	}
 	// ReallyLongTimeout should be long enough for the model-tracker
@@ -118,17 +118,21 @@ var (
 		"deployer",
 		"disk-manager",
 		"fan-configurer",
+		"is-controller-flag",
+		"is-not-controller-flag",
 		// "host-key-reporter", not stable, exits when done
 		"log-sender",
 		"logging-config-updater",
+		"lxd-container-provisioner",
 		"machine-action-runner",
+		//"machine-setup", exits when done
 		"machiner",
 		"proxy-config-updater",
 		"reboot-executor",
 		"ssh-authkeys-updater",
+		"state-converter",
 		"storage-provisioner",
 		"upgrade-series",
-		"unconverted-api-workers",
 	}
 )
 

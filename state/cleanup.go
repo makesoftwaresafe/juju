@@ -5,6 +5,7 @@ package state
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/juju/charm/v8"
@@ -55,6 +56,7 @@ const (
 	cleanupMachinesForDyingModel cleanupKind = "modelMachines"
 
 	// CAAS models require storage to be cleaned up.
+	// TODO: should be renamed to something like deadCAASUnitResources.
 	cleanupDyingUnitResources cleanupKind = "dyingUnitResources"
 
 	cleanupResourceBlob          cleanupKind = "resourceBlob"
@@ -264,7 +266,7 @@ func (st *State) cleanupResourceBlob(storagePath string) error {
 		return nil
 	}
 
-	storage := statestorage.NewStorage(st.modelUUID(), st.MongoSession())
+	storage := statestorage.NewStorage(st.ModelUUID(), st.MongoSession())
 	err := storage.Remove(storagePath)
 	if errors.IsNotFound(err) {
 		return nil
@@ -281,13 +283,20 @@ func (st *State) cleanupRelationSettings(prefix string) error {
 }
 
 func (st *State) cleanupForceDestroyedRelation(prefix string) (err error) {
-	relation, err := st.KeyRelation(prefix)
+	var relation *Relation
+	var relId int
+	if relId, err = strconv.Atoi(prefix); err == nil {
+		relation, err = st.Relation(relId)
+	} else if err != nil {
+		logger.Warningf("handling legacy cleanupForceDestroyedRelation with relation key %q", prefix)
+		relation, err = st.KeyRelation(prefix)
+	}
 	if errors.IsNotFound(err) {
 		return nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return errors.Annotatef(err, "getting relation %q", prefix)
 	}
+
 	scopes, closer := st.db().GetCollection(relationScopesC)
 	defer closer()
 

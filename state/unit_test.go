@@ -938,7 +938,6 @@ type destroyMachineTestCase struct {
 	target    *state.Unit
 	host      *state.Machine
 	desc      string
-	flipHook  []jujutxn.TestHook
 	destroyed bool
 }
 
@@ -1262,22 +1261,20 @@ func (s *UnitSuite) TestRefresh(c *gc.C) {
 
 func (s *UnitSuite) TestSetCharmURLSuccess(c *gc.C) {
 	preventUnitDestroyRemove(c, s.unit)
-	curl, ok := s.unit.CharmURL()
-	c.Assert(ok, jc.IsFalse)
+	curl := s.unit.CharmURL()
 	c.Assert(curl, gc.IsNil)
 
 	err := s.unit.SetCharmURL(s.charm.URL())
 	c.Assert(err, jc.ErrorIsNil)
 
-	curl, err = s.unit.CharmURL()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(curl, gc.DeepEquals, s.charm.URL())
+	curl = s.unit.CharmURL()
+	c.Assert(curl, gc.NotNil)
+	c.Assert(*curl, gc.Equals, s.charm.URL().String())
 }
 
 func (s *UnitSuite) TestSetCharmURLFailures(c *gc.C) {
 	preventUnitDestroyRemove(c, s.unit)
-	curl, ok := s.unit.CharmURL()
-	c.Assert(ok, jc.IsFalse)
+	curl := s.unit.CharmURL()
 	c.Assert(curl, gc.IsNil)
 
 	err := s.unit.SetCharmURL(nil)
@@ -1310,9 +1307,9 @@ func (s *UnitSuite) TestSetCharmURLWithDyingUnit(c *gc.C) {
 	err = s.unit.SetCharmURL(s.charm.URL())
 	c.Assert(err, jc.ErrorIsNil)
 
-	curl, err := s.unit.CharmURL()
-	c.Assert(err, jc.ErrorIsNil)
-	c.Assert(curl, gc.DeepEquals, s.charm.URL())
+	curl := s.unit.CharmURL()
+	c.Assert(curl, gc.NotNil)
+	c.Assert(*curl, gc.Equals, s.charm.URL().String())
 }
 
 func (s *UnitSuite) TestSetCharmURLRetriesWithDeadUnit(c *gc.C) {
@@ -1359,9 +1356,9 @@ func (s *UnitSuite) TestSetCharmURLRetriesWithDifferentURL(c *gc.C) {
 				// Verify it worked after the second attempt.
 				err := s.unit.Refresh()
 				c.Assert(err, jc.ErrorIsNil)
-				currentURL, err := s.unit.CharmURL()
-				c.Assert(err, jc.ErrorIsNil)
-				c.Assert(currentURL, jc.DeepEquals, s.charm.URL())
+				currentURL := s.unit.CharmURL()
+				c.Assert(currentURL, gc.NotNil)
+				c.Assert(*currentURL, gc.Equals, s.charm.URL().String())
 			},
 		},
 	).Check()
@@ -2447,6 +2444,34 @@ func (s *UnitSuite) TestWatchSubordinates(c *gc.C) {
 	wc.AssertNoChange()
 }
 
+func (s *UnitSuite) TestWatchUnits(c *gc.C) {
+	loggo.GetLogger("juju.state.pool.txnwatcher").SetLogLevel(loggo.TRACE)
+	loggo.GetLogger("juju.state.watcher").SetLogLevel(loggo.TRACE)
+
+	s.WaitForModelWatchersIdle(c, s.Model.UUID())
+	w := s.State.WatchUnits()
+	defer testing.AssertStop(c, w)
+
+	// Initial event for unit created in test setup.
+	wc := testing.NewStringsWatcherC(c, s.State, w)
+	wc.AssertChange("wordpress/0")
+
+	u, err := s.application.AddUnit(state.AddUnitParams{})
+	c.Assert(err, jc.ErrorIsNil)
+	wc.AssertChange(u.Name())
+	err = u.AssignToNewMachine()
+	c.Assert(err, jc.ErrorIsNil)
+	wc.AssertChange(u.Name())
+
+	err = u.EnsureDead()
+	c.Assert(err, jc.ErrorIsNil)
+	wc.AssertChange(u.Name())
+
+	// Stop, check closed.
+	testing.AssertStop(c, w)
+	wc.AssertClosed()
+}
+
 func (s *UnitSuite) TestWatchUnit(c *gc.C) {
 	loggo.GetLogger("juju.state.pool.txnwatcher").SetLogLevel(loggo.TRACE)
 	loggo.GetLogger("juju.state.watcher").SetLogLevel(loggo.TRACE)
@@ -2791,7 +2816,6 @@ func unitMachine(c *gc.C, st *state.State, u *state.Unit) *state.Machine {
 
 type CAASUnitSuite struct {
 	ConnSuite
-	charm       *state.Charm
 	application *state.Application
 	operatorApp *state.Application
 }

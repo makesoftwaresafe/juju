@@ -4,9 +4,9 @@
 package context
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"math/rand"
-	"time"
 
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
@@ -81,7 +81,6 @@ type contextFactory struct {
 	modelName  string
 	modelType  model.ModelType
 	machineTag names.MachineTag
-	storage    StorageContextAccessor
 	clock      Clock
 	zone       string
 	principal  string
@@ -89,9 +88,6 @@ type contextFactory struct {
 	// Callback to get relation state snapshot.
 	getRelationInfos RelationsFunc
 	relationCaches   map[int]*RelationCache
-
-	// For generating "unique" context ids.
-	rand *rand.Rand
 }
 
 // FactoryConfig contains configuration values
@@ -103,7 +99,6 @@ type FactoryConfig struct {
 	Payloads         *uniter.PayloadFacadeClient
 	Tracker          leadership.Tracker
 	GetRelationInfos RelationsFunc
-	Storage          StorageContextAccessor
 	Paths            Paths
 	Clock            Clock
 	Logger           loggo.Logger
@@ -151,8 +146,6 @@ func NewContextFactory(config FactoryConfig) (ContextFactory, error) {
 		machineTag:       machineTag,
 		getRelationInfos: config.GetRelationInfos,
 		relationCaches:   map[int]*RelationCache{},
-		storage:          config.Storage,
-		rand:             rand.New(rand.NewSource(time.Now().Unix())),
 		clock:            config.Clock,
 		zone:             zone,
 		principal:        principal,
@@ -163,8 +156,14 @@ func NewContextFactory(config FactoryConfig) (ContextFactory, error) {
 
 // newId returns a probably-unique identifier for a new context, containing the
 // supplied string.
-func (f *contextFactory) newId(name string) string {
-	return fmt.Sprintf("%s-%s-%d", f.unit.Name(), name, f.rand.Int63())
+func (f *contextFactory) newId(name string) (string, error) {
+	randomData := [16]byte{}
+	_, err := rand.Read(randomData[:])
+	if err != nil {
+		return "", fmt.Errorf("cannot generate id for hook context: %w", err)
+	}
+	randomComponent := hex.EncodeToString(randomData[:])
+	return fmt.Sprintf("%s-%s-%s", f.unit.Name(), name, randomComponent), nil
 }
 
 // coreContext creates a new context with all unspecialised fields filled in.
@@ -185,7 +184,6 @@ func (f *contextFactory) coreContext() (*HookContext, error) {
 		assignedMachineTag: f.machineTag,
 		relations:          f.getContextRelations(),
 		relationId:         -1,
-		storage:            f.storage,
 		clock:              f.clock,
 		logger:             f.logger,
 		availabilityZone:   f.zone,
@@ -195,6 +193,7 @@ func (f *contextFactory) coreContext() (*HookContext, error) {
 			ResourcesDir: f.paths.GetResourcesDir(),
 			Logger:       f.logger,
 		},
+		storageAttachmentCache: make(map[names.StorageTag]jujuc.ContextStorageAttachment),
 	}
 	payloadCtx, err := payloads.NewContext(f.payloads)
 	if err != nil {
@@ -217,7 +216,10 @@ func (f *contextFactory) ActionContext(actionData *ActionData) (*HookContext, er
 		return nil, errors.Trace(err)
 	}
 	ctx.actionData = actionData
-	ctx.id = f.newId(actionData.Name)
+	ctx.id, err = f.newId(actionData.Name)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	return ctx, nil
 }
 
@@ -249,14 +251,16 @@ func (f *contextFactory) HookContext(hookInfo hook.Info) (*HookContext, error) {
 	}
 	if hookInfo.Kind.IsStorage() {
 		ctx.storageTag = names.NewStorageTag(hookInfo.StorageId)
-		if _, err := ctx.storage.Storage(ctx.storageTag); err != nil {
-			return nil, errors.Annotatef(err, "could not retrieve storage for id: %v", hookInfo.StorageId)
-		}
 		storageName, err := names.StorageName(hookInfo.StorageId)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
 		hookName = fmt.Sprintf("%s-%s", storageName, hookName)
+		// Cache the storage this hook context is for.
+		_, err = ctx.Storage(ctx.storageTag)
+		if err != nil && !errors.Is(err, errors.NotProvisioned) {
+			return nil, errors.Annotatef(err, "could not retrieve storage for id: %v", hookInfo.StorageId)
+		}
 	}
 	if hookInfo.Kind.IsWorkload() {
 		ctx.workloadName = hookInfo.WorkloadName
@@ -265,7 +269,10 @@ func (f *contextFactory) HookContext(hookInfo hook.Info) (*HookContext, error) {
 	if hookInfo.Kind == hooks.PreSeriesUpgrade {
 		ctx.seriesUpgradeTarget = hookInfo.SeriesUpgradeTarget
 	}
-	ctx.id = f.newId(hookName)
+	ctx.id, err = f.newId(hookName)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	ctx.hookName = hookName
 	return ctx, nil
 }
@@ -283,7 +290,10 @@ func (f *contextFactory) CommandContext(commandInfo CommandInfo) (*HookContext, 
 	}
 	ctx.relationId = relationId
 	ctx.remoteUnitName = remoteUnitName
-	ctx.id = f.newId("run-commands")
+	ctx.id, err = f.newId("run-commands")
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	return ctx, nil
 }
 

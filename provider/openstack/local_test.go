@@ -9,6 +9,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -304,6 +306,15 @@ func (s *localServerSuite) SetUpSuite(c *gc.C) {
 	s.BaseSuite.SetUpSuite(c)
 	restoreFinishBootstrap := envtesting.DisableFinishBootstrap()
 	s.AddCleanup(func(*gc.C) { restoreFinishBootstrap() })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	s.AddCleanup(func(c *gc.C) {
+		server.Close()
+	})
+	s.PatchValue(&imagemetadata.DefaultUbuntuBaseURL, server.URL)
+
 	c.Logf("Running local tests")
 }
 
@@ -834,7 +845,7 @@ func (s *localServerSuite) TestStartInstanceGetServerFail(c *gc.C) {
 	c.Assert(err, gc.ErrorMatches, "cannot run instance: "+
 		"request \\(.*/servers\\) returned unexpected status: "+
 		"500; error info: .*GetServer failed on purpose")
-	c.Assert(err, jc.Satisfies, environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsTrue)
 }
 
 func (s *localServerSuite) TestStartInstanceWaitForActiveDetails(c *gc.C) {
@@ -856,6 +867,41 @@ func (s *localServerSuite) TestStartInstanceWaitForActiveDetails(c *gc.C) {
 	insts, err := env.AllInstances(s.callCtx)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(insts, gc.HasLen, 0, gc.Commentf("expected launched instance to be terminated if stuck in BUILD state"))
+}
+
+func (s *localServerSuite) TestStartInstanceDeletesSecurityGroupsOnInstanceCreateFailure(c *gc.C) {
+	env := s.openEnviron(c, coretesting.Attrs{"firewall-mode": config.FwInstance})
+
+	// Force an error in waitForActiveServerDetails
+	cleanup := s.srv.Nova.RegisterControlPoint(
+		"server",
+		func(sc hook.ServiceControl, args ...interface{}) error {
+			return fmt.Errorf("GetServer failed on purpose")
+		},
+	)
+	defer cleanup()
+	inst, _, _, err := testing.StartInstance(env, s.callCtx, s.ControllerUUID, "100")
+	c.Check(inst, gc.IsNil)
+	c.Assert(err, gc.NotNil)
+
+	assertSecurityGroups(c, env, []string{"default"})
+}
+
+func (s *localServerSuite) TestStartInstanceDeletesSecurityGroupsOnFailure(c *gc.C) {
+	env := s.openEnviron(c, coretesting.Attrs{"firewall-mode": config.FwInstance})
+
+	s.srv.Nova.SetServerStatus(nova.StatusBuild)
+	defer s.srv.Nova.SetServerStatus("")
+
+	// Make time advance in zero time
+	clk := testclock.NewClock(time.Time{})
+	clock := testclock.AutoAdvancingClock{Clock: clk, Advance: clk.Advance}
+	env.(*openstack.Environ).SetClock(&clock)
+
+	_, _, _, err := testing.StartInstance(env, s.callCtx, s.ControllerUUID, "100")
+	c.Assert(err, gc.NotNil)
+
+	assertSecurityGroups(c, env, []string{"default"})
 }
 
 func assertSecurityGroups(c *gc.C, env environs.Environ, expected []string) {
@@ -1347,13 +1393,10 @@ func (s *localServerSuite) TestBootstrapInstanceUserDataAndState(c *gc.C) {
 	// ec2 tests).
 }
 
-func (s *localServerSuite) assertGetImageMetadataSources(c *gc.C, stream, officialSourcePath string) {
+func (s *localServerSuite) TestGetImageMetadataSources(c *gc.C) {
 	ss := simplestreams.NewSimpleStreams(sstesting.TestDataSourceFactory())
 	// Create a config that matches s.TestConfig but with the specified stream.
 	attrs := coretesting.Attrs{}
-	if stream != "" {
-		attrs = coretesting.Attrs{"image-stream": stream}
-	}
 	env := s.openEnviron(c, attrs)
 
 	sources, err := environs.ImageMetadataSources(env, ss)
@@ -1369,13 +1412,7 @@ func (s *localServerSuite) assertGetImageMetadataSources(c *gc.C, stream, offici
 	c.Check(strings.HasSuffix(urls[0], "/juju-dist-test/"), jc.IsTrue)
 	// The product-streams URL ends with "/imagemetadata".
 	c.Check(strings.HasSuffix(urls[1], "/imagemetadata/"), jc.IsTrue)
-	c.Assert(urls[2], gc.Equals, fmt.Sprintf("http://cloud-images.ubuntu.com/%s/", officialSourcePath))
-}
-
-func (s *localServerSuite) TestGetImageMetadataSources(c *gc.C) {
-	s.assertGetImageMetadataSources(c, "", "releases")
-	s.assertGetImageMetadataSources(c, "released", "releases")
-	s.assertGetImageMetadataSources(c, "daily", "daily")
+	c.Assert(urls[2], jc.HasPrefix, imagemetadata.DefaultUbuntuBaseURL)
 }
 
 func (s *localServerSuite) TestGetImageMetadataSourcesNoProductStreams(c *gc.C) {
@@ -1928,11 +1965,12 @@ func (s *localServerSuite) TestImageMetadataSourceOrder(c *gc.C) {
 	src := func(env environs.Environ) (simplestreams.DataSource, error) {
 		return ss.NewDataSource(simplestreams.Config{
 			Description:          "my datasource",
-			BaseURL:              "bar",
+			BaseURL:              "file:///bar",
 			HostnameVerification: false,
 			Priority:             simplestreams.CUSTOM_CLOUD_DATA}), nil
 	}
 	environs.RegisterUserImageDataSourceFunc("my func", src)
+	defer environs.UnregisterImageDataSourceFunc("my func")
 	env := s.Open(c, stdcontext.TODO(), s.env.Config())
 	sources, err := environs.ImageMetadataSources(env, ss)
 	c.Assert(err, jc.ErrorIsNil)
@@ -2454,12 +2492,12 @@ func (s *localServerSuite) TestStartInstanceAvailZone(c *gc.C) {
 
 func (s *localServerSuite) TestStartInstanceAvailZoneUnavailable(c *gc.C) {
 	_, err := s.testStartInstanceAvailZone(c, "test-unavailable")
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 }
 
 func (s *localServerSuite) TestStartInstanceAvailZoneUnknown(c *gc.C) {
 	_, err := s.testStartInstanceAvailZone(c, "test-unknown")
-	c.Assert(err, gc.Not(jc.Satisfies), environs.IsAvailabilityZoneIndependent)
+	c.Assert(errors.Is(err, environs.ErrAvailabilityZoneIndependent), jc.IsFalse)
 }
 
 func (s *localServerSuite) testStartInstanceAvailZone(c *gc.C, zone string) (instances.Instance, error) {
@@ -2756,6 +2794,43 @@ func (s *localServerSuite) TestStartInstanceVolumeRootBlockDeviceSized(c *gc.C) 
 	})
 }
 
+func (s *localServerSuite) TestStartInstanceLocalRootBlockDeviceConstraint(c *gc.C) {
+	env := s.ensureAMDImages(c)
+
+	err := bootstrapEnv(c, env)
+	c.Assert(err, jc.ErrorIsNil)
+
+	cons, err := constraints.Parse("root-disk-source=local root-disk=1G arch=amd64")
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(cons.HasRootDisk(), jc.IsTrue)
+	c.Assert(*cons.RootDisk, gc.Equals, uint64(1024))
+
+	res, err := testing.StartInstanceWithParams(env, s.callCtx, "1", environs.StartInstanceParams{
+		ControllerUUID: s.ControllerUUID,
+		Constraints:    cons,
+	})
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(res, gc.NotNil)
+
+	c.Assert(res.Hardware.RootDisk, gc.NotNil)
+	// Check local disk requirements are met.
+	c.Assert(*res.Hardware.RootDisk, jc.GreaterThan, uint64(1024-1))
+
+	runOpts := res.Instance.(novaInstaceStartedWithOpts).NovaInstanceStartedWithOpts()
+	c.Assert(runOpts, gc.NotNil)
+	c.Assert(runOpts.BlockDeviceMappings, gc.NotNil)
+	deviceMapping := runOpts.BlockDeviceMappings[0]
+	c.Assert(deviceMapping, jc.DeepEquals, nova.BlockDeviceMapping{
+		BootIndex:           0,
+		UUID:                "1",
+		SourceType:          "image",
+		DestinationType:     "local",
+		DeleteOnTermination: true,
+		// VolumeSize is 0 when a local disk is used.
+		VolumeSize: 0,
+	})
+}
+
 func (s *localServerSuite) TestStartInstanceLocalRootBlockDevice(c *gc.C) {
 	env := s.ensureAMDImages(c)
 
@@ -3036,7 +3111,15 @@ func (s *localServerSuite) TestICMPFirewallRules(c *gc.C) {
 				ToPort:   -1,
 				Protocol: "icmp",
 			},
-			SourceCIDRs: set.NewStrings("0.0.0.0/0", "::/0"),
+			SourceCIDRs: set.NewStrings("0.0.0.0/0"),
+		},
+		{
+			PortRange: network.PortRange{
+				FromPort: -1,
+				ToPort:   -1,
+				Protocol: "ipv6-icmp",
+			},
+			SourceCIDRs: set.NewStrings("::/0"),
 		},
 	})
 	c.Assert(err, jc.ErrorIsNil)

@@ -29,6 +29,7 @@ import (
 	"github.com/juju/juju/mongo"
 	"github.com/juju/juju/mongo/mongotest"
 	"github.com/juju/juju/state"
+	stateerrors "github.com/juju/juju/state/errors"
 	"github.com/juju/juju/state/testing"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/storage/poolmanager"
@@ -40,10 +41,8 @@ import (
 
 type MachineSuite struct {
 	ConnSuite
-	machine0    *state.Machine
-	machine     *state.Machine
-	unit        *state.Unit
-	application *state.Application
+	machine0 *state.Machine
+	machine  *state.Machine
 }
 
 var _ = gc.Suite(&MachineSuite{})
@@ -315,7 +314,7 @@ func (s *MachineSuite) TestMachineIsContainer(c *gc.C) {
 	c.Assert(container.IsContainer(), jc.IsTrue)
 }
 
-func (s *MachineSuite) TestLifeJobManageModel(c *gc.C) {
+func (s *MachineSuite) TestLifeJobController(c *gc.C) {
 	m := s.machine0
 	err := m.Destroy()
 	c.Assert(err, gc.ErrorMatches, "controller 0 is the only controller")
@@ -344,11 +343,11 @@ func (s *MachineSuite) TestLifeMachineWithContainer(c *gc.C) {
 	c.Assert(err, jc.ErrorIsNil)
 
 	err = s.machine.Destroy()
-	c.Assert(errors.Cause(err), jc.Satisfies, state.IsHasContainersError)
+	c.Assert(errors.Is(err, stateerrors.HasContainersError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `machine 1 is hosting containers "1/lxd/0"`)
 
 	err = s.machine.EnsureDead()
-	c.Assert(errors.Cause(err), jc.Satisfies, state.IsHasContainersError)
+	c.Assert(errors.Is(err, stateerrors.HasContainersError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `machine 1 is hosting containers "1/lxd/0"`)
 
 	c.Assert(s.machine.Life(), gc.Equals, state.Alive)
@@ -374,11 +373,11 @@ func (s *MachineSuite) TestLifeJobHostUnits(c *gc.C) {
 	err = unit.AssignToMachine(s.machine)
 	c.Assert(err, jc.ErrorIsNil)
 	err = s.machine.Destroy()
-	c.Assert(err, jc.Satisfies, state.IsHasAssignedUnitsError)
+	c.Assert(errors.Is(err, stateerrors.HasAssignedUnitsError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `machine 1 has unit "wordpress/0" assigned`)
 
 	err = s.machine.EnsureDead()
-	c.Assert(err, jc.Satisfies, state.IsHasAssignedUnitsError)
+	c.Assert(errors.Is(err, stateerrors.HasAssignedUnitsError), jc.IsTrue)
 	c.Assert(err, gc.ErrorMatches, `machine 1 has unit "wordpress/0" assigned`)
 
 	c.Assert(s.machine.Life(), gc.Equals, state.Alive)
@@ -471,7 +470,7 @@ func (s *MachineSuite) TestDestroyCancel(c *gc.C) {
 		c.Assert(unit.AssignToMachine(s.machine), gc.IsNil)
 	}).Check()
 	err = s.machine.Destroy()
-	c.Assert(err, jc.Satisfies, state.IsHasAssignedUnitsError)
+	c.Assert(errors.Is(err, stateerrors.HasAssignedUnitsError), jc.IsTrue)
 }
 
 func (s *MachineSuite) TestDestroyContention(c *gc.C) {
@@ -524,7 +523,7 @@ func (s *MachineSuite) TestDestroyFailsWhenNewUnitAdded(c *gc.C) {
 	}).Check()
 
 	err = s.machine.Destroy()
-	c.Assert(err, jc.Satisfies, state.IsHasAssignedUnitsError)
+	c.Assert(errors.Is(err, stateerrors.HasAssignedUnitsError), jc.IsTrue)
 	life := s.machine.Life()
 	c.Assert(life, gc.Equals, state.Alive)
 }
@@ -564,7 +563,7 @@ func (s *MachineSuite) TestDestroyFailsWhenNewContainerAdded(c *gc.C) {
 	}).Check()
 
 	err = s.machine.Destroy()
-	c.Assert(err, jc.Satisfies, state.IsHasAssignedUnitsError)
+	c.Assert(errors.Is(err, stateerrors.HasAssignedUnitsError), jc.IsTrue)
 	life := s.machine.Life()
 	c.Assert(life, gc.Equals, state.Alive)
 }
@@ -849,6 +848,27 @@ func (s *MachineSuite) TestMachineAvailabilityZone(c *gc.C) {
 	zone, err = s.machine.AvailabilityZone()
 	c.Assert(err, jc.ErrorIsNil)
 	c.Check(zone, gc.Equals, "a_zone")
+}
+
+func (s *MachineSuite) TestContainerAvailabilityZone(c *gc.C) {
+	zone := "a_zone"
+	hwc := &instance.HardwareCharacteristics{
+		AvailabilityZone: &zone,
+	}
+	err := s.machine.SetProvisioned("umbrella/0", "", "fake_nonce", hwc)
+	c.Assert(err, jc.ErrorIsNil)
+
+	zone, err = s.machine.AvailabilityZone()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Check(zone, gc.Equals, "a_zone")
+
+	// now add a container to that machine
+	container := s.Factory.MakeMachineNested(c, s.machine.Id(), nil)
+	c.Assert(err, jc.ErrorIsNil)
+
+	containerAvailabilityZone, err := container.AvailabilityZone()
+	c.Assert(err, jc.ErrorIsNil)
+	c.Assert(containerAvailabilityZone, gc.Equals, "")
 }
 
 func (s *MachineSuite) TestMachineAvailabilityZoneEmpty(c *gc.C) {

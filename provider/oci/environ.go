@@ -15,6 +15,9 @@ import (
 	"github.com/juju/utils/v3/arch"
 	"github.com/juju/version/v2"
 	"github.com/kr/pretty"
+	ociCommon "github.com/oracle/oci-go-sdk/v47/common"
+	ociCore "github.com/oracle/oci-go-sdk/v47/core"
+	ociIdentity "github.com/oracle/oci-go-sdk/v47/identity"
 
 	"github.com/juju/juju/cloudconfig/cloudinit"
 	"github.com/juju/juju/cloudconfig/instancecfg"
@@ -33,10 +36,6 @@ import (
 	providerCommon "github.com/juju/juju/provider/oci/common"
 	"github.com/juju/juju/storage"
 	"github.com/juju/juju/tools"
-
-	ociCommon "github.com/oracle/oci-go-sdk/v47/common"
-	ociCore "github.com/oracle/oci-go-sdk/v47/core"
-	ociIdentity "github.com/oracle/oci-go-sdk/v47/identity"
 )
 
 type Environ struct {
@@ -54,8 +53,6 @@ type Environ struct {
 	ecfgObj    *environConfig
 	namespace  instance.Namespace
 
-	vcn     ociCore.Vcn
-	seclist ociCore.SecurityList
 	// subnets contains one subnet for each availability domain
 	// these will get created once the environment is spun up, and
 	// will never change.
@@ -65,7 +62,6 @@ type Environ struct {
 var _ common.ZonedEnviron = (*Environ)(nil)
 var _ storage.ProviderRegistry = (*Environ)(nil)
 var _ environs.Environ = (*Environ)(nil)
-var _ environs.Firewaller = (*Environ)(nil)
 var _ environs.Networking = (*Environ)(nil)
 var _ environs.NetworkingEnviron = (*Environ)(nil)
 

@@ -16,6 +16,7 @@ import (
 	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/devices"
 	"github.com/juju/juju/core/model"
+	"github.com/juju/juju/core/series"
 	"github.com/juju/juju/rpc/params"
 	"github.com/juju/juju/storage"
 )
@@ -39,9 +40,24 @@ func BuildModelRepresentation(
 	machineMap := make(map[string]string)
 	machines := make(map[string]*bundlechanges.Machine)
 	for id, machineStatus := range status.Machines {
+		var (
+			base series.Base
+			err  error
+		)
+		if machineStatus.Series != "" && machineStatus.Base.Name == "" {
+			base, err = series.GetBaseFromSeries(machineStatus.Series)
+			if err != nil {
+				return nil, errors.Trace(err) // This should never happen.
+			}
+		} else if machineStatus.Base.Channel != "" {
+			base, err = series.ParseBase(machineStatus.Base.Name, machineStatus.Base.Channel)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+		}
 		machines[id] = &bundlechanges.Machine{
-			ID:     id,
-			Series: machineStatus.Series,
+			ID:   id,
+			Base: base,
 		}
 		tag := names.NewMachineTag(id)
 		annotationTags = append(annotationTags, tag.String())
@@ -76,12 +92,24 @@ func BuildModelRepresentation(
 			charmAlias = curl.Name
 		}
 
+		var base series.Base
+		if appStatus.Series != "" && appStatus.Base.Name == "" {
+			base, err = series.GetBaseFromSeries(appStatus.Series)
+			if err != nil {
+				return nil, errors.Trace(err) // This should never happen.
+			}
+		} else if appStatus.Base.Channel != "" {
+			base, err = series.ParseBase(appStatus.Base.Name, appStatus.Base.Channel)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+		}
 		app := &bundlechanges.Application{
 			Name:          name,
 			Charm:         charmAlias,
 			Scale:         appStatus.Scale,
 			Exposed:       appStatus.Exposed,
-			Series:        appStatus.Series,
+			Base:          base,
 			Channel:       appStatus.CharmChannel,
 			Revision:      curl.Revision,
 			SubordinateTo: appStatus.SubordinateTo,
@@ -231,28 +259,44 @@ func applicationConfigValue(key string, valueMap interface{}) (interface{}, erro
 }
 
 // ComposeAndVerifyBundle merges base and overlays then verifies the
-// combined bundle data.
-func ComposeAndVerifyBundle(base BundleDataSource, pathToOverlays []string) (*charm.BundleData, error) {
+// combined bundle data. Returns a slice of errors encountered while
+// processing the bundle. They are for informational purposes and do
+// not require failing the bundle deployment.
+func ComposeAndVerifyBundle(base BundleDataSource, pathToOverlays []string) (*charm.BundleData, []error, error) {
 	var dsList []charm.BundleDataSource
+	unMarshallErrors := make([]error, 0)
+	unMarshallErrors = append(unMarshallErrors, gatherErrors(base)...)
 
 	dsList = append(dsList, base)
 	for _, pathToOverlay := range pathToOverlays {
 		ds, err := charm.LocalBundleDataSource(pathToOverlay)
 		if err != nil {
-			return nil, errors.Annotatef(err, "unable to process overlays")
+			return nil, nil, errors.Annotatef(err, "unable to process overlays")
 		}
 		dsList = append(dsList, ds)
+		unMarshallErrors = append(unMarshallErrors, gatherErrors(ds)...)
 	}
 
 	bundleData, err := charm.ReadAndMergeBundleData(dsList...)
 	if err != nil {
-		return nil, errors.Trace(err)
+		return nil, nil, errors.Trace(err)
 	}
 	if err = verifyBundle(bundleData, base.BasePath()); err != nil {
-		return nil, errors.Trace(err)
+		return nil, nil, errors.Trace(err)
 	}
 
-	return bundleData, nil
+	return bundleData, unMarshallErrors, nil
+}
+
+func gatherErrors(ds BundleDataSource) []error {
+	returnErrors := make([]error, 0)
+	for _, p := range ds.Parts() {
+		if p.UnmarshallError == nil {
+			continue
+		}
+		returnErrors = append(returnErrors, p.UnmarshallError)
+	}
+	return returnErrors
 }
 
 func verifyBundle(data *charm.BundleData, bundleDir string) error {

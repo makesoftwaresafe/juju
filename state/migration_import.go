@@ -30,6 +30,7 @@ import (
 	"github.com/juju/juju/core/network"
 	"github.com/juju/juju/core/payloads"
 	"github.com/juju/juju/core/permission"
+	"github.com/juju/juju/core/series"
 	coreseries "github.com/juju/juju/core/series"
 	"github.com/juju/juju/core/status"
 	"github.com/juju/juju/environs/config"
@@ -70,7 +71,7 @@ func (ctrl *Controller) Import(model description.Model) (_ *Model, _ *State, err
 	}
 
 	// Create the model.
-	cfg, err := config.New(config.NoDefaults, model.Config())
+	cfg, err := modelConfig(model.Config())
 	if err != nil {
 		return nil, nil, errors.Trace(err)
 	}
@@ -243,6 +244,31 @@ func (ctrl *Controller) Import(model description.Model) (_ *Model, _ *State, err
 	return dbModel, newSt, nil
 }
 
+// modelConfig creates a config for the model being imported.
+// If the tools version is before 2.9.35, the default-series
+// value is cleared. This matches an upgrade step for 2.9.35
+// as well. Ensuring that the default-series value is set by
+// the user rather than a hold over from an old juju set value.
+// Related to using the default-series value in the same way
+// as a series flag at deploy.
+func modelConfig(attrs map[string]interface{}) (*config.Config, error) {
+	v, ok := attrs["agent-version"].(string)
+	if !ok {
+		return nil, errors.New("model config missing agent-version")
+	}
+	toolsVersion, err := version.Parse(v)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	// Using MustParse as the value parsed will never change.
+	newer := version.MustParse("2.9.35")
+	if comp := toolsVersion.Compare(newer); comp >= 0 {
+		return config.New(config.NoDefaults, attrs)
+	}
+	attrs["default-series"] = ""
+	return config.New(config.NoDefaults, attrs)
+}
+
 // ImportStateMigration defines a migration for importing various entities from
 // a source description model to the destination state.
 // It accumulates a series of migrations to Run at a later time.
@@ -251,7 +277,6 @@ func (ctrl *Controller) Import(model description.Model) (_ *Model, _ *State, err
 type ImportStateMigration struct {
 	src        description.Model
 	dst        Database
-	importer   *importer
 	migrations []func() error
 }
 
@@ -631,13 +656,23 @@ func (i *importer) makeMachineDoc(m description.Machine) (*machineDoc, error) {
 		return nil, errors.Trace(err)
 	}
 
+	base, err := series.ParseBaseFromString(m.Base())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	series, err := series.GetSeriesFromBase(base)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	machineTag := m.Tag()
 	return &machineDoc{
 		DocID:                    i.st.docID(id),
 		Id:                       id,
 		ModelUUID:                i.st.ModelUUID(),
 		Nonce:                    m.Nonce(),
-		Series:                   m.Series(),
+		Series:                   series,
 		ContainerType:            m.ContainerType(),
 		Principals:               nil, // Set during unit import.
 		Life:                     Alive,
@@ -1286,12 +1321,30 @@ func (i *importer) makeApplicationDoc(a description.Application) (*applicationDo
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	cURL := a.CharmURL()
-	return &applicationDoc{
+	cURLStr := a.CharmURL()
+
+	platform, err := corecharm.ParsePlatform(a.CharmOrigin().Platform())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	var appSeries string
+	cURL, err := charm.ParseURL(cURLStr)
+	if err == nil {
+		appSeries = cURL.Series
+	}
+	if appSeries != "kubernetes" {
+		appSeries, err = series.GetSeriesFromChannel(platform.OS, platform.Channel)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+	}
+
+	appDoc := &applicationDoc{
 		Name:                 a.Name(),
-		Series:               a.Series(),
+		Series:               appSeries,
 		Subordinate:          a.Subordinate(),
-		CharmURL:             &cURL,
+		CharmURL:             &cURLStr,
 		Channel:              a.Channel(),
 		CharmModifiedVersion: a.CharmModifiedVersion(),
 		CharmOrigin:          origin,
@@ -1308,7 +1361,16 @@ func (i *importer) makeApplicationDoc(a description.Application) (*applicationDo
 		DesiredScale:         a.DesiredScale(),
 		Placement:            a.Placement(),
 		HasResources:         a.HasResources(),
-	}, nil
+	}
+
+	if ps := a.ProvisioningState(); ps != nil {
+		appDoc.ProvisioningState = &ApplicationProvisioningState{
+			Scaling:     ps.Scaling(),
+			ScaleTarget: ps.ScaleTarget(),
+		}
+	}
+
+	return appDoc, nil
 }
 
 func (i *importer) loadInstanceHardwareFromUnits(units []description.Unit) ([]instance.HardwareCharacteristics, error) {
@@ -1364,8 +1426,12 @@ func (i *importer) makeCharmOrigin(a description.Application, units []descriptio
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
+		track := c.Track
+		if corecharm.CharmHub.Matches(co.Source()) && track == "" {
+			track = "latest"
+		}
 		channel = &Channel{
-			Track:  c.Track,
+			Track:  track,
 			Risk:   string(c.Risk),
 			Branch: c.Branch,
 		}
@@ -1383,9 +1449,11 @@ func (i *importer) makeCharmOrigin(a description.Application, units []descriptio
 		// Fix the case where `juju set-series` was called before the change to
 		// set the series in the origin's platform as well.
 		// Assumes that UpdateApplicationSeries will not change operating systems.
-		series := p.Series
-		if series != a.Series() {
-			series = a.Series()
+		// TODO(wallyworld) - we need to update description to support channel
+		// For now, handle both channel and series here.
+		series, err := coreseries.GetSeriesFromChannel(p.OS, p.Channel)
+		if err != nil {
+			series = p.Channel
 		}
 		platform = &Platform{
 			Architecture: p.Architecture,
@@ -1395,7 +1463,10 @@ func (i *importer) makeCharmOrigin(a description.Application, units []descriptio
 	} else {
 		// Attempt to fallback to the application charm URL and then the
 		// application constraints.
-		platform = i.getApplicationPlatform(a, curl, units)
+		platform, err = i.getApplicationPlatform(a, curl, units)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
 	}
 
 	// We can hardcode type to charm as we never store bundles in state.
@@ -1424,12 +1495,16 @@ func (i *importer) deduceCharmOrigin(a description.Application, url *charm.URL, 
 	}
 
 	source, channel := getApplicationSourceChannel(a, url)
+	platform, err := i.getApplicationPlatform(a, url, units)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 	return &CharmOrigin{
 		Type:     t,
 		Source:   source.String(),
 		Revision: &url.Revision,
 		Channel:  channel,
-		Platform: i.getApplicationPlatform(a, url, units),
+		Platform: platform,
 	}, nil
 }
 
@@ -1459,6 +1534,10 @@ func getApplicationSourceChannel(a description.Application, url *charm.URL) (cor
 		return source, nil
 	}
 
+	if norm.Track == "" {
+		norm.Track = "latest"
+	}
+
 	return source, &Channel{
 		Track:  norm.Track,
 		Risk:   string(norm.Risk),
@@ -1468,9 +1547,9 @@ func getApplicationSourceChannel(a description.Application, url *charm.URL) (cor
 
 // Attempt to locate the architecture, if it's found in the URL then use
 // that, otherwise fallback to the arch constraint.
-func (i *importer) getApplicationPlatform(a description.Application, url *charm.URL, units []description.Unit) *Platform {
-	var platform *Platform
-	if url != nil && url.Architecture != "" {
+func (i *importer) getApplicationPlatform(a description.Application, url *charm.URL, units []description.Unit) (*Platform, error) {
+	platform := &Platform{}
+	if url != nil {
 		platform = &Platform{
 			Architecture: url.Architecture,
 			Series:       url.Series,
@@ -1478,16 +1557,23 @@ func (i *importer) getApplicationPlatform(a description.Application, url *charm.
 	} else if arc := getApplicationArchConstraint(a); arc != "" {
 		platform = &Platform{
 			Architecture: arc,
-			Series:       a.Series(),
 		}
 	}
 
-	if platform == nil || platform.Architecture == "" {
+	appPlatform, err := corecharm.ParsePlatform(a.CharmOrigin().Platform())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	if platform.Architecture == "" && appPlatform.Architecture != "unknown" {
+		platform.Architecture = appPlatform.Architecture
+	}
+
+	if platform.Architecture == "" {
 		// If we can't find an instance hardware based on the units, then just
 		// return the platform.
 		hardwareCharacteristics, err := i.loadInstanceHardwareFromUnits(units)
 		if err != nil {
-			return platform
+			return nil, errors.Trace(err)
 		}
 
 		// Attempting to find the right architecture is quite difficult,
@@ -1507,10 +1593,16 @@ func (i *importer) getApplicationPlatform(a description.Application, url *charm.
 			platform = &Platform{}
 		}
 		platform.Architecture = arch
-		platform.Series = a.Series()
 	}
 
-	return platform
+	if platform.Series == "" {
+		series, err := series.GetSeriesFromChannel(appPlatform.OS, appPlatform.Channel)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		platform.Series = series
+	}
+	return platform, nil
 }
 
 func getApplicationArchConstraint(a description.Application) string {
@@ -1583,10 +1675,20 @@ func (i *importer) makeUnitDoc(s description.Application, u description.Unit) (*
 		return nil, errors.Trace(err)
 	}
 
+	platform, err := corecharm.ParsePlatform(s.CharmOrigin().Platform())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	series, err := series.GetSeriesFromChannel(platform.OS, platform.Channel)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	return &unitDoc{
 		Name:                   u.Name(),
 		Application:            s.Name(),
-		Series:                 s.Series(),
+		Series:                 series,
 		CharmURL:               &charmURL,
 		Principal:              u.Principal().Id(),
 		Subordinates:           subordinates,
@@ -1653,24 +1755,18 @@ func (i *importer) firewallRules() error {
 	return nil
 }
 
-// makeStatusDoc assumes status is non-nil.
-func (i *importer) makeFirewallRuleDoc(firewallRule description.FirewallRule) *firewallRulesDoc {
-	return &firewallRulesDoc{
-		Id:               firewallRule.ID(),
-		WellKnownService: firewallRule.WellKnownService(),
-		WhitelistCIDRS:   firewallRule.WhitelistCIDRs(),
-	}
-}
-
 func (i *importer) makeRemoteApplicationDoc(app description.RemoteApplication) *remoteApplicationDoc {
 	doc := &remoteApplicationDoc{
 		Name:            app.Name(),
-		OfferUUID:       app.OfferUUID(),
 		URL:             app.URL(),
 		SourceModelUUID: app.SourceModelTag().Id(),
 		IsConsumerProxy: app.IsConsumerProxy(),
 		Bindings:        app.Bindings(),
 		Macaroon:        app.Macaroon(),
+		Version:         app.ConsumeVersion(),
+	}
+	if !doc.IsConsumerProxy {
+		doc.OfferUUID = app.OfferUUID()
 	}
 	descEndpoints := app.Endpoints()
 	eps := make([]remoteEndpointDoc, len(descEndpoints))
@@ -1763,14 +1859,27 @@ func (i *importer) relation(rel description.Relation) error {
 
 		units := i.applicationUnits[endpoint.ApplicationName()]
 		for unitName, settings := range endpoint.AllSettings() {
-			unit, ok := units[unitName]
-			if !ok {
-				return errors.NotFoundf("unit %q", unitName)
+			var ru *RelationUnit
+			var err error
+
+			if unit, ok := units[unitName]; ok {
+				ru, err = dbRelation.Unit(unit)
+				if err != nil {
+					return errors.Trace(err)
+				}
+			} else {
+				ru, err = dbRelation.RemoteUnit(unitName)
+				if err != nil {
+					if errors.Is(err, errors.NotFound) {
+						// This mirrors the logic from export.
+						// If there are no local or remote units in scope,
+						// then we are done for this endpoint.
+						continue
+					}
+					return errors.Trace(err)
+				}
 			}
-			ru, err := dbRelation.Unit(unit)
-			if err != nil {
-				return errors.Trace(err)
-			}
+
 			ruKey := ru.key()
 			ops = append(ops, txn.Op{
 				C:      relationScopesC,
@@ -2121,13 +2230,18 @@ func (i *importer) cloudimagemetadata() error {
 		if rootStorageSize, ok := image.RootStorageSize(); ok {
 			rootStoragePtr = &rootStorageSize
 		}
+		series, err := series.VersionSeries(image.Version())
+		if err != nil {
+			return errors.Trace(err)
+		}
+
 		metadatas = append(metadatas, cloudimagemetadata.Metadata{
 			MetadataAttributes: cloudimagemetadata.MetadataAttributes{
 				Source:          image.Source(),
 				Stream:          image.Stream(),
 				Region:          image.Region(),
 				Version:         image.Version(),
-				Series:          image.Series(),
+				Series:          series,
 				Arch:            image.Arch(),
 				RootStorageType: image.RootStorageType(),
 				RootStorageSize: rootStoragePtr,
@@ -2176,22 +2290,27 @@ func (i *importer) addAction(action description.Action) error {
 		Completed:  action.Completed(),
 		Status:     ActionStatus(action.Status()),
 	}
-	prefix := ensureActionMarker(action.Receiver())
-	notificationDoc := &actionNotificationDoc{
-		DocId:     i.st.docID(prefix + action.Id()),
-		ModelUUID: modelUUID,
-		Receiver:  action.Receiver(),
-		ActionID:  action.Id(),
-	}
+
 	ops := []txn.Op{{
 		C:      actionsC,
 		Id:     newDoc.DocId,
 		Insert: newDoc,
-	}, {
-		C:      actionNotificationsC,
-		Id:     notificationDoc.DocId,
-		Insert: notificationDoc,
 	}}
+
+	if activeStatus.Contains(string(newDoc.Status)) {
+		prefix := ensureActionMarker(action.Receiver())
+		notificationDoc := &actionNotificationDoc{
+			DocId:     i.st.docID(prefix + action.Id()),
+			ModelUUID: modelUUID,
+			Receiver:  action.Receiver(),
+			ActionID:  action.Id(),
+		}
+		ops = append(ops, txn.Op{
+			C:      actionNotificationsC,
+			Id:     notificationDoc.DocId,
+			Insert: notificationDoc,
+		})
+	}
 
 	if err := i.st.db().RunTransaction(ops); err != nil {
 		return errors.Trace(err)
@@ -2284,6 +2403,9 @@ func (i *importer) constraints(cons description.Constraints) constraints.Value {
 		return result
 	}
 
+	if allocate := cons.AllocatePublicIP(); allocate {
+		result.AllocatePublicIP = &allocate
+	}
 	if arch := cons.Architecture(); arch != "" {
 		result.Arch = &arch
 	}

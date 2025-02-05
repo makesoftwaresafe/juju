@@ -1,7 +1,7 @@
 run_go() {
 	VER=$(golangci-lint --version | tr -s ' ' | cut -d ' ' -f 4 | cut -d '.' -f 1,2)
-	if [[ ${VER} != "1.45" ]] && [[ ${VER} != "v1.45" ]]; then
-		(echo >&2 -e '\nError: golangci-lint version does not match 1.45. Please upgrade/downgrade to the right version.')
+	if [[ ${VER} != "1.61" ]] && [[ ${VER} != "v1.61" ]]; then
+		(echo >&2 -e '\nError: golangci-lint version does not match 1.61. Please upgrade/downgrade to the right version.')
 		exit 1
 	fi
 	OUT=$(golangci-lint run -c .github/golangci-lint.config.yaml 2>&1)
@@ -27,6 +27,35 @@ run_go_tidy() {
 	fi
 }
 
+join() {
+	local IFS="$1"
+	shift
+	echo "$*"
+}
+
+run_govulncheck() {
+	ignore=(
+		# false positive vulnerability in github.com/canonical/lxd. This is resolved in lxd-5.21.2.
+		# Anyway, it does not affect as we only use client-side lxc code, but the vulnerability is
+		# server-side.
+		# https://pkg.go.dev/vuln/GO-2024-3312
+		# https://pkg.go.dev/vuln/GO-2024-3313
+		"GO-2024-3312"
+		"GO-2024-3313"
+	)
+	ignoreMatcher=$(join "|" "${ignore[@]}")
+
+	echo "Ignoring vulnerabilities: ${ignoreMatcher}"
+
+	allVulns=$(govulncheck -format openvex "github.com/juju/juju/...")
+	filteredVulns=$(echo ${allVulns} | jq -r '.statements[] | select(.status == "affected") | .vulnerability.name' | grep -vE "${ignoreMatcher}")
+
+	if [[ -n ${filteredVulns} ]]; then
+		(echo >&2 -e "\\nError: govulncheck has issues:\\n\\n${filteredVulns}")
+		exit 1
+	fi
+}
+
 test_static_analysis_go() {
 	if [ "$(skip 'test_static_analysis_go')" ]; then
 		echo "==> TEST SKIPPED: static go analysis"
@@ -40,5 +69,12 @@ test_static_analysis_go() {
 
 		run_linter "run_go"
 		run_linter "run_go_tidy"
+
+		# govulncheck static analysis
+		if which govulncheck >/dev/null 2>&1; then
+			run_linter "run_govulncheck"
+		else
+			echo "govulncheck not found, govulncheck static analysis disabled"
+		fi
 	)
 }

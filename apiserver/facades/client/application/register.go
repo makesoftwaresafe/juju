@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/juju/errors"
+
 	"github.com/juju/juju/apiserver/facade"
 )
 
@@ -53,7 +54,13 @@ func Register(registry facade.FacadeRegistry) {
 	}, reflect.TypeOf((*APIv12)(nil))) // Adds UnitsInfo()
 	registry.MustRegister("Application", 13, func(ctx facade.Context) (facade.Facade, error) {
 		return newFacadeV13(ctx)
-	}, reflect.TypeOf((*APIv13)(nil))) // Adds CharmOrigin to Deploy
+	}, reflect.TypeOf((*APIv13)(nil))) // Adds Leader
+	registry.MustRegister("Application", 14, func(ctx facade.Context) (facade.Facade, error) {
+		return newFacadeV14(ctx)
+	}, reflect.TypeOf((*APIv14)(nil)))
+	registry.MustRegister("Application", 15, func(ctx facade.Context) (facade.Facade, error) {
+		return newFacadeV15(ctx)
+	}, reflect.TypeOf((*APIv15)(nil)))
 }
 
 // newFacadeV4 provides the signature required for facade registration
@@ -139,9 +146,25 @@ func newFacadeV12(ctx facade.Context) (*APIv12, error) {
 }
 
 func newFacadeV13(ctx facade.Context) (*APIv13, error) {
-	api, err := newFacadeBase(ctx)
+	api, err := newFacadeV14(ctx)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	return &APIv13{api}, nil
+}
+
+func newFacadeV14(ctx facade.Context) (*APIv14, error) {
+	api, err := newFacadeV15(ctx)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return &APIv14{api}, nil
+}
+
+func newFacadeV15(ctx facade.Context) (*APIv15, error) {
+	api, err := newFacadeBase(ctx)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return &APIv15{api}, nil
 }

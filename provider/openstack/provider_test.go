@@ -11,10 +11,10 @@ import (
 	"github.com/go-goose/goose/v5/identity"
 	"github.com/go-goose/goose/v5/neutron"
 	"github.com/go-goose/goose/v5/nova"
-	"github.com/golang/mock/gomock"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 	"gopkg.in/yaml.v2"
 
@@ -521,10 +521,7 @@ func (localTests) TestPingInvalidHost(c *gc.C) {
 			c.Errorf("ping %q: expected error, but got nil.", t)
 			continue
 		}
-		expected := "No Openstack server running at " + t
-		if err.Error() != expected {
-			c.Errorf("ping %q: expected %q got %v", t, expected, err)
-		}
+		c.Check(err, gc.ErrorMatches, "(?m)No Openstack server running at "+t+".*")
 	}
 }
 func (localTests) TestPingNoEndpoint(c *gc.C) {
@@ -533,7 +530,7 @@ func (localTests) TestPingNoEndpoint(c *gc.C) {
 	p, err := environs.Provider("openstack")
 	c.Assert(err, jc.ErrorIsNil)
 	err = p.Ping(context.NewEmptyCloudCallContext(), server.URL)
-	c.Assert(err, gc.ErrorMatches, "No Openstack server running at "+server.URL)
+	c.Assert(err, gc.ErrorMatches, "(?m)No Openstack server running at "+server.URL+".*")
 }
 
 func (localTests) TestPingInvalidResponse(c *gc.C) {
@@ -544,7 +541,7 @@ func (localTests) TestPingInvalidResponse(c *gc.C) {
 	p, err := environs.Provider("openstack")
 	c.Assert(err, jc.ErrorIsNil)
 	err = p.Ping(context.NewEmptyCloudCallContext(), server.URL)
-	c.Assert(err, gc.ErrorMatches, "No Openstack server running at "+server.URL)
+	c.Assert(err, gc.ErrorMatches, "(?m)No Openstack server running at "+server.URL+".*")
 }
 
 func (localTests) TestPingOKCACertificate(c *gc.C) {

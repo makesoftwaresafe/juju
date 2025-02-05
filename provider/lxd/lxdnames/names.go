@@ -1,7 +1,6 @@
 // Copyright 2015 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
-// Package lxdnames provides names for the lxd provider.
 package lxdnames
 
 // NOTE: this package exists to get around circular imports from cloud and
@@ -25,3 +24,8 @@ const DefaultRemoteRegion = "default"
 
 // ProviderType defines the provider/cloud type for lxd.
 const ProviderType = "lxd"
+
+// IsDefaultCloud returns true if the cloud name is the default lxd cloud.
+func IsDefaultCloud(cloudName string) bool {
+	return cloudName == DefaultCloud || cloudName == DefaultCloudAltName
+}

@@ -22,8 +22,6 @@ import (
 
 	"github.com/juju/juju/api"
 	apitesting "github.com/juju/juju/api/testing"
-	"github.com/juju/juju/apiserver/common"
-	apiservertesting "github.com/juju/juju/apiserver/testing"
 	"github.com/juju/juju/core/crossmodel"
 	"github.com/juju/juju/core/life"
 	"github.com/juju/juju/core/network"
@@ -40,8 +38,6 @@ type remoteRelationsSuite struct {
 	jujutesting.IsolationSuite
 
 	remoteControllerInfo  *api.Info
-	resources             *common.Resources
-	authorizer            *apiservertesting.FakeAuthorizer
 	relationsFacade       *mockRelationsFacade
 	remoteRelationsFacade *mockRemoteRelationsFacade
 	config                remoterelations.Config
@@ -228,7 +224,60 @@ func (s *remoteRelationsSuite) TestRemoteApplicationWorkersRedirect(c *gc.C) {
 		{"WatchOfferStatus", []interface{}{"offer-mysql-uuid", macaroon.Slice{mac}}},
 	}
 	s.waitForWorkerStubCalls(c, expected)
+}
 
+func (s *remoteRelationsSuite) TestRemoteApplicationWorkersRedirectControllerUpdateError(c *gc.C) {
+	s.stub.SetErrors(nil, nil, nil, nil, errors.New("busted"))
+
+	newControllerTag := names.NewControllerTag(utils.MustNewUUID().String())
+
+	s.config.NewRemoteModelFacadeFunc = func(info *api.Info) (remoterelations.RemoteModelRelationsFacadeCloser, error) {
+		// If attempting to connect to the remote controller as defined in
+		// SetUpTest, return a redirect error with a different address.
+		if info.Addrs[0] == "1.2.3.4:1234" {
+			return nil, &api.RedirectError{
+				Servers:         []network.MachineHostPorts{network.NewMachineHostPorts(2345, "2.3.4.5")},
+				CACert:          "new-controller-cert",
+				FollowRedirect:  false,
+				ControllerTag:   newControllerTag,
+				ControllerAlias: "",
+			}
+		}
+
+		// The address we asked to connect has changed;
+		// represent a successful connection.
+		return s.remoteRelationsFacade, nil
+	}
+
+	s.relationsFacade.remoteApplications["mysql"] = newMockRemoteApplication("mysql", "mysqlurl")
+	s.relationsFacade.controllerInfo["remote-model-uuid"] = s.remoteControllerInfo
+
+	w, err := remoterelations.New(s.config)
+	c.Assert(err, jc.ErrorIsNil)
+	defer workertest.DirtyKill(c, w)
+
+	s.relationsFacade.remoteApplicationsWatcher.changes <- []string{"mysql"}
+	expected := []jujutesting.StubCall{
+		{"WatchRemoteApplications", nil},
+		{"RemoteApplications", []interface{}{[]string{"mysql"}}},
+		{"WatchRemoteApplicationRelations", []interface{}{"mysql"}},
+		{"ControllerAPIInfoForModel", []interface{}{"remote-model-uuid"}},
+		// We expect a redirect error will cause the new details to be saved,
+		// But this call returns an error.
+		{"UpdateControllerForModel", []interface{}{
+			crossmodel.ControllerInfo{
+				ControllerTag: newControllerTag,
+				Alias:         "",
+				Addrs:         []string{"2.3.4.5:2345"},
+				CACert:        "new-controller-cert",
+			},
+			"remote-model-uuid"},
+		},
+		{"Close", nil},
+		{"SetRemoteApplicationStatus", []interface{}{"mysql", "error",
+			"cannot connect to external controller: opening facade to remote model: updating external controller info: busted"}},
+	}
+	s.waitForWorkerStubCalls(c, expected)
 }
 
 func (s *remoteRelationsSuite) TestRemoteApplicationRemoved(c *gc.C) {
@@ -666,13 +715,100 @@ func (s *remoteRelationsSuite) TestRemoteRelationsDying(c *gc.C) {
 	s.waitForWorkerStubCalls(c, expected)
 }
 
+func intPtr(i int) *int {
+	return &i
+}
+
 func (s *remoteRelationsSuite) TestLocalRelationsRemoved(c *gc.C) {
 	// Checks that when a remote relation goes away the relation units worker is killed.
 	w := s.assertRemoteRelationsWorkers(c)
 	defer workertest.CleanKill(c, w)
 	s.stub.ResetCalls()
 
-	unitsWatcher, _ := s.relationsFacade.removeRelation("db2:db django:db")
+	unitsWatcher, _ := s.relationsFacade.remoteRelationWatcher("db2:db django:db")
+	unitsWatcher.changes <- params.RemoteRelationChangeEvent{
+		RelationToken:    "token-db2:db django:db",
+		ApplicationToken: "token-django",
+		ChangedUnits: []params.RemoteRelationUnitChange{{
+			UnitId:   1,
+			Settings: map[string]interface{}{"foo": "bar"},
+		}, {
+			UnitId:   2,
+			Settings: map[string]interface{}{"foo": "baz"},
+		}},
+		UnitCount: intPtr(2),
+	}
+
+	mac, err := apitesting.NewMacaroon("apimac")
+	c.Assert(err, jc.ErrorIsNil)
+	expected := []jujutesting.StubCall{
+		{"PublishRelationChange", []interface{}{
+			params.RemoteRelationChangeEvent{
+				ApplicationToken: "token-django",
+				RelationToken:    "token-db2:db django:db",
+				ChangedUnits: []params.RemoteRelationUnitChange{{
+					UnitId:   1,
+					Settings: map[string]interface{}{"foo": "bar"},
+				}, {
+					UnitId:   2,
+					Settings: map[string]interface{}{"foo": "baz"},
+				}},
+				UnitCount:     intPtr(2),
+				Macaroons:     macaroon.Slice{mac},
+				BakeryVersion: bakery.LatestVersion,
+			},
+		}},
+	}
+	s.waitForWorkerStubCalls(c, expected)
+	s.stub.ResetCalls()
+
+	unitsWatcher, _ = s.relationsFacade.removeRelation("db2:db django:db")
+	unitsWatcher.changes <- params.RemoteRelationChangeEvent{
+		RelationToken:    "token-db2:db django:db",
+		ApplicationToken: "token-django",
+		DepartedUnits:    []int{1},
+		UnitCount:        intPtr(1),
+	}
+
+	expected = []jujutesting.StubCall{
+		{"PublishRelationChange", []interface{}{
+			params.RemoteRelationChangeEvent{
+				ApplicationToken: "token-django",
+				RelationToken:    "token-db2:db django:db",
+				DepartedUnits:    []int{1},
+				UnitCount:        intPtr(1),
+				Macaroons:        macaroon.Slice{mac},
+				BakeryVersion:    bakery.LatestVersion,
+			},
+		}},
+	}
+	s.waitForWorkerStubCalls(c, expected)
+	s.stub.ResetCalls()
+
+	// Remove relation before we receive the final unit change event.
+	unitsWatcher, _ = s.relationsFacade.removeRelation("db2:db django:db")
+	unitsWatcher.changes <- params.RemoteRelationChangeEvent{
+		RelationToken:    "token-db2:db django:db",
+		ApplicationToken: "token-django",
+		DepartedUnits:    []int{2},
+		UnitCount:        intPtr(0),
+	}
+
+	expected = []jujutesting.StubCall{
+		{"PublishRelationChange", []interface{}{
+			params.RemoteRelationChangeEvent{
+				ApplicationToken: "token-django",
+				RelationToken:    "token-db2:db django:db",
+				DepartedUnits:    []int{2},
+				UnitCount:        intPtr(0),
+				Macaroons:        macaroon.Slice{mac},
+				BakeryVersion:    bakery.LatestVersion,
+			},
+		}},
+	}
+	s.waitForWorkerStubCalls(c, expected)
+	s.stub.ResetCalls()
+
 	relWatcher, _ := s.relationsFacade.remoteApplicationRelationsWatcher("db2")
 	relWatcher.changes <- []string{"db2:db django:db"}
 	for a := coretesting.LongAttempt.Start(); a.Next(); {
@@ -681,8 +817,13 @@ func (s *remoteRelationsSuite) TestLocalRelationsRemoved(c *gc.C) {
 			break
 		}
 	}
+	unitsWatcher.changes <- params.RemoteRelationChangeEvent{
+		RelationToken:    "token-db2:db django:db",
+		ApplicationToken: "token-django",
+		DepartedUnits:    []int{2},
+	}
 	c.Assert(unitsWatcher.killed(), jc.IsTrue)
-	expected := []jujutesting.StubCall{
+	expected = []jujutesting.StubCall{
 		{"Relations", []interface{}{[]string{"db2:db django:db"}}},
 	}
 	s.waitForWorkerStubCalls(c, expected)

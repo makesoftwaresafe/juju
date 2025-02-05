@@ -1,5 +1,6 @@
 // Copyright 2020 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package gen
 
 import (
@@ -7,8 +8,9 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
-	facade "github.com/juju/juju/apiserver/facade"
 	"github.com/juju/rpcreflect"
+
+	facade "github.com/juju/juju/apiserver/facade"
 )
 
 // FacadeGroup defines the grouping you want to export.

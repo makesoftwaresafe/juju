@@ -1,15 +1,18 @@
 // Copyright 2019 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
+
 package state
 
 import (
-	"github.com/golang/mock/gomock"
+	"fmt"
+
 	"github.com/juju/description/v3"
 	"github.com/juju/errors"
 	"github.com/juju/mgo/v2/txn"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
 	"github.com/juju/utils/v3"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/core/permission"
@@ -25,6 +28,8 @@ func (s *MigrationImportTasksSuite) TestImportApplicationOffers(c *gc.C) {
 
 	offerUUID, err := utils.NewUUID()
 	c.Assert(err, jc.ErrorIsNil)
+	offerUUID2, err := utils.NewUUID()
+	c.Assert(err, jc.ErrorIsNil)
 
 	runner := ImportApplicationOfferRunner{
 		OfferUUID: offerUUID.String(),
@@ -34,6 +39,7 @@ func (s *MigrationImportTasksSuite) TestImportApplicationOffers(c *gc.C) {
 
 	entity := s.applicationOffer(ctrl)
 	offerDoc := applicationOfferDoc{
+		DocID:                  fmt.Sprintf("%s:%s", offerUUID.String(), "offer-name-foo"),
 		OfferUUID:              offerUUID.String(),
 		OfferName:              "offer-name-foo",
 		ApplicationName:        "foo",
@@ -42,21 +48,30 @@ func (s *MigrationImportTasksSuite) TestImportApplicationOffers(c *gc.C) {
 			"db": "db",
 		},
 	}
+	secondOfferDoc := offerDoc
+	secondOfferDoc.DocID = fmt.Sprintf("%s:%s", offerUUID2.String(), "second-offer")
+	secondOfferDoc.OfferUUID = offerUUID2.String()
+	secondOfferDoc.OfferName = "second-offer"
 
-	runner.Add(runner.applicationOffers(entity))
+	entity.EXPECT().ApplicationName().Return(offerDoc.ApplicationName).Times(2)
+	runner.Add(runner.applicationOffers(entity, entity))
+	runner.Add(runner.docID(offerDoc.OfferName, offerDoc.DocID))
+	runner.Add(runner.docID(secondOfferDoc.OfferName, secondOfferDoc.DocID))
 	runner.Add(runner.applicationOfferDoc(offerDoc, entity))
-	runner.Add(runner.docID)
+	runner.Add(runner.applicationOfferDoc(secondOfferDoc, entity))
 
 	refOp := txn.Op{
 		Assert: txn.DocMissing,
 	}
-	runner.Add(runner.applicationOffersRefOp(refOp))
+	runner.Add(runner.applicationOffersRefOp(refOp, 2))
 
-	entity.EXPECT().ACL().Return(map[string]string{"fred": "consume"})
+	entity.EXPECT().ACL().Return(map[string]string{"fred": "consume"}).Times(2)
 	permissionOp := createPermissionOp(applicationOfferKey(
 		offerUUID.String()), userGlobalKey(userAccessID(names.NewUserTag("fred"))), permission.ConsumeAccess)
+	permissionOp2 := createPermissionOp(applicationOfferKey(
+		offerUUID2.String()), userGlobalKey(userAccessID(names.NewUserTag("fred"))), permission.ConsumeAccess)
 
-	runner.Add(runner.transaction(offerDoc, refOp, permissionOp))
+	runner.Add(runner.transaction([]applicationOfferDoc{offerDoc, secondOfferDoc}, []txn.Op{permissionOp, permissionOp2}, refOp))
 
 	err = runner.Run(ctrl)
 	c.Assert(err, jc.ErrorIsNil)
@@ -77,6 +92,7 @@ func (s *MigrationImportTasksSuite) TestImportApplicationOffersTransactionFailur
 
 	entity := s.applicationOffer(ctrl)
 	offerDoc := applicationOfferDoc{
+		DocID:                  fmt.Sprintf("%s:%s", offerUUID.String(), "offer-name-foo"),
 		OfferUUID:              offerUUID.String(),
 		OfferName:              "offer-name-foo",
 		ApplicationName:        "foo",
@@ -87,14 +103,15 @@ func (s *MigrationImportTasksSuite) TestImportApplicationOffersTransactionFailur
 	}
 
 	entity.EXPECT().ACL().Return(map[string]string{})
+	entity.EXPECT().ApplicationName().Return(offerDoc.ApplicationName)
 	runner.Add(runner.applicationOffers(entity))
 	runner.Add(runner.applicationOfferDoc(offerDoc, entity))
-	runner.Add(runner.docID)
+	runner.Add(runner.docID(offerDoc.OfferName, offerDoc.DocID))
 
 	refOp := txn.Op{
 		Assert: txn.DocMissing,
 	}
-	runner.Add(runner.applicationOffersRefOp(refOp))
+	runner.Add(runner.applicationOffersRefOp(refOp, 1))
 	runner.Add(runner.transactionWithError(errors.New("fail")))
 
 	err = runner.Run(ctrl)
@@ -121,11 +138,8 @@ func (s *ImportApplicationOfferRunner) Run(ctrl *gomock.Controller) error {
 	return m.Execute(s.model, s.runner)
 }
 
-func (s *ImportApplicationOfferRunner) applicationOffers(entity description.ApplicationOffer) func(ctrl *gomock.Controller) {
+func (s *ImportApplicationOfferRunner) applicationOffers(entities ...description.ApplicationOffer) func(ctrl *gomock.Controller) {
 	return func(ctrl *gomock.Controller) {
-		entities := []description.ApplicationOffer{
-			entity,
-		}
 		s.model.EXPECT().Offers().Return(entities)
 	}
 }
@@ -136,30 +150,40 @@ func (s *ImportApplicationOfferRunner) applicationOfferDoc(offerDoc applicationO
 	}
 }
 
-func (s *ImportApplicationOfferRunner) applicationOffersRefOp(op txn.Op) func(ctrl *gomock.Controller) {
+func (s *ImportApplicationOfferRunner) applicationOffersRefOp(op txn.Op, cnt int) func(ctrl *gomock.Controller) {
 	return func(ctrl *gomock.Controller) {
-		s.model.EXPECT().MakeIncApplicationOffersRefOp("foo").Return(op, nil)
+		s.model.EXPECT().MakeApplicationOffersRefOp("foo", cnt).Return(op, nil)
 	}
-}
-
-func (s *ImportApplicationOfferRunner) docID(ctrl *gomock.Controller) {
-	s.model.EXPECT().DocID("foo").Return("ao#foo")
 }
 
 func (s *MigrationImportTasksSuite) applicationOffer(ctrl *gomock.Controller) *MockApplicationOffer {
 	return NewMockApplicationOffer(ctrl)
 }
 
-func (s *ImportApplicationOfferRunner) transaction(offerDoc applicationOfferDoc, ops ...txn.Op) func(ctrl *gomock.Controller) {
+func (s *ImportApplicationOfferRunner) docID(offerName, docID string) func(ctrl *gomock.Controller) {
 	return func(ctrl *gomock.Controller) {
-		s.runner.EXPECT().RunTransaction(append([]txn.Op{
-			{
-				C:      applicationOffersC,
-				Id:     "ao#foo",
-				Assert: txn.DocMissing,
-				Insert: offerDoc,
-			},
-		}, ops...)).Return(nil)
+		s.model.EXPECT().DocID(offerName).Return(docID)
+	}
+}
+
+func (s *ImportApplicationOfferRunner) transaction(offerDocs []applicationOfferDoc, permissionOps []txn.Op, ops ...txn.Op) func(ctrl *gomock.Controller) {
+	return func(ctrl *gomock.Controller) {
+		useOps := make([]txn.Op, 0)
+
+		for i, doc := range offerDocs {
+			useOps = append(useOps, []txn.Op{
+				{
+					C:      applicationOffersC,
+					Id:     doc.DocID,
+					Assert: txn.DocMissing,
+					Insert: doc,
+				},
+				permissionOps[i],
+			}...)
+		}
+		useOps = append(useOps, ops...)
+
+		s.runner.EXPECT().RunTransaction(useOps).Return(nil)
 	}
 }
 

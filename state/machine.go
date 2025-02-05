@@ -818,11 +818,8 @@ func (original *Machine) advanceLifecycle(life Life, force, dyingAllowContainers
 			if m.doc.Life == Dead {
 				return nil, jujutxn.ErrNoOperations
 			}
-			if hasVote {
-				return nil, fmt.Errorf("machine %s is still a voting controller member", m.doc.Id)
-			}
-			if m.IsManager() {
-				return nil, errors.Errorf("machine %s is still a controller member", m.Id())
+			if hasVote || m.IsManager() {
+				return nil, stateerrors.NewIsControllerMemberError(m.Id(), hasVote)
 			}
 			asserts = append(asserts, bson.DocElem{
 				Name: "jobs", Value: bson.D{{Name: "$nin", Value: []MachineJob{JobManageModel}}}})
@@ -866,10 +863,11 @@ func (original *Machine) advanceLifecycle(life Life, force, dyingAllowContainers
 			}
 
 			if canDie && !dyingAllowContainers {
-				if err := m.advanceLifecycleIfNoContainers(); err != nil && !IsHasContainersError(err) {
-					return nil, err
-				} else if IsHasContainersError(err) {
+				err := m.advanceLifecycleIfNoContainers()
+				if errors.Is(err, stateerrors.HasContainersError) {
 					canDie = false
+				} else if err != nil {
+					return nil, err
 				}
 				ops = append(ops, m.noContainersOp())
 			}
@@ -885,7 +883,7 @@ func (original *Machine) advanceLifecycle(life Life, force, dyingAllowContainers
 		}
 
 		if len(m.doc.Principals) > 0 {
-			return nil, newHasAssignedUnitsError(m.doc.Id, m.doc.Principals)
+			return nil, stateerrors.NewHasAssignedUnitsError(m.doc.Id, m.doc.Principals)
 		}
 		asserts = append(asserts, noUnitAsserts())
 
@@ -1025,7 +1023,7 @@ func (m *Machine) advanceLifecycleIfNoContainers() error {
 	}
 
 	if len(containers) > 0 {
-		return newHasContainersError(m.doc.Id, containers)
+		return stateerrors.NewHasContainersError(m.doc.Id, containers)
 	}
 	return nil
 }
@@ -1056,7 +1054,7 @@ func (m *Machine) assertNoPersistentStorage() (bson.D, error) {
 		}
 	}
 	if len(attachments) > 0 {
-		return nil, newHasAttachmentsError(m.doc.Id, attachments.SortedValues())
+		return nil, stateerrors.NewHasAttachmentsError(m.doc.Id, attachments.SortedValues())
 	}
 	if m.doc.Life == Dying {
 		return nil, nil
@@ -2125,12 +2123,11 @@ func (m *Machine) UpdateMachineSeries(series string) error {
 			Update: bson.D{{"$set", bson.D{{"series", series}}}},
 		}}
 		for _, unit := range units {
-			curl, _ := unit.CharmURL()
 			ops = append(ops, txn.Op{
 				C:  unitsC,
 				Id: unit.doc.DocID,
 				Assert: bson.D{{"life", Alive},
-					{"charmurl", curl},
+					{"charmurl", unit.CharmURL()},
 					{"subordinates", unit.SubordinateNames()}},
 				Update: bson.D{{"$set", bson.D{{"series", series}}}},
 			})

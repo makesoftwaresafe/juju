@@ -6,6 +6,7 @@ package uniter
 import (
 	"fmt"
 
+	corecharm "github.com/juju/charm/v8"
 	"github.com/juju/charm/v8/hooks"
 	"github.com/juju/errors"
 
@@ -60,7 +61,7 @@ func (s *uniterResolver) NextOp(
 	opFactory operation.Factory,
 ) (operation.Operation, error) {
 	if remoteState.Life == life.Dead || localState.Removed {
-		return nil, resolver.ErrTerminate
+		return nil, resolver.ErrUnitDead
 	}
 	logger := s.config.Logger
 
@@ -137,9 +138,19 @@ func (s *uniterResolver) NextOp(
 		return op, err
 	}
 
+	// If we are to shut down, we don't want to start running any more queued/pending hooks.
+	if remoteState.Shutdown {
+		logger.Debugf("unit agent is shutting down, will not run pending/queued hooks")
+		return s.nextOp(localState, remoteState, opFactory)
+	}
+
 	switch localState.Kind {
 	case operation.RunHook:
-		switch localState.Step {
+		step := localState.Step
+		if localState.HookStep != nil {
+			step = *localState.HookStep
+		}
+		switch step {
 		case operation.Pending:
 			logger.Infof("awaiting error resolution for %q hook", localState.Hook.Kind)
 			return s.nextOpHookError(localState, remoteState, opFactory)
@@ -154,17 +165,23 @@ func (s *uniterResolver) NextOp(
 			return opFactory.NewRunHook(*localState.Hook)
 
 		case operation.Done:
-			curl := localState.CharmURL
-			if curl != nil && wrench.IsActive("hooks", fmt.Sprintf("%s-%s-error", curl.Name, localState.Hook.Kind)) {
-				s.config.Logger.Errorf("commit hook %q failed due to a wrench in the works", localState.Hook.Kind)
-				return nil, errors.Errorf("commit hook %q failed due to a wrench in the works", localState.Hook.Kind)
+			// Only check for the wrench if trace logging is enabled. Otherwise,
+			// we'd have to parse the charm url every time just to check to see
+			// if a wrench existed.
+			if localState.CharmURL != "" && logger.IsTraceEnabled() {
+				// If it's set, the charm url will parse.
+				curl := corecharm.MustParseURL(localState.CharmURL)
+				if curl != nil && wrench.IsActive("hooks", fmt.Sprintf("%s-%s-error", curl.Name, localState.Hook.Kind)) {
+					s.config.Logger.Errorf("commit hook %q failed due to a wrench in the works", localState.Hook.Kind)
+					return nil, errors.Errorf("commit hook %q failed due to a wrench in the works", localState.Hook.Kind)
+				}
 			}
 
 			logger.Infof("committing %q hook", localState.Hook.Kind)
 			return opFactory.NewSkipHook(*localState.Hook)
 
 		default:
-			return nil, errors.Errorf("unknown operation step %v", localState.Step)
+			return nil, errors.Errorf("unknown hook operation step %v", step)
 		}
 
 	case operation.Continue:
@@ -283,10 +300,10 @@ func (s *uniterResolver) nextOpHookError(
 
 func (s *uniterResolver) charmModified(local resolver.LocalState, remote remotestate.Snapshot) bool {
 	// CAAS models may not yet have read the charm url from state.
-	if remote.CharmURL == nil {
+	if remote.CharmURL == "" {
 		return false
 	}
-	if *local.CharmURL != *remote.CharmURL {
+	if local.CharmURL != remote.CharmURL {
 		s.config.Logger.Debugf("upgrade from %v to %v", local.CharmURL, remote.CharmURL)
 		return true
 	}
@@ -335,7 +352,7 @@ func (s *uniterResolver) nextOp(
 	case life.Dead:
 		// The unit is dying/dead and stopped, so tell the uniter
 		// to terminate.
-		return nil, resolver.ErrTerminate
+		return nil, resolver.ErrUnitDead
 	}
 
 	// Now that storage hooks have run at least once, before anything else,

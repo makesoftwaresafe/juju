@@ -216,7 +216,7 @@ func (s *modelmanagerSuite) testDestroyModel(c *gc.C, v int, destroyStorage, for
 		),
 	}
 	client := modelmanager.NewClient(apiCaller)
-	err := client.DestroyModel(coretesting.ModelTag, destroyStorage, force, maxWait, timeout)
+	err := client.DestroyModel(coretesting.ModelTag, destroyStorage, force, maxWait, &timeout)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(called, jc.IsTrue)
 }
@@ -245,7 +245,8 @@ func (s *modelmanagerSuite) TestDestroyModelV3(c *gc.C) {
 	)
 	client := modelmanager.NewClient(apiCaller)
 	destroyStorage := true
-	err := client.DestroyModel(coretesting.ModelTag, &destroyStorage, nil, nil, time.Minute)
+	timeout := time.Minute
+	err := client.DestroyModel(coretesting.ModelTag, &destroyStorage, nil, nil, &timeout)
 	c.Assert(err, jc.ErrorIsNil)
 	c.Assert(called, jc.IsTrue)
 }
@@ -253,7 +254,8 @@ func (s *modelmanagerSuite) TestDestroyModelV3(c *gc.C) {
 func (s *modelmanagerSuite) TestDestroyModelV3DestroyStorageNotTrue(c *gc.C) {
 	client := modelmanager.NewClient(basetesting.BestVersionCaller{})
 	for _, destroyStorage := range []*bool{nil, new(bool)} {
-		err := client.DestroyModel(coretesting.ModelTag, destroyStorage, nil, nil, time.Minute)
+		timeout := time.Minute
+		err := client.DestroyModel(coretesting.ModelTag, destroyStorage, nil, nil, &timeout)
 		c.Assert(err, gc.ErrorMatches, "this Juju controller requires destroyStorage to be true")
 	}
 }
@@ -862,75 +864,4 @@ func (s *dumpModelSuite) TestDumpModelDBError(c *gc.C) {
 	out, err := client.DumpModelDB(coretesting.ModelTag)
 	c.Assert(err, gc.ErrorMatches, "fake error")
 	c.Assert(out, gc.IsNil)
-}
-
-type validateUpdateModelSuite struct {
-	coretesting.BaseSuite
-}
-
-var _ = gc.Suite(&validateUpdateModelSuite{})
-
-func (s *validateUpdateModelSuite) TestValidateModelUpgradeWithWongAPIVersion(c *gc.C) {
-	called := false
-	apiCaller := basetesting.BestVersionCaller{
-		BestVersion: 8,
-		APICallerFunc: func(objType string, version int, id, request string, arg, result interface{}) error {
-			called = true
-			return nil
-		},
-	}
-
-	client := modelmanager.NewClient(apiCaller)
-	err := client.ValidateModelUpgrade(coretesting.ModelTag, false)
-	c.Assert(err, gc.ErrorMatches, `ValidateModelUpgrade in version 8 not implemented`)
-	c.Assert(called, jc.IsFalse)
-}
-
-func (s *validateUpdateModelSuite) TestValidateModelUpgradeWithErrors(c *gc.C) {
-	results := params.ErrorResults{Results: []params.ErrorResult{{
-		Error: &params.Error{Message: "fake error"},
-	}}}
-
-	apiCaller := basetesting.BestVersionCaller{
-		BestVersion: 9,
-		APICallerFunc: func(objType string, version int, id, request string, args, result interface{}) error {
-			res, ok := result.(*params.ErrorResults)
-			c.Assert(ok, jc.IsTrue)
-			*res = results
-			return nil
-		},
-	}
-
-	client := modelmanager.NewClient(apiCaller)
-	err := client.ValidateModelUpgrade(coretesting.ModelTag, false)
-	c.Assert(err, gc.ErrorMatches, "fake error")
-}
-
-func (s *validateUpdateModelSuite) TestValidateModelUpgrade(c *gc.C) {
-	results := params.ErrorResults{Results: []params.ErrorResult{{}}}
-
-	apiCaller := basetesting.BestVersionCaller{
-		BestVersion: 9,
-		APICallerFunc: func(objType string, version int, id, request string, args, result interface{}) error {
-			c.Check(objType, gc.Equals, "ModelManager")
-			c.Check(request, gc.Equals, "ValidateModelUpgrades")
-			in, ok := args.(params.ValidateModelUpgradeParams)
-			c.Assert(ok, jc.IsTrue)
-			c.Assert(in, gc.DeepEquals, params.ValidateModelUpgradeParams{
-				Models: []params.ValidateModelUpgradeParam{{
-					ModelTag: coretesting.ModelTag.String(),
-				}},
-				Force: true,
-			})
-
-			res, ok := result.(*params.ErrorResults)
-			c.Assert(ok, jc.IsTrue)
-			*res = results
-			return nil
-		},
-	}
-
-	client := modelmanager.NewClient(apiCaller)
-	err := client.ValidateModelUpgrade(coretesting.ModelTag, true)
-	c.Assert(err, jc.ErrorIsNil)
 }

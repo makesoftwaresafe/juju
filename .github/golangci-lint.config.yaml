@@ -1,4 +1,10 @@
 linters-settings:
+  gci:
+    sections:
+      - standard
+      - default
+      - Prefix(github.com/juju/juju)
+    skip-generated: true
   gofmt:
     simplify: true
   govet:
@@ -14,7 +20,8 @@ linters-settings:
       - loopclosure
       - lostcancel
       - nilfunc
-      - printf
+# TODO(4.0): re-enable me
+#      - printf
       - shift
       - stdmethods
       - structtag
@@ -26,14 +33,13 @@ linters-settings:
 linters:
   disable-all: true
   enable:
+    - gci
     - govet
     - gofmt
-    - goimports
     - ineffassign
     - misspell
     - unconvert
-    - deadcode
-    - varcheck
+    - unused
 run:
   timeout: 30m
 skip-dirs:

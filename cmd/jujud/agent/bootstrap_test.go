@@ -21,6 +21,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"github.com/juju/mgo/v2"
+	mgotesting "github.com/juju/mgo/v2/testing"
 	"github.com/juju/names/v4"
 	gitjujutesting "github.com/juju/testing"
 	jc "github.com/juju/testing/checkers"
@@ -69,7 +70,7 @@ import (
 // an already-bootstrapped environment.
 type BootstrapSuite struct {
 	testing.BaseSuite
-	gitjujutesting.MgoSuite
+	mgotesting.MgoSuite
 
 	bootstrapParamsFile string
 	bootstrapParams     instancecfg.StateInitializationParams
@@ -124,7 +125,7 @@ func (s *BootstrapSuite) SetUpTest(c *gc.C) {
 	s.makeTestModel(c)
 
 	// Create fake tools.tar.gz and downloaded-tools.txt.
-	current := testing.CurrentVersion(c)
+	current := testing.CurrentVersion()
 	toolsDir := filepath.FromSlash(agenttools.SharedToolsDir(s.dataDir, current))
 	err := os.MkdirAll(toolsDir, 0755)
 	c.Assert(err, jc.ErrorIsNil)
@@ -321,7 +322,7 @@ func (s *BootstrapSuite) initBootstrapCommand(c *gc.C, jobs []model.MachineJob, 
 		PrivateKey:   "some key",
 		CAPrivateKey: "another key",
 		APIPort:      3737,
-		StatePort:    gitjujutesting.MgoServer.Port(),
+		StatePort:    mgotesting.MgoServer.Port(),
 	}
 
 	machineConf, err = agent.NewStateMachineConfig(agentParams, servingInfo)
@@ -505,9 +506,9 @@ func (s *BootstrapSuite) TestInitialPassword(c *gc.C) {
 	// Check we can log in to mongo as admin.
 	info := mongo.MongoInfo{
 		Info: mongo.Info{
-			Addrs:      []string{gitjujutesting.MgoServer.Addr()},
+			Addrs:      []string{mgotesting.MgoServer.Addr()},
 			CACert:     testing.CACert,
-			DisableTLS: !gitjujutesting.MgoServer.SSLEnabled(),
+			DisableTLS: !mgotesting.MgoServer.SSLEnabled(),
 		},
 		Tag:      nil, // admin user
 		Password: testPassword,
@@ -677,7 +678,7 @@ func (s *BootstrapSuite) TestDownloadedToolsMetadata(c *gc.C) {
 func (s *BootstrapSuite) TestUploadedToolsMetadata(c *gc.C) {
 	// Tools uploaded over ssh.
 	s.writeDownloadedTools(c, &tools.Tools{
-		Version: testing.CurrentVersion(c),
+		Version: testing.CurrentVersion(),
 		URL:     "file:///does/not/matter",
 	})
 	s.testToolsMetadata(c)

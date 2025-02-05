@@ -6,10 +6,10 @@ package instancemutater_test
 import (
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/juju/errors"
 	"github.com/juju/names/v4"
 	jc "github.com/juju/testing/checkers"
+	"go.uber.org/mock/gomock"
 	gc "gopkg.in/check.v1"
 
 	"github.com/juju/juju/api/agent/instancemutater"
@@ -117,12 +117,6 @@ func (s *instanceMutaterSuite) expectWatchModelMachinesWithError() {
 	aExp := s.apiCaller.EXPECT()
 	aExp.BestFacadeVersion("InstanceMutater").Return(1)
 	aExp.APICall("InstanceMutater", 1, "", "WatchModelMachines", nil, gomock.Any()).Return(errors.New("failed"))
-}
-
-func (s *instanceMutaterSuite) expectNotifyWatcher() {
-	aExp := s.apiCaller.EXPECT()
-	aExp.BestFacadeVersion("NotifyWatcher").Return(1)
-	aExp.APICall("NotifyWatcher", 1, "", "Next", nil, gomock.Any()).Return(nil).MinTimes(1)
 }
 
 func successAPICaller(c *gc.C, method string, expectArgs, useResults interface{}) *apitesting.CallChecker {

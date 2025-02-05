@@ -262,7 +262,7 @@ func (p EnvironProvider) Ping(ctx context.ProviderCallContext, endpoint string) 
 	c := p.ClientFromEndpoint(endpoint)
 	if _, err := c.IdentityAuthOptions(); err != nil {
 		handleCredentialError(err, ctx)
-		return errors.Wrap(err, errors.Errorf("No Openstack server running at %s", endpoint))
+		return errors.Annotatef(err, "No Openstack server running at %s", endpoint)
 	}
 	return nil
 }
@@ -608,7 +608,7 @@ func (e *Environ) ConstraintsValidator(ctx context.ProviderCallContext) (constra
 	sort.Strings(instTypeNames)
 	validator.RegisterVocabulary(constraints.InstanceType, instTypeNames)
 	validator.RegisterVocabulary(constraints.VirtType, []string{"kvm", "lxd"})
-	validator.RegisterVocabulary(constraints.RootDiskSource, []string{rootDiskSourceVolume})
+	validator.RegisterVocabulary(constraints.RootDiskSource, []string{rootDiskSourceVolume, rootDiskSourceLocal})
 	return validator, nil
 }
 
@@ -1096,29 +1096,29 @@ func (e *Environ) startInstance(
 		Constraints: args.Constraints,
 	}, args.ImageMetadata)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 	if err := args.InstanceConfig.SetTools(args.Tools); err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	if err := instancecfg.FinishInstanceConfig(args.InstanceConfig, e.Config()); err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	cloudCfg, err := e.configurator.GetCloudConfig(args)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	networks, err := e.networksForInstance(args, cloudCfg)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 
 	userData, err := providerinit.ComposeUserData(args.InstanceConfig, cloudCfg, OpenstackRenderer{})
 	if err != nil {
-		return nil, common.ZoneIndependentError(errors.Annotate(err, "cannot make user data"))
+		return nil, environs.ZoneIndependentError(errors.Annotate(err, "cannot make user data"))
 	}
 	logger.Debugf("openstack user data; %d bytes", len(userData))
 
@@ -1155,10 +1155,9 @@ func (e *Environ) startInstance(
 			}
 			net, err := neutronClient.GetNetworkV2(n.NetworkId)
 			if err != nil {
-				return nil, common.ZoneIndependentError(err)
+				return nil, environs.ZoneIndependentError(err)
 			}
-			if net.PortSecurityEnabled != nil &&
-				*net.PortSecurityEnabled == false {
+			if net.PortSecurityEnabled != nil && !*net.PortSecurityEnabled {
 				createSecurityGroups = *net.PortSecurityEnabled
 				logger.Infof("network %q has port_security_enabled set to false. Not using security groups.", net.Id)
 				break
@@ -1177,7 +1176,7 @@ func (e *Environ) startInstance(
 		}
 		groupNames, err := e.firewaller.SetUpGroups(ctx, args.ControllerUUID, args.InstanceConfig.MachineId, apiPort)
 		if err != nil {
-			return nil, common.ZoneIndependentError(errors.Annotate(err, "cannot set up groups"))
+			return nil, environs.ZoneIndependentError(errors.Annotate(err, "cannot set up groups"))
 		}
 		novaGroupNames = make([]nova.SecurityGroupName, len(groupNames))
 		for i, name := range groupNames {
@@ -1190,7 +1189,6 @@ func (e *Environ) startInstance(
 		id string,
 		timeout time.Duration,
 	) (server *nova.ServerDetail, err error) {
-
 		var errStillBuilding = errors.Errorf("instance %q has status BUILD", id)
 		err = retry.Call(retry.CallArgs{
 			Clock:       e.clock,
@@ -1280,12 +1278,19 @@ func (e *Environ) startInstance(
 	}
 	err = e.configureRootDisk(ctx, args, spec, &opts)
 	if err != nil {
-		return nil, common.ZoneIndependentError(err)
+		return nil, environs.ZoneIndependentError(err)
 	}
 	e.configurator.ModifyRunServerOptions(&opts)
 
 	server, err := tryStartNovaInstance(shortAttempt, e.nova(), opts)
 	if err != nil || server == nil {
+		// Attempt to clean up any security groups we created.
+		if err := e.cleanupGroups(ctx, e.nova(), novaGroupNames); err != nil {
+			// If we failed to clean up the security groups, we need the user
+			// to manually clean them up.
+			logger.Errorf("cannot cleanup security groups: %v", err)
+		}
+
 		logger.Debugf("cannot run instance full error: %q", err)
 		err = errors.Annotate(errors.Cause(err), "cannot run instance")
 		// Improve the error message if there is no valid network.
@@ -1296,14 +1301,14 @@ func (e *Environ) startInstance(
 		// let the provisioner know it is a good idea to try another
 		// AZ if available.
 		if !isNoValidHostsError(err) {
-			err = common.ZoneIndependentError(err)
+			err = environs.ZoneIndependentError(err)
 		}
 		return nil, err
 	}
 
 	detail, err := e.nova().GetServer(server.Id)
 	if err != nil {
-		return nil, common.ZoneIndependentError(errors.Annotate(err, "cannot get started instance"))
+		return nil, environs.ZoneIndependentError(errors.Annotate(err, "cannot get started instance"))
 	}
 
 	inst := &openstackInstance{
@@ -1333,7 +1338,7 @@ func (e *Environ) startInstance(
 				// ignore the failure at this stage, just log it
 				logger.Debugf("failed to terminate instance %q: %v", inst.Id(), err)
 			}
-			return nil, common.ZoneIndependentError(errors.Annotate(err, "cannot allocate a public IP as needed"))
+			return nil, environs.ZoneIndependentError(errors.Annotate(err, "cannot allocate a public IP as needed"))
 		} else {
 			publicIP = fip
 			logger.Infof("allocated public IP %s", *publicIP)
@@ -1344,7 +1349,7 @@ func (e *Environ) startInstance(
 				// ignore the failure at this stage, just log it
 				logger.Debugf("failed to terminate instance %q: %v", inst.Id(), err)
 			}
-			return nil, common.ZoneIndependentError(errors.Annotatef(err,
+			return nil, environs.ZoneIndependentError(errors.Annotatef(err,
 				"cannot assign public address %s to instance %q",
 				*publicIP, inst.Id(),
 			))
@@ -1356,6 +1361,19 @@ func (e *Environ) startInstance(
 		Instance: inst,
 		Hardware: inst.hardwareCharacteristics(),
 	}, nil
+}
+
+// Clean up any groups that we have created if we fail to start the instance.
+func (e *Environ) cleanupGroups(
+	ctx context.ProviderCallContext,
+	client *nova.Client,
+	groups []nova.SecurityGroupName,
+) error {
+	names := make([]string, len(groups))
+	for i, group := range groups {
+		names[i] = group.Name
+	}
+	return e.firewaller.DeleteGroups(ctx, names...)
 }
 
 func (e *Environ) userFriendlyInvalidNetworkError(err error) error {
@@ -1381,10 +1399,10 @@ func (e *Environ) validateAvailabilityZone(ctx context.ProviderCallContext, args
 
 	volumeAttachmentsZone, err := e.volumeAttachmentsZone(args.VolumeAttachments)
 	if err != nil {
-		return common.ZoneIndependentError(err)
+		return environs.ZoneIndependentError(err)
 	}
 	if err := validateAvailabilityZoneConsistency(args.AvailabilityZone, volumeAttachmentsZone); err != nil {
-		return common.ZoneIndependentError(err)
+		return environs.ZoneIndependentError(err)
 	}
 
 	zones, err := e.AvailabilityZones(ctx)
@@ -1679,25 +1697,10 @@ func isInvalidNetworkError(err error) bool {
 }
 
 func (e *Environ) StopInstances(ctx context.ProviderCallContext, ids ...instance.Id) error {
-	// If in instance firewall mode, gather the security group names.
-	securityGroupNames, err := e.firewaller.GetSecurityGroups(ctx, ids...)
-	if err == environs.ErrNoInstances {
-		return nil
-	}
-	if err != nil {
-		handleCredentialError(err, ctx)
-		return err
-	}
 	logger.Debugf("terminating instances %v", ids)
 	if err := e.terminateInstances(ctx, ids); err != nil {
 		handleCredentialError(err, ctx)
 		return err
-	}
-	if securityGroupNames != nil {
-		if err := e.firewaller.DeleteGroups(ctx, securityGroupNames...); err != nil {
-			handleCredentialError(err, ctx)
-			return err
-		}
 	}
 	return nil
 }
@@ -1779,24 +1782,16 @@ func (e *Environ) Instances(ctx context.ProviderCallContext, ids []instance.Id) 
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	// Make a series of requests to cope with eventual consistency.
-	// Each request will attempt to add more instances to the requested
-	// set.
-	var foundServers []nova.ServerDetail
-	for a := shortAttempt.Start(); a.Next(); {
-		var err error
-		foundServers, err = e.listServers(ctx, ids)
-		if err != nil {
-			logger.Debugf("error listing servers: %v", err)
-			if !IsNotFoundError(err) {
-				handleCredentialError(err, ctx)
-				return nil, err
-			}
-		}
-		if len(foundServers) == len(ids) {
-			break
+
+	foundServers, err := e.listServers(ctx, ids)
+	if err != nil {
+		logger.Debugf("error listing servers: %v", err)
+		if !IsNotFoundError(err) {
+			handleCredentialError(err, ctx)
+			return nil, err
 		}
 	}
+
 	logger.Tracef("%d/%d live servers found", len(foundServers), len(ids))
 	if len(foundServers) == 0 {
 		return nil, environs.ErrNoInstances
@@ -1804,21 +1799,19 @@ func (e *Environ) Instances(ctx context.ProviderCallContext, ids []instance.Id) 
 
 	instsById := make(map[string]instances.Instance, len(foundServers))
 	for i, server := range foundServers {
-		// TODO(wallyworld): lookup the flavor details to fill in the
-		// instance type data
 		instsById[server.Id] = &openstackInstance{
 			e:            e,
 			serverDetail: &foundServers[i],
 		}
 	}
 
-	// Update the instance structs with any floating IP address that has been assigned to the instance.
-	if err := e.updateFloatingIPAddresses(ctx, instsById); err != nil {
+	// Update the instance structs with any floating IP address
+	// that has been assigned to the instance.
+	if err = e.updateFloatingIPAddresses(ctx, instsById); err != nil {
 		return nil, err
 	}
 
 	insts := make([]instances.Instance, len(ids))
-	var err error
 	for i, id := range ids {
 		if inst := instsById[string(id)]; inst != nil {
 			insts[i] = inst
@@ -2132,8 +2125,25 @@ func (e *Environ) terminateInstances(ctx context.ProviderCallContext, ids []inst
 	if len(ids) == 0 {
 		return nil
 	}
-	var firstErr error
+
 	novaClient := e.nova()
+
+	// If in instance firewall mode, gather the security group names.
+	securityGroupNames, err := e.firewaller.GetSecurityGroups(ctx, ids...)
+	if err == environs.ErrNoInstances {
+		return nil
+	}
+	if err != nil {
+		logger.Debugf("error retrieving security groups for %v: %v", ids, err)
+		if denied := common.MaybeHandleCredentialError(IsAuthorisationFailure, err, ctx); denied {
+			// We'll likely fail all subsequent calls if we have an invalid credential.
+			return errors.Trace(err)
+		}
+	}
+
+	// Record the first error we encounter, as that's the one we're currently
+	// reporting to the user.
+	var firstErr error
 	for _, id := range ids {
 		// Attempt to destroy the ports that could have been created when using
 		// spaces.
@@ -2144,19 +2154,29 @@ func (e *Environ) terminateInstances(ctx context.ProviderCallContext, ids []inst
 		}
 
 		// Once ports have been deleted, attempt to delete the server.
-		err := novaClient.DeleteServer(string(id))
+		err = novaClient.DeleteServer(string(id))
 		if IsNotFoundError(err) {
-			err = nil
+			continue
 		}
-		if err != nil && firstErr == nil {
+		if err != nil {
 			logger.Debugf("error terminating instance %q: %v", id, err)
-			firstErr = err
+			if firstErr == nil {
+				firstErr = err
+			}
 			if denied := common.MaybeHandleCredentialError(IsAuthorisationFailure, err, ctx); denied {
-				// We'll 100% fail all subsequent calls if we have an invalid credential.
-				break
+				// We'll likely fail all subsequent calls if we have an invalid credential.
+				return errors.Trace(err)
 			}
 		}
 	}
+
+	if len(securityGroupNames) > 0 {
+		logger.Tracef("deleting security groups %v", securityGroupNames)
+		if err := e.firewaller.DeleteGroups(ctx, securityGroupNames...); err != nil {
+			return err
+		}
+	}
+
 	return firstErr
 }
 
@@ -2354,11 +2374,6 @@ func (e *Environ) ReleaseContainerAddresses(ctx context.ProviderCallContext, int
 // AreSpacesRoutable is specified on environs.NetworkingEnviron.
 func (*Environ) AreSpacesRoutable(ctx context.ProviderCallContext, space1, space2 *environs.ProviderSpaceInfo) (bool, error) {
 	return false, nil
-}
-
-// SSHAddresses is specified on environs.SSHAddresses.
-func (*Environ) SSHAddresses(ctx context.ProviderCallContext, addresses network.SpaceAddresses) (network.SpaceAddresses, error) {
-	return addresses, nil
 }
 
 // SupportsRulesWithIPV6CIDRs returns true if the environment supports ingress

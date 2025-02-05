@@ -19,6 +19,7 @@ import (
 	"github.com/juju/juju/api"
 	apiclient "github.com/juju/juju/api/client/client"
 	"github.com/juju/juju/api/client/modelmanager"
+	"github.com/juju/juju/api/client/modelupgrader"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/environs"
 	"github.com/juju/juju/juju/osenv"
@@ -37,7 +38,7 @@ You can set current model by running "juju switch"
 or specify any other model on the command line using the "-m" option.
 `)
 
-// ModelCommand extends cmd.Command with a SetModelName method.
+// ModelCommand extends cmd.Command with a SetModelIdentifier method.
 type ModelCommand interface {
 	Command
 
@@ -79,7 +80,7 @@ type ModelCommand interface {
 	ActiveBranch() (string, error)
 
 	// ControllerName returns the name of the controller that contains
-	// the model returned by ModelName().
+	// the model returned by ModelIdentifier().
 	ControllerName() (string, error)
 
 	// maybeInitModel initializes the model name, resolving empty
@@ -312,7 +313,7 @@ func (c *ModelCommandBase) NewAPIClient() (*apiclient.Client, error) {
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	return apiclient.NewClient(root), nil
+	return apiclient.NewClient(root, logger), nil
 }
 
 // ModelDetails returns details from the file store for the model indicated by
@@ -467,6 +468,16 @@ func (c *ModelCommandBase) NewModelManagerAPIClient() (*modelmanager.Client, err
 		return nil, errors.Trace(err)
 	}
 	return modelmanager.NewClient(root), nil
+}
+
+// NewModelUpgraderAPIClient returns an API client for the
+// ModelUpgrader on the current controller using the current credentials.
+func (c *ModelCommandBase) NewModelUpgraderAPIClient() (*modelupgrader.Client, error) {
+	root, err := c.NewControllerAPIRoot()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return modelupgrader.NewClient(root), nil
 }
 
 // WrapOption specifies an option to the Wrap function.
